@@ -19,6 +19,7 @@ import javax.annotation.processing.*;
 import javax.lang.model.element.*;
 import javax.lang.model.type.*;
 import java.lang.annotation.*;
+import java.util.*;
 
 @SupportedAnnotationTypes({
 "mindustry.annotations.Annotations.EntityDef",
@@ -97,6 +98,8 @@ public class EntityProcess extends BaseProcessor{
 
             //create component interfaces
             for(Stype component : allComponents){
+
+
                 TypeSpec.Builder inter = TypeSpec.interfaceBuilder(interfaceName(component))
                 .addModifiers(Modifier.PUBLIC).addAnnotation(EntityInterface.class);
 
@@ -116,45 +119,47 @@ public class EntityProcess extends BaseProcessor{
                     inter.addSuperinterface(ClassName.get(packageName, interfaceName(type)));
                 }
 
-                ObjectSet<String> signatures = new ObjectSet<>();
+                if(component.annotation(Component.class).genInterface()){
+                    ObjectSet<String> signatures = new ObjectSet<>();
 
-                //add utility methods to interface
-                for(Smethod method : component.methods()){
-                    //skip private methods, those are for internal use.
-                    if(method.isAny(Modifier.PRIVATE, Modifier.STATIC)) continue;
+                    //add utility methods to interface
+                    for(Smethod method : component.methods()){
+                        //skip private methods, those are for internal use.
+                        if(method.isAny(Modifier.PRIVATE, Modifier.STATIC)) continue;
 
-                    //keep track of signatures used to prevent dupes
-                    signatures.add(method.e.toString());
+                        //keep track of signatures used to prevent dupes
+                        signatures.add(method.e.toString());
 
-                    inter.addMethod(MethodSpec.methodBuilder(method.name())
-                    .addJavadoc(method.doc() == null ? "" : method.doc())
-                    .addExceptions(method.thrownt())
-                    .addTypeVariables(method.typeVariables().map(TypeVariableName::get))
-                    .returns(method.ret().toString().equals("void") ? TypeName.VOID : method.retn())
-                    .addParameters(method.params().map(v -> ParameterSpec.builder(v.tname(), v.name())
-                    .build())).addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT).build());
-                }
-
-                //generate interface getters and setters for all "standard" fields
-                for(Svar field : component.fields().select(e -> !e.is(Modifier.STATIC) && !e.is(Modifier.PRIVATE) && !e.has(Import.class))){
-                    String cname = field.name();
-
-                    //getter
-                    if(!signatures.contains(cname + "()")){
-                        inter.addMethod(MethodSpec.methodBuilder(cname).addModifiers(Modifier.ABSTRACT, Modifier.PUBLIC)
-                        .addAnnotations(Seq.with(field.annotations()).select(a -> a.toString().contains("Null") || a.toString().contains("Deprecated")).map(AnnotationSpec::get))
-                        .addJavadoc(field.doc() == null ? "" : field.doc())
-                        .returns(field.tname()).build());
+                        inter.addMethod(MethodSpec.methodBuilder(method.name())
+                        .addJavadoc(method.doc() == null ? "" : method.doc())
+                        .addExceptions(method.thrownt())
+                        .addTypeVariables(method.typeVariables().map(TypeVariableName::get))
+                        .returns(method.ret().toString().equals("void") ? TypeName.VOID : method.retn())
+                        .addParameters(method.params().map(v -> ParameterSpec.builder(v.tname(), v.name())
+                        .build())).addModifiers(Modifier.PUBLIC, Modifier.ABSTRACT).build());
                     }
 
-                    //setter
-                    if(!field.is(Modifier.FINAL) && !signatures.contains(cname + "(" + field.mirror().toString() + ")") &&
-                    !field.annotations().contains(f -> f.toString().equals("@mindustry.annotations.Annotations.ReadOnly"))){
-                        inter.addMethod(MethodSpec.methodBuilder(cname).addModifiers(Modifier.ABSTRACT, Modifier.PUBLIC)
-                        .addJavadoc(field.doc() == null ? "" : field.doc())
-                        .addParameter(ParameterSpec.builder(field.tname(), field.name())
-                        .addAnnotations(Seq.with(field.annotations())
-                        .select(a -> a.toString().contains("Null") || a.toString().contains("Deprecated")).map(AnnotationSpec::get)).build()).build());
+                    //generate interface getters and setters for all "standard" fields
+                    for(Svar field : component.fields().select(e -> !e.is(Modifier.STATIC) && !e.is(Modifier.PRIVATE) && !e.has(Import.class))){
+                        String cname = field.name();
+
+                        //getter
+                        if(!signatures.contains(cname + "()")){
+                            inter.addMethod(MethodSpec.methodBuilder(cname).addModifiers(Modifier.ABSTRACT, Modifier.PUBLIC)
+                            .addAnnotations(Seq.with(field.annotations()).select(a -> a.toString().contains("Null") || a.toString().contains("Deprecated")).map(AnnotationSpec::get))
+                            .addJavadoc(field.doc() == null ? "" : field.doc())
+                            .returns(field.tname()).build());
+                        }
+
+                        //setter
+                        if(!field.is(Modifier.FINAL) && !signatures.contains(cname + "(" + field.mirror().toString() + ")") &&
+                        !field.annotations().contains(f -> f.toString().equals("@mindustry.annotations.Annotations.ReadOnly"))){
+                            inter.addMethod(MethodSpec.methodBuilder(cname).addModifiers(Modifier.ABSTRACT, Modifier.PUBLIC)
+                            .addJavadoc(field.doc() == null ? "" : field.doc())
+                            .addParameter(ParameterSpec.builder(field.tname(), field.name())
+                            .addAnnotations(Seq.with(field.annotations())
+                            .select(a -> a.toString().contains("Null") || a.toString().contains("Deprecated")).map(AnnotationSpec::get)).build()).build());
+                        }
                     }
                 }
 
@@ -229,6 +234,12 @@ public class EntityProcess extends BaseProcessor{
                     return result;
                 });
 
+                Seq<Stype> exclusions = types(an, GroupDef::exclude).map(stype -> {
+                    Stype result = interfaceToComp(stype);
+                    if(result == null) throw new IllegalArgumentException("Interface " + stype + " does not have an associated component!");
+                    return result;
+                });
+
                 //representative component type
                 Stype repr = types.first();
                 String groupType = repr.annotation(Component.class).base() ? baseName(repr) : interfaceName(repr);
@@ -237,7 +248,7 @@ public class EntityProcess extends BaseProcessor{
 
                 boolean collides = an.collide();
                 groupDefs.add(new GroupDefinition(name,
-                    ClassName.bestGuess(packageName + "." + groupType), types, an.spatial(), an.mapping(), collides));
+                    ClassName.bestGuess(packageName + "." + groupType), types, exclusions, an.spatial(), an.mapping(), collides, an.update()));
 
                 TypeSpec.Builder accessor = TypeSpec.interfaceBuilder("IndexableEntity__" + name);
                 accessor.addMethod(MethodSpec.methodBuilder("setIndex__" + name).addModifiers(Modifier.ABSTRACT, Modifier.PUBLIC).addParameter(int.class, "index").returns(void.class).build());
@@ -253,7 +264,9 @@ public class EntityProcess extends BaseProcessor{
 
                 //all component classes (not interfaces)
                 Seq<Stype> components = allComponents(type);
-                Seq<GroupDefinition> groups = groupDefs.select(g -> (!g.components.isEmpty() && !g.components.contains(s -> !components.contains(s))) || g.manualInclusions.contains(type));
+                Seq<GroupDefinition> groups = groupDefs.select(g -> (!g.components.isEmpty() && !Structs.contains(ann.excludeGroups(), g.name)
+                    && !g.components.contains(s -> !components.contains(s)) && !g.excludedComponents.contains(s -> components.contains(s))));
+
                 ObjectMap<String, Seq<Smethod>> methods = new ObjectMap<>();
                 ObjectMap<FieldSpec, Svar> specVariables = new ObjectMap<>();
                 ObjectSet<String> usedFields = new ObjectSet<>();
@@ -416,19 +429,34 @@ public class EntityProcess extends BaseProcessor{
 
                 //add all methods from components
                 for(ObjectMap.Entry<String, Seq<Smethod>> entry : methods){
-                    if(entry.value.contains(m -> m.has(Replace.class))){
-                        //check replacements
-                        if(entry.value.count(m -> m.has(Replace.class)) > 1){
-                            err("Type " + type + " has multiple components replacing method " + entry.key + ".");
-                        }
-                        Smethod base = entry.value.find(m -> m.has(Replace.class));
-                        entry.value.clear();
-                        entry.value.add(base);
-                    }
 
-                    //check multi return
-                    if(entry.value.count(m -> !m.isAny(Modifier.NATIVE, Modifier.ABSTRACT) && !m.isVoid()) > 1){
-                        err("Type " + type + " has multiple components implementing non-void method " + entry.key + ".");
+                    //there are multiple @Replace implementations, or multiple non-void implementations.
+                    if(entry.value.size > 1 && (entry.value.contains(m -> m.has(Replace.class)) || entry.value.count(m -> !m.isAny(Modifier.NATIVE, Modifier.ABSTRACT) && !m.isVoid()) > 1)){
+
+                        //remove clutter
+                        entry.value.removeAll(s -> s.is(Modifier.ABSTRACT));
+
+                        Comparator<Smethod> comp = Structs.comps(
+                            Structs.comps(
+                                //highest priority first
+                                Structs.comparingFloat(m -> m.has(MethodPriority.class) ? m.annotation(MethodPriority.class).value() : 0f),
+                                //replacement means priority
+                                Structs.comparingBool(m -> m.has(Replace.class))
+                            ),
+
+                            //otherwise, the 'highest' subclass (most dependencies)
+                            Structs.comparingInt(m -> getDependencies(m.type()).size)
+                        );
+
+                        Smethod best = entry.value.max(comp);
+
+                        if(entry.value.contains(s -> best != s && comp.compare(s, best) == 0)){
+                            err("Type " + type + " has multiple components implementing method " + entry.value.first() + " in an ambiguous way. Use MethodPriority to designate which one should be used. Implementations: " +
+                                entry.value.map(s -> s.descString()));
+                        }
+
+                        entry.value.clear();
+                        entry.value.add(best);
                     }
 
                     entry.value.sort(Structs.comps(Structs.comparingFloat(m -> m.has(MethodPriority.class) ? m.annotation(MethodPriority.class).value() : 0), Structs.comparing(s -> s.up().getSimpleName().toString())));
@@ -445,6 +473,7 @@ public class EntityProcess extends BaseProcessor{
                     MethodSpec.Builder mbuilder = MethodSpec.methodBuilder(first.name()).addModifiers(first.is(Modifier.PRIVATE) ? Modifier.PRIVATE : Modifier.PUBLIC);
                     //if(isFinal || entry.value.contains(s -> s.has(Final.class))) mbuilder.addModifiers(Modifier.FINAL);
                     if(entry.value.contains(s -> s.has(CallSuper.class))) mbuilder.addAnnotation(CallSuper.class); //add callSuper here if necessary
+                    if(first.has(Nullable.class)) mbuilder.addAnnotation(Nullable.class);
                     if(first.is(Modifier.STATIC)) mbuilder.addModifiers(Modifier.STATIC);
                     mbuilder.addTypeVariables(first.typeVariables().map(TypeVariableName::get));
                     mbuilder.returns(first.retn());
@@ -484,7 +513,7 @@ public class EntityProcess extends BaseProcessor{
                         //SPECIAL CASE: I/O code
                         //note that serialization is generated even for non-serializing entities for manual usage
                         if((first.name().equals("read") || first.name().equals("write"))){
-                            io.write(mbuilder, first.name().equals("write"));
+                            io.write(mbuilder, first.name().equals("write"), allFields);
                             specialIO = true;
                         }
 
@@ -664,12 +693,17 @@ public class EntityProcess extends BaseProcessor{
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC);
 
             MethodSpec.Builder groupUpdate = MethodSpec.methodBuilder("update")
+            .addModifiers(Modifier.PUBLIC, Modifier.STATIC);
+
+            MethodSpec.Builder groupPoolUpdate = MethodSpec.methodBuilder("updatePooling")
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC);
 
             //free everything pooled at the start of each updaet
-            groupUpdate
+            groupPoolUpdate
                 .addStatement("for($T p : freeQueue) $T.free(p)", Poolable.class, Pools.class)
                 .addStatement("freeQueue.clear()");
+
+            groupUpdate.addStatement("updatePooling()");
 
             //method resize
             for(GroupDefinition group : groupDefs){
@@ -679,7 +713,11 @@ public class EntityProcess extends BaseProcessor{
                 }
             }
 
-            groupUpdate.addStatement("all.update()");
+            for(GroupDefinition group : groupDefs){
+                if(group.updates){
+                    groupUpdate.addStatement("$L.update()", group.name);
+                }
+            }
 
             for(GroupDefinition group : groupDefs){
                 if(group.collides){
@@ -688,6 +726,7 @@ public class EntityProcess extends BaseProcessor{
             }
 
             groupsBuilder.addMethod(groupResize.build());
+            groupsBuilder.addMethod(groupPoolUpdate.build());
             groupsBuilder.addMethod(groupUpdate.build());
 
             write(groupsBuilder);
@@ -775,6 +814,7 @@ public class EntityProcess extends BaseProcessor{
 
             //implement each definition
             for(EntityDefinition def : definitions){
+
                 ObjectSet<String> methodNames = def.components.flatMap(type -> type.methods().map(Smethod::simpleString)).<String>as().asSet();
 
                 //add base class extension if it exists
@@ -850,89 +890,6 @@ public class EntityProcess extends BaseProcessor{
             for(TypeSpec.Builder b : baseClasses){
                 write(b, imports.toSeq());
             }
-
-            //TODO nulls were an awful idea
-            //store nulls
-            TypeSpec.Builder nullsBuilder = TypeSpec.classBuilder("Nulls").addModifiers(Modifier.PUBLIC).addModifiers(Modifier.FINAL);
-            //TODO should be dynamic
-            ObjectSet<String> nullList = ObjectSet.with("unit", "player");
-
-            //create mock types of all components
-            for(Stype interf : allInterfaces){
-                //indirect interfaces to implement methods for
-                Seq<Stype> dependencies = interf.allInterfaces().add(interf);
-                Seq<Smethod> methods = dependencies.flatMap(Stype::methods);
-                methods.sortComparing(Object::toString);
-
-                //optionally add superclass
-                Stype superclass = dependencies.map(this::interfaceToComp).find(s -> s != null && s.annotation(Component.class).base());
-                //use the base type when the interface being emulated has a base
-                TypeName type = superclass != null && interfaceToComp(interf).annotation(Component.class).base() ? tname(baseName(superclass)) : interf.tname();
-
-                //used method signatures
-                ObjectSet<String> signatures = new ObjectSet<>();
-
-                //create null builder
-                String baseName = interf.name().substring(0, interf.name().length() - 1);
-
-                //prevent Nulls bloat
-                if(!nullList.contains(Strings.camelize(baseName))){
-                    continue;
-                }
-
-                String className = "Null" + baseName;
-                TypeSpec.Builder nullBuilder = TypeSpec.classBuilder(className)
-                .addModifiers(Modifier.FINAL);
-
-                skipDeprecated(nullBuilder);
-
-                nullBuilder.addSuperinterface(interf.tname());
-                if(superclass != null) nullBuilder.superclass(tname(baseName(superclass)));
-
-                for(Smethod method : methods){
-                    String signature = method.toString();
-                    if(!signatures.add(signature)) continue;
-
-                    Stype compType = interfaceToComp(method.type());
-                    MethodSpec.Builder builder = MethodSpec.overriding(method.e).addModifiers(Modifier.PUBLIC, Modifier.FINAL);
-                    int index = 0;
-                    for(ParameterSpec spec : builder.parameters){
-                        Reflect.set(spec, "name",  "arg" + index++);
-                    }
-                    builder.addAnnotation(OverrideCallSuper.class); //just in case
-
-                    if(!method.isVoid()){
-                        String methodName = method.name();
-                        switch(methodName){
-                            case "isNull":
-                                builder.addStatement("return true");
-                                break;
-                            case "id":
-                                builder.addStatement("return -1");
-                                break;
-                            case "toString":
-                                builder.addStatement("return $S", className);
-                                break;
-                            default:
-                                Svar variable = compType == null || method.params().size > 0 ? null : compType.fields().find(v -> v.name().equals(methodName));
-                                String desc = variable == null ? null : variable.descString();
-                                if(variable == null || !varInitializers.containsKey(desc)){
-                                    builder.addStatement("return " + getDefault(method.ret().toString()));
-                                }else{
-                                    String init = varInitializers.get(desc);
-                                    builder.addStatement("return " + (init.equals("{}") ? "new " + variable.mirror().toString() : "") + init);
-                                }
-                        }
-                    }
-                    nullBuilder.addMethod(builder.build());
-                }
-
-                nullsBuilder.addField(FieldSpec.builder(type, Strings.camelize(baseName)).initializer("new " + className + "()").addModifiers(Modifier.FINAL, Modifier.STATIC, Modifier.PUBLIC).build());
-
-                write(nullBuilder, imports.toSeq());
-            }
-
-            write(nullsBuilder);
         }
     }
 
@@ -1045,17 +1002,18 @@ public class EntityProcess extends BaseProcessor{
     class GroupDefinition{
         final String name;
         final ClassName baseType;
-        final Seq<Stype> components;
-        final boolean spatial, mapping, collides;
-        final ObjectSet<Selement> manualInclusions = new ObjectSet<>();
+        final Seq<Stype> components, excludedComponents;
+        final boolean spatial, mapping, collides, updates;
 
-        public GroupDefinition(String name, ClassName bestType, Seq<Stype> components, boolean spatial, boolean mapping, boolean collides){
+        public GroupDefinition(String name, ClassName bestType, Seq<Stype> components, Seq<Stype> excludedComponents, boolean spatial, boolean mapping, boolean collides, boolean updates){
             this.baseType = bestType;
             this.components = components;
+            this.excludedComponents = excludedComponents;
             this.name = name;
             this.spatial = spatial;
             this.mapping = mapping;
             this.collides = collides;
+            this.updates = updates;
         }
 
         @Override

@@ -4,6 +4,7 @@ import arc.*;
 import arc.math.*;
 import arc.struct.*;
 import arc.util.*;
+import arc.util.pooling.*;
 import mindustry.ctype.*;
 import mindustry.game.*;
 import mindustry.game.Schematic.*;
@@ -33,6 +34,7 @@ public class BaseRegistry{
     }
 
     public void load(){
+        Time.mark();
         cores.clear();
         parts.clear();
         reqParts.clear();
@@ -80,9 +82,15 @@ public class BaseRegistry{
                         drills ++;
                     }
                 }
-                schem.tiles.removeAll(s -> s.block.buildVisibility == BuildVisibility.sandboxOnly);
+                schem.tiles.removeAll(s -> {
+                    if(s.block.buildVisibility == BuildVisibility.sandboxOnly){
+                        Pools.free(s);
+                        return true;
+                    }
+                    return false;
+            });
 
-                part.tier = schem.tiles.sumf(s -> Mathf.pow(s.block.buildCost / s.block.buildCostMultiplier, 1.4f));
+                part.tier = schem.tiles.sumf(s -> Mathf.pow(s.block.buildTime / s.block.buildCostMultiplier, 1.4f));
 
                 if(part.core != null){
                     cores.add(part);
@@ -111,6 +119,7 @@ public class BaseRegistry{
         cores.sort(b -> b.tier);
         parts.sort();
         reqParts.each((key, arr) -> arr.sort());
+        Log.debug("Bases in @ms", Time.elapsed());
     }
 
     public static class BasePart implements Comparable<BasePart>{

@@ -1,5 +1,6 @@
 package mindustry.async;
 
+import arc.Core;
 import arc.math.*;
 import arc.math.geom.*;
 import arc.math.geom.QuadTree.*;
@@ -11,11 +12,12 @@ import mindustry.entities.*;
 import mindustry.gen.*;
 
 public class PhysicsProcess implements AsyncProcess{
-    private static final int
-        layers = 3,
-        layerGround = 0,
-        layerLegs = 1,
-        layerFlying = 2;
+    public static final int
+    layers = 4,
+    layerGround = 0,
+    layerLegs = 1,
+    layerFlying = 2,
+    layerUnderwater = 3;
 
     private PhysicsWorld physics;
     private Seq<PhysicRef> refs = new Seq<>(false);
@@ -46,7 +48,7 @@ public class PhysicsProcess implements AsyncProcess{
                 body.x = entity.x;
                 body.y = entity.y;
                 body.mass = entity.mass();
-                body.radius = entity.hitSize / 2f;
+                body.radius = entity.hitSize * Vars.unitCollisionRadiusScale;
 
                 PhysicRef ref = new PhysicRef(entity, body);
                 refs.add(ref);
@@ -59,9 +61,7 @@ public class PhysicsProcess implements AsyncProcess{
             //save last position
             PhysicRef ref = entity.physref;
 
-            ref.body.layer =
-                entity.type.allowLegStep && entity.type.legPhysicsLayer ? layerLegs :
-                entity.isGrounded() ? layerGround : layerFlying;
+            ref.body.layer = entity.collisionLayer();
             ref.x = entity.x;
             ref.y = entity.y;
             ref.body.local = local || entity.isLocal();
@@ -89,6 +89,9 @@ public class PhysicsProcess implements AsyncProcess{
         //move entities
         for(PhysicRef ref : refs){
             Physicsc entity = ref.entity;
+
+            // FD: skip collision response for local unit when enabled
+            if(entity instanceof Unitc unit && unit.isLocal() && Core.settings.getBool("no_collisions")) continue;
 
             //move by delta
             entity.move(ref.body.x - ref.x, ref.body.y - ref.y);
@@ -131,6 +134,7 @@ public class PhysicsProcess implements AsyncProcess{
         private final Seq<PhysicsBody> seq = new Seq<>(PhysicsBody.class);
         private final Rect rect = new Rect();
         private final Vec2 vec = new Vec2();
+        private final Rand rand = new Rand();
 
         public PhysicsWorld(Rect bounds){
             for(int i = 0; i < layers; i++){
@@ -156,15 +160,15 @@ public class PhysicsProcess implements AsyncProcess{
 
             for(int i = 0; i < bodySize; i++){
                 PhysicsBody body = bodyItems[i];
+                if(body.layer < 0) continue;
                 body.collided = false;
                 trees[body.layer].insert(body);
             }
 
             for(int i = 0; i < bodySize; i++){
                 PhysicsBody body = bodyItems[i];
-
                 //for clients, the only body that collides is the local one; all other physics simulations are handled by the server.
-                if(!body.local) continue;
+                if(!body.local || body.layer < 0) continue;
 
                 body.hitbox(rect);
 
@@ -182,7 +186,14 @@ public class PhysicsProcess implements AsyncProcess{
                     float dst = Mathf.dst(body.x, body.y, other.x, other.y);
 
                     if(dst < rs){
-                        vec.set(body.x - other.x, body.y - other.y).setLength(rs - dst);
+                        vec.set(body.x - other.x, body.y - other.y);
+
+                        if(vec.isZero()){ //exact stacked bodies will move in random directions away from each other
+                            vec.trns(rand.random(360f), rs - dst);
+                        }else{
+                            vec.setLength(rs - dst);
+                        }
+
                         float ms = body.mass + other.mass;
                         float m1 = other.mass / ms, m2 = body.mass / ms;
 

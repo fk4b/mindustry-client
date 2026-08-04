@@ -10,18 +10,26 @@ import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.struct.*;
 import arc.util.*;
+import arc.util.io.*;
 import kotlin.*;
 import mindustry.ai.*;
+import mindustry.audio.*;
 import mindustry.client.*;
 import mindustry.core.*;
 import mindustry.ctype.*;
 import mindustry.game.EventType.*;
 import mindustry.game.*;
+import mindustry.game.Saves.*;
+import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.io.*;
 import mindustry.maps.*;
 import mindustry.mod.*;
 import mindustry.net.*;
 import mindustry.ui.*;
+
+import java.io.*;
+import java.util.zip.*;
 
 import static arc.Core.*;
 import static mindustry.Vars.*;
@@ -31,6 +39,7 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
 
     private long nextFrame;
     protected long beginTime;
+    private long lastTargetFps = -1;
     private boolean finished = false;
     private LoadRenderer loader;
 
@@ -43,7 +52,7 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
 //                throw new RuntimeException(e);
 //            }
 //        });
-        String dataDir = OS.env("MINDUSTRY_DATA_DIR");
+        String dataDir = System.getProperty("mindustry.data.dir", OS.env("MINDUSTRY_DATA_DIR"));
         if(dataDir != null){
             Core.settings.setDataDirectory(files.absolute(dataDir));
         }
@@ -62,23 +71,38 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
         //debug GL information
         Log.info("[GL] Version: @", graphics.getGLVersion());
         Log.info("[GL] Max texture size: @", maxTextureSize);
-        Log.info("[GL] Using @ context.", gl30 != null ? "OpenGL 3" : "OpenGL 2");
+        Log.info("[GL] Using @ API.", gl30 != null ? "OpenGL 3" : "OpenGL 2");
+
+        IntelGpuCheck.init(graphics.getGLVersion().vendorString);
+
+        boolean isIntel = IntelGpuCheck.wasIntel();
+
+        if(isIntel && !graphics.isGL30Available()) Log.warn("[GL] Intel GPU detected on previous launch. Due to memory corruption issues, OpenGL 3 support has been disabled for Intel GPUs. See issue #11041.");
+
+        if(gl30 == null && !isIntel) Log.warn("[GL] Your device or video drivers do not support OpenGL 3. This will cause performance issues.");
+
+        if(NvGpuInfo.hasMemoryInfo()) Log.info("[GL] Total available VRAM: @mb", NvGpuInfo.getMaxMemoryKB()/1024);
+
         if(maxTextureSize < 4096) Log.warn("[GL] Your maximum texture size is below the recommended minimum of 4096. This will cause severe performance issues.");
+
         Log.info("[JAVA] Version: @", OS.javaVersion);
         if(Core.app.isAndroid()){
             Log.info("[ANDROID] API level: @", Core.app.getVersion());
         }
         long ram = Runtime.getRuntime().maxMemory();
         boolean gb = ram >= 1024 * 1024 * 1024;
-        Log.info("[RAM] Available: @ @", Strings.fixed(gb ? ram / 1024f / 1024 / 1024f : ram / 1024f / 1024f, 1), gb ? "GB" : "MB");
+        if(!OS.isIos){
+            Log.info("[RAM] Available: @ @", Strings.fixed(gb ? ram / 1024f / 1024 / 1024f : ram / 1024f / 1024f, 1), gb ? "GB" : "MB");
+        }
         Log.info("[CLIENT] Version: @", Version.clientVersion);
 
         Time.setDeltaProvider(() -> {
             float result = Core.graphics.getDeltaTime() * 60f;
-            return (Float.isNaN(result) || Float.isInfinite(result)) ? 1f : Mathf.clamp(result, 0.0001f, 60f / 10f);
+            return (Float.isNaN(result) || Float.isInfinite(result)) ? 1f : Mathf.clamp(result, 0.0001f, maxDeltaClient);
         });
 
-        batch = new SortedSpriteBatch();
+        UI.loadColors();
+        batch = new SpriteBatch();
         assets = new AssetManager();
         assets.setLoader(Texture.class, "." + mapExtension, new MapPreviewLoader());
 
@@ -92,20 +116,12 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
             @Override
             public Sound loadSync(AssetManager manager, String fileName, Fi file, SoundParameter parameter){
                 if(parameter != null && parameter.sound != null){
-                    mainExecutor.submit(() -> parameter.sound.load(file));
+                    parameter.sound.loadLazy(file);
 
                     return parameter.sound;
                 }else{
                     Sound sound = new Sound();
-
-                    mainExecutor.submit(() -> {
-                        try{
-                            sound.load(file);
-                        }catch(Throwable t){
-                            Log.err("Error loading sound: " + file, t);
-                        }
-                    });
-
+                    sound.loadLazy(file);
                     return sound;
                 }
             }
@@ -160,7 +176,6 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
             atlas.dispose();
             atlas = t;
         };
-        assets.loadRun("maps", Map.class, () -> maps.loadPreviews());
 
         assets.loadRun("contentcreate", Content.class, () -> {
             content.createBaseContent();
@@ -212,10 +227,15 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
 
     @Override
     public void update(){
-        int targetfps = Core.settings.getInt("fpscap", 120);
+        PerfCounter.update.begin();
+
+        int targetfps = ios ? 0 : Core.settings.getInt("fpscap", 120);
+        boolean changed = lastTargetFps != targetfps && lastTargetFps != -1;
         boolean limitFps = targetfps > 0 && targetfps <= 240;
 
-        if(limitFps){
+        lastTargetFps = targetfps;
+
+        if(limitFps && !changed){
             nextFrame += (1000 * 1000000) / targetfps;
         }else{
             nextFrame = Time.nanos();
@@ -242,12 +262,22 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
                 loader.dispose();
                 loader = null;
                 Log.info("Total time to load: @ms", Time.timeSinceMillis(beginTime));
+                var listenerBefore = Time.nanos();
+                SoundPriority.init();
                 for(ApplicationListener listener : modules){
+                    var before = Time.nanos();
                     listener.init();
+                    float dur = Time.millisSinceNanos(before);
+                    Log.debug("Listener @ in @ms", listener.getClass().getName(), dur);
                 }
+                Log.debug("Listener init: @ms", Time.millisSinceNanos(listenerBefore));
                 mods.eachClass(Mod::init);
                 finished = true;
+                Time.mark();
                 Events.fire(new ClientLoadEvent());
+                Log.debug("Total time to load including ClientLoadEvent: @ms | ClientLoadEvent: @ms", Time.timeSinceMillis(beginTime), Time.elapsed());
+                Core.app.post(() -> Log.debug("Total time to load including ClientLoadEvent and 1 extra frame: @ms", Time.timeSinceMillis(beginTime)));
+
                 clientLoaded = true;
                 super.resize(graphics.getWidth(), graphics.getHeight());
                 app.post(() -> app.post(() -> app.post(() -> app.post(() -> {
@@ -271,6 +301,18 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
                 long toSleep = nextFrame - current;
                 Threads.sleep(toSleep / 1000000, (int)(toSleep % 1000000));
             }
+        }
+
+        PerfCounter.update.end();
+
+        long rawUpdate = PerfCounter.update.latestValueNs();
+        for(var other : PerfCounter.displayedCounters){
+            if(other != PerfCounter.other) rawUpdate -= other.latestValueNs();
+        }
+        PerfCounter.other.add(rawUpdate);
+
+        for(var counter : PerfCounter.all){
+            counter.checkUpdate();
         }
     }
 
@@ -303,5 +345,36 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
         if(finished){
             super.pause();
         }
+    }
+
+    @Override
+    public void fileDropped(Fi file){
+        if(OS.isIos) return;
+
+        if(file.extension().equalsIgnoreCase(saveExtension)){ //open save
+            try{
+                if(SaveIO.isSaveValid(file)){
+                    SaveMeta meta = SaveIO.getMeta(new DataInputStream(new InflaterInputStream(file.read(Streams.defaultBufferSize))));
+                    if(meta.tags.containsKey("name")){
+                        //is map
+                        if(!ui.editor.isShown()){
+                            ui.editor.show();
+                        }
+
+                        ui.editor.beginEditMap(file);
+                    }else if(meta.rules.sector == null){ //don't allow importing campaign saves, they are broken
+                        SaveSlot slot = control.saves.importSave(file);
+                        ui.load.runLoadSave(slot);
+                    }else{
+                        ui.showErrorMessage("@save.nocampaign");
+                    }
+                }else{
+                    ui.showErrorMessage("@save.import.invalid");
+                }
+            }catch(Throwable e){
+                ui.showException("@save.import.fail", e);
+            }
+        }
+
     }
 }

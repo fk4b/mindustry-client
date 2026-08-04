@@ -1,4 +1,4 @@
-//Generated script file. Modify base.js, not this.
+//Generated class. Do not modify.
 
 "use strict";
 
@@ -19,6 +19,7 @@ const floatp = method => new Floatp(){get: method}
 const cons = method => new Cons(){get: method}
 const prov = method => new Prov(){get: method}
 const func = method => new Func(){get: method}
+const getRealClass = value => Vars.mods.getScripts().getClass(value);
 
 const msg = text => Vars.ui.chatfrag.addMessage(text)
 
@@ -42,6 +43,12 @@ function extend(/*Base, ..., def*/){
     return instance
 }
 
+importPackage(Packages.java.lang)
+const Arrays = Packages.java.util.Arrays
+//commonly used inner classes that are moved out so JS mods can be more compatible with v8 and v9
+const TextureFilter = Packages.arc.graphics.Texture.TextureFilter
+const TextureWrap = Packages.arc.graphics.Texture.TextureWrap
+
 //Below utility functions by BalaM314
 
 function makeUnit(unit, x, y, team){
@@ -61,12 +68,11 @@ function targetedBuilding(){
 
 //more coming soon
 
-
 importPackage(Packages.arc)
 importPackage(Packages.arc.audio)
 importPackage(Packages.arc.files)
-importPackage(Packages.arc.func)
 importPackage(Packages.arc.flabel)
+importPackage(Packages.arc.func)
 importPackage(Packages.arc.graphics)
 importPackage(Packages.arc.graphics.g2d)
 importPackage(Packages.arc.graphics.gl)
@@ -82,7 +88,6 @@ importPackage(Packages.arc.scene.ui.layout)
 importPackage(Packages.arc.scene.utils)
 importPackage(Packages.arc.struct)
 importPackage(Packages.arc.util)
-importPackage(Packages.arc.util.async)
 importPackage(Packages.arc.util.io)
 importPackage(Packages.arc.util.noise)
 importPackage(Packages.arc.util.pooling)
@@ -93,10 +98,21 @@ importPackage(Packages.mindustry.ai)
 importPackage(Packages.mindustry.ai.types)
 importPackage(Packages.mindustry.async)
 importPackage(Packages.mindustry.audio)
+importPackage(Packages.mindustry.client)
+importPackage(Packages.mindustry.client.antigrief)
+importPackage(Packages.mindustry.client.claj)
+importPackage(Packages.mindustry.client.communication)
+importPackage(Packages.mindustry.client.communication.syncing)
+importPackage(Packages.mindustry.client.crypto)
+importPackage(Packages.mindustry.client.navigation)
+importPackage(Packages.mindustry.client.navigation.waypoints)
+importPackage(Packages.mindustry.client.ui)
+importPackage(Packages.mindustry.client.utils)
 importPackage(Packages.mindustry.content)
 importPackage(Packages.mindustry.core)
 importPackage(Packages.mindustry.ctype)
 importPackage(Packages.mindustry.editor)
+importPackage(Packages.mindustry.editor.data)
 importPackage(Packages.mindustry.entities)
 importPackage(Packages.mindustry.entities.abilities)
 importPackage(Packages.mindustry.entities.bullet)
@@ -110,15 +126,17 @@ importPackage(Packages.mindustry.graphics)
 importPackage(Packages.mindustry.graphics.g3d)
 importPackage(Packages.mindustry.input)
 importPackage(Packages.mindustry.io)
+importPackage(Packages.mindustry.io.versions)
 importPackage(Packages.mindustry.logic)
 importPackage(Packages.mindustry.maps)
 importPackage(Packages.mindustry.maps.filters)
 importPackage(Packages.mindustry.maps.generators)
 importPackage(Packages.mindustry.maps.planet)
+importPackage(Packages.mindustry.mod)
+importPackage(Packages.mindustry.mod.data)
 importPackage(Packages.mindustry.net)
 importPackage(Packages.mindustry.service)
 importPackage(Packages.mindustry.type)
-importPackage(Packages.mindustry.type.ammo)
 importPackage(Packages.mindustry.type.unit)
 importPackage(Packages.mindustry.type.weapons)
 importPackage(Packages.mindustry.type.weather)
@@ -134,7 +152,6 @@ importPackage(Packages.mindustry.world.blocks.defense.turrets)
 importPackage(Packages.mindustry.world.blocks.distribution)
 importPackage(Packages.mindustry.world.blocks.environment)
 importPackage(Packages.mindustry.world.blocks.heat)
-importPackage(Packages.mindustry.world.blocks.legacy)
 importPackage(Packages.mindustry.world.blocks.liquid)
 importPackage(Packages.mindustry.world.blocks.logic)
 importPackage(Packages.mindustry.world.blocks.payloads)
@@ -147,15 +164,6 @@ importPackage(Packages.mindustry.world.consumers)
 importPackage(Packages.mindustry.world.draw)
 importPackage(Packages.mindustry.world.meta)
 importPackage(Packages.mindustry.world.modules)
-importPackage(Packages.mindustry.client)
-importPackage(Packages.mindustry.client.antigrief)
-importPackage(Packages.mindustry.client.communication)
-importPackage(Packages.mindustry.client.crypto)
-importPackage(Packages.mindustry.client.navigation)
-importPackage(Packages.mindustry.client.navigation.waypoints)
-importPackage(Packages.mindustry.client.ui)
-importPackage(Packages.mindustry.client.utils)
-
 const SendChatMessageEvent = Packages.mindustry.game.EventType.SendChatMessageEvent
 const AdminRequestEvent = Packages.mindustry.game.EventType.AdminRequestEvent
 const PlayerIpUnbanEvent = Packages.mindustry.game.EventType.PlayerIpUnbanEvent
@@ -183,7 +191,6 @@ const GeneratorPressureExplodeEvent = Packages.mindustry.game.EventType.Generato
 const BlockDestroyEvent = Packages.mindustry.game.EventType.BlockDestroyEvent
 const BuildSelectEvent = Packages.mindustry.game.EventType.BuildSelectEvent
 const BuildRotateEvent = Packages.mindustry.game.EventType.BuildRotateEvent
-const BlockBreakEvent = Packages.mindustry.game.EventType.BlockBreakEvent
 const BuildPayloadDrop = Packages.mindustry.game.EventType.BuildPayloadDrop
 const BuildPayloadPickup = Packages.mindustry.game.EventType.BuildPayloadPickup
 const BlockBuildEventTile = Packages.mindustry.game.EventType.BlockBuildEventTile
@@ -195,6 +202,8 @@ const UnlockEvent = Packages.mindustry.game.EventType.UnlockEvent
 const StateChangeEvent = Packages.mindustry.game.EventType.StateChangeEvent
 const CoreChangeEvent = Packages.mindustry.game.EventType.CoreChangeEvent
 const BuildTeamChangeEvent = Packages.mindustry.game.EventType.BuildTeamChangeEvent
+const TileOverlayChangeEvent = Packages.mindustry.game.EventType.TileOverlayChangeEvent
+const TileFloorChangeEvent = Packages.mindustry.game.EventType.TileFloorChangeEvent
 const TileChangeEvent = Packages.mindustry.game.EventType.TileChangeEvent
 const TilePreChangeEvent = Packages.mindustry.game.EventType.TilePreChangeEvent
 const BuildDamageEvent = Packages.mindustry.game.EventType.BuildDamageEvent
@@ -210,9 +219,12 @@ const ConfigEvent = Packages.mindustry.game.EventType.ConfigEvent
 const DepositEvent = Packages.mindustry.game.EventType.DepositEvent
 const WithdrawEvent = Packages.mindustry.game.EventType.WithdrawEvent
 const SectorCaptureEvent = Packages.mindustry.game.EventType.SectorCaptureEvent
+const ClientChatEvent = Packages.mindustry.game.EventType.ClientChatEvent
 const PlayerChatEventClient = Packages.mindustry.game.EventType.PlayerChatEventClient
 const PlayerChatEvent = Packages.mindustry.game.EventType.PlayerChatEvent
+const TextInputEvent = Packages.mindustry.game.EventType.TextInputEvent
 const MenuOptionChooseEvent = Packages.mindustry.game.EventType.MenuOptionChooseEvent
+const ClientServerConnectEvent = Packages.mindustry.game.EventType.ClientServerConnectEvent
 const ClientPreConnectEvent = Packages.mindustry.game.EventType.ClientPreConnectEvent
 const SchematicCreateEvent = Packages.mindustry.game.EventType.SchematicCreateEvent
 const SectorLaunchLoadoutEvent = Packages.mindustry.game.EventType.SectorLaunchLoadoutEvent
@@ -221,17 +233,19 @@ const LaunchItemEvent = Packages.mindustry.game.EventType.LaunchItemEvent
 const SectorInvasionEvent = Packages.mindustry.game.EventType.SectorInvasionEvent
 const SectorLoseEvent = Packages.mindustry.game.EventType.SectorLoseEvent
 const SaveLoadEvent = Packages.mindustry.game.EventType.SaveLoadEvent
+const DataPatchLoadEvent = Packages.mindustry.game.EventType.DataPatchLoadEvent
 const WorldLoadEndEvent = Packages.mindustry.game.EventType.WorldLoadEndEvent
 const WorldLoadBeginEvent = Packages.mindustry.game.EventType.WorldLoadBeginEvent
-const ServerJoinEvent = Packages.mindustry.game.EventType.ServerJoinEvent
 const WorldLoadEvent = Packages.mindustry.game.EventType.WorldLoadEvent
+const MenuReturnEvent = Packages.mindustry.game.EventType.MenuReturnEvent
+const ServerJoinEvent = Packages.mindustry.game.EventType.ServerJoinEvent
 const FileTreeInitEvent = Packages.mindustry.game.EventType.FileTreeInitEvent
 const MusicRegisterEvent = Packages.mindustry.game.EventType.MusicRegisterEvent
 const ClientLoadEvent = Packages.mindustry.game.EventType.ClientLoadEvent
+const ModContentLoadEvent = Packages.mindustry.game.EventType.ModContentLoadEvent
+const AtlasPackEvent = Packages.mindustry.game.EventType.AtlasPackEvent
 const ContentInitEvent = Packages.mindustry.game.EventType.ContentInitEvent
 const BlockInfoEvent = Packages.mindustry.game.EventType.BlockInfoEvent
-const CoreItemDeliverEvent = Packages.mindustry.game.EventType.CoreItemDeliverEvent
-const TurretAmmoDeliverEvent = Packages.mindustry.game.EventType.TurretAmmoDeliverEvent
 const LineConfirmEvent = Packages.mindustry.game.EventType.LineConfirmEvent
 const TurnEvent = Packages.mindustry.game.EventType.TurnEvent
 const WaveEvent = Packages.mindustry.game.EventType.WaveEvent
