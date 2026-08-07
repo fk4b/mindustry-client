@@ -114,9 +114,9 @@ public class TrashDialog extends BaseDialog {
             tas.check("@client.setting.circleassist.name", Core.settings.getBool("circleassist"), b -> Core.settings.put("circleassist", b)).row();
             //tas.check("@setting.assistbutnuance.name", Core.settings.getBool("assistbutnuance"), b -> Core.settings.put("assistbutnuance", b)).row();
 
-            // Orbit shape: circle / square / star
+            // Orbit / route shape: circle, square, star, hold, line, figure8
             tas.table(shapes -> {
-                shapes.add("@client.fdtrash.circleassistshape").minWidth(180).left().padRight(8);
+                shapes.add("@client.fdtrash.circleassistshape").minWidth(180).left().padRight(8).row();
                 ButtonGroup<TextButton> group = new ButtonGroup<>();
                 group.setMinCheckCount(1);
                 group.setMaxCheckCount(1);
@@ -124,13 +124,25 @@ public class TrashDialog extends BaseDialog {
                 String[][] opts = {
                     {"circle", "@client.fdtrash.shape.circle"},
                     {"square", "@client.fdtrash.shape.square"},
-                    {"star", "@client.fdtrash.shape.star"}
+                    {"star", "@client.fdtrash.shape.star"},
+                    {"hold", "@client.fdtrash.shape.hold"},
+                    {"line", "@client.fdtrash.shape.line"},
+                    {"figure8", "@client.fdtrash.shape.figure8"}
                 };
-                for(String[] opt : opts){
-                    String key = opt[0];
-                    shapes.button(opt[1], Styles.togglet, () -> Core.settings.put("circleassistshape", key))
-                        .group(group).checked(key.equals(current)).size(90f, 32f).padRight(4);
-                }
+                shapes.table(row1 -> {
+                    for(int i = 0; i < 3; i++){
+                        String key = opts[i][0];
+                        row1.button(opts[i][1], Styles.togglet, () -> Core.settings.put("circleassistshape", key))
+                            .group(group).checked(key.equals(current)).size(90f, 32f).padRight(4);
+                    }
+                }).left().row();
+                shapes.table(row2 -> {
+                    for(int i = 3; i < opts.length; i++){
+                        String key = opts[i][0];
+                        row2.button(opts[i][1], Styles.togglet, () -> Core.settings.put("circleassistshape", key))
+                            .group(group).checked(key.equals(current)).size(90f, 32f).padRight(4);
+                    }
+                }).left();
             }).left().row();
 
             // Negative speed = clockwise orbit, positive = counter-clockwise

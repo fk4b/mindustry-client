@@ -22,7 +22,8 @@ import kotlin.math.max
 
 /**
  * Follow / assist another player.
- * Circle assist supports reverse speed (negative = clockwise) and orbit shapes: circle / square / star.
+ * Circle assist: reverse speed (negative = clockwise) and routes:
+ * circle / square / star / hold / line / figure8.
  */
 class AssistPath(
     val assisting: Player?,
@@ -44,21 +45,51 @@ class AssistPath(
         private var lastAssisted: String? = null
 
         enum class OrbitShape {
-            circle, square, star;
+            /** Classic circular orbit. */
+            circle,
+            /** Square orbit (chebyshev projection of circle). */
+            square,
+            /** 5-point star orbit. */
+            star,
+            /** Stay fixed behind the assisted unit (no orbit motion needed). */
+            hold,
+            /** Walk back and forth along the unit's facing line. */
+            line,
+            /** Figure-8 (lemniscate) around the assisted unit. */
+            figure8;
 
             companion object {
                 fun fromSetting(): OrbitShape {
                     val raw = Core.settings.getString("circleassistshape", "circle")
                         ?.lowercase(Locale.ROOT)
+                        ?.replace("-", "")
+                        ?.replace("_", "")
                         ?: "circle"
-                    return entries.find { it.name == raw } ?: circle
+                    // aliases
+                    val key = when (raw) {
+                        "8", "eight", "fig8", "figureeight", "lemniscate" -> "figure8"
+                        "holdpos", "stay" -> "hold"
+                        "lines", "patrol" -> "line"
+                        else -> raw
+                    }
+                    return entries.find { it.name.equals(key, ignoreCase = true) } ?: circle
                 }
             }
         }
 
-        /** Offset on the orbit path for the current shape. */
-        fun orbitOffset(theta: Float, radius: Float, shape: OrbitShape = OrbitShape.fromSetting(), out: Vec2 = Vec2()): Vec2 {
+        /**
+         * Offset on the assist route for the current shape.
+         * @param facingDeg assisted unit rotation in degrees (used by hold/line)
+         */
+        fun orbitOffset(
+            theta: Float,
+            radius: Float,
+            shape: OrbitShape = OrbitShape.fromSetting(),
+            out: Vec2 = Vec2(),
+            facingDeg: Float = 0f
+        ): Vec2 {
             if (radius <= 0f) return out.setZero()
+            val face = facingDeg * Mathf.degRad
             return when (shape) {
                 OrbitShape.circle -> out.set(Mathf.cos(theta) * radius, Mathf.sin(theta) * radius)
                 OrbitShape.square -> {
@@ -79,6 +110,25 @@ class AssistPath(
                     out.set(
                         Mathf.lerp(Mathf.cos(ang(i0)) * rad(i0), Mathf.cos(ang(i1)) * rad(i1), f),
                         Mathf.lerp(Mathf.sin(ang(i0)) * rad(i0), Mathf.sin(ang(i1)) * rad(i1), f)
+                    )
+                }
+                // Fixed position behind the assisted unit
+                OrbitShape.hold -> out.set(-Mathf.cos(face) * radius, -Mathf.sin(face) * radius)
+                // Patrol along facing axis: -radius … +radius
+                OrbitShape.line -> {
+                    val along = Mathf.sin(theta) * radius
+                    out.set(Mathf.cos(face) * along, Mathf.sin(face) * along)
+                }
+                // Lemniscate of Gerono (∞), rotated to unit facing
+                OrbitShape.figure8 -> {
+                    val s = Mathf.sin(theta)
+                    val c = Mathf.cos(theta)
+                    val lx = s * radius
+                    val ly = s * c * radius
+                    // rotate local (lx, ly) by facing
+                    out.set(
+                        lx * Mathf.cos(face) - ly * Mathf.sin(face),
+                        lx * Mathf.sin(face) + ly * Mathf.cos(face)
                     )
                 }
             }
@@ -125,9 +175,12 @@ class AssistPath(
         assisting?.unit() ?: return
 
         if (circling) {
-            // Negative speed = clockwise, positive = counter-clockwise
-            theta += Time.delta / 60f * Core.settings.getFloat("circleassistspeed", 0f) * Mathf.PI2
-            theta = Mathf.mod(theta, Mathf.PI2)
+            // hold does not need phase motion; other routes advance theta
+            // Negative speed = clockwise / reverse patrol direction
+            if (OrbitShape.fromSetting() != OrbitShape.hold) {
+                theta += Time.delta / 60f * Core.settings.getFloat("circleassistspeed", 0f) * Mathf.PI2
+                theta = Mathf.mod(theta, Mathf.PI2)
+            }
         }
 
         aStarTolerance = assisting.unit().hitSize * Core.settings.getFloat("assistdistance", 5f) + tilesize * 5
@@ -197,7 +250,12 @@ class AssistPath(
         unit.lookAt(lookPos)
 
         if (circling && orbitRadius > 0f) {
-            orbitOffset(theta, orbitRadius, out = orbitPos)
+            orbitOffset(
+                theta,
+                orbitRadius,
+                out = orbitPos,
+                facingDeg = assisting.unit().rotation
+            )
         } else {
             orbitPos.setZero()
         }
@@ -243,7 +301,16 @@ class AssistPath(
     override fun draw() {
         assisting ?: return
         if (type != Type.FreeMove && player.dst(assisting) > aStarTolerance) waypoints.draw()
-        if (Spectate.pos != assisting) assisting.unit().drawBuildPlans()
+        // Draw build plans of the assisted unit when not already spectating them
+        if (Spectate.pos != assisting) {
+            try {
+                @Suppress("UNCHECKED_CAST")
+                val m = assisting.unit().javaClass.methods.find { it.name == "drawBuildPlans" && it.parameterCount == 0 }
+                m?.invoke(assisting.unit())
+            } catch (_: Throwable) {
+                // optional UI hook; missing on some unit types
+            }
+        }
     }
 
     override fun progress(): Float {

@@ -119,11 +119,14 @@ allprojects{
             def output = 'en\n'
             def bundles = new File(project(':core').projectDir, 'assets/bundles/')
             bundles.listFiles().each{ other ->
-                if(other.name == "bundle.properties") return
-                output += other.name.substring("bundle".length() + 1, other.name.lastIndexOf('.')) + "\n"
+                // only locale bundles: bundle_xx.properties (skip bundle.properties, global.properties, etc.)
+                if(!other.name.startsWith("bundle_") || !other.name.endsWith(".properties")) return
+                def mid = other.name.substring("bundle_".length(), other.name.lastIndexOf('.'))
+                if(mid) output += mid + "\n"
             }
             new File(project(':core').projectDir, 'assets/locales').text = output
-            new File(project(':core').projectDir, 'assets/basepartnames').text = new File(project(':core').projectDir, 'assets/baseparts/').list().join("\n")
+            def baseparts = new File(project(':core').projectDir, 'assets/baseparts/')
+            new File(project(':core').projectDir, 'assets/basepartnames').text = baseparts.exists() ? baseparts.list().join("\n") : ""
         }
 
         writeVersion = {

@@ -370,14 +370,21 @@ fun setupCommands() {
         }
     }
 
-    register("assistshape [circle/square/star]", Core.bundle.get("client.command.assistshape.description")) { args, player ->
+    register("assistshape [shape]", Core.bundle.get("client.command.assistshape.description")) { args, player ->
         val options = AssistPath.Companion.OrbitShape.entries.joinToString("/") { it.name }
         if (args.isEmpty()) {
             val current = Core.settings.getString("circleassistshape", "circle")
             player.sendMessage(Core.bundle.format("client.command.assistshape.lookup", current, options))
         } else {
-            val raw = args[0].lowercase()
-            val shape = AssistPath.Companion.OrbitShape.entries.find { it.name == raw }
+            // reuse OrbitShape.fromSetting aliases by temporarily writing candidate
+            val raw = args[0].lowercase().replace("-", "").replace("_", "")
+            val key = when (raw) {
+                "8", "eight", "fig8", "figureeight", "lemniscate" -> "figure8"
+                "holdpos", "stay" -> "hold"
+                "lines", "patrol" -> "line"
+                else -> raw
+            }
+            val shape = AssistPath.Companion.OrbitShape.entries.find { it.name.equals(key, ignoreCase = true) }
             if (shape == null) {
                 player.sendMessage(Core.bundle.format("client.command.assistshape.invalid", options))
             } else {
