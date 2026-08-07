@@ -51,10 +51,6 @@ import mindustry.world.blocks.units.UnitFactory;
 import arc.struct.Seq;
 
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-
 import static arc.Core.*;
 import static mindustry.Vars.*;
 
@@ -116,8 +112,6 @@ public class PanelFragment extends Table{
     boolean isCrisisMode = false;
     Seq<Item> crisisItems = new Seq<>();
     public static float crisisThreshold = 0.10f;
-    String temp_name = Core.settings.getString("mynickshifter", "nani");
-
 
     public PanelFragment(){ //Основной класс
 
@@ -160,12 +154,6 @@ public class PanelFragment extends Table{
                 }
             }, 5f);
 
-            Timer.schedule(()->{
-                if (net.client() && Core.settings.getBool("shift_nick", false)){
-                    temp_name = shiftColorsRight(temp_name);
-                    Call.sendChatMessage("/name " + temp_name);
-                }
-            }, 60f, 300f);
             rebuild();
             autoMiningActive = false;
             minecopper = true; minelead = true; minetitan = true;
@@ -215,55 +203,6 @@ public class PanelFragment extends Table{
         });
     }
 
-    public static String shiftColorsRight(String input) {
-        if (input == null || input.isEmpty()) {
-            return input;
-        }
-
-        List<String> colors = new ArrayList<>();
-        List<String> texts = new ArrayList<>();
-        StringBuilder currentText = new StringBuilder();
-
-        int i = 0;
-        int len = input.length();
-        while (i < len) {
-            // Ищем начало тега цвета: "[#"
-            if (input.charAt(i) == '[' && i + 2 < len && input.charAt(i + 1) == '#') {
-                int endBracket = input.indexOf(']', i + 2);
-                if (endBracket != -1) {
-                    // Нашли валидный тег [#...]
-                    colors.add(input.substring(i, endBracket + 1));
-                    texts.add(currentText.toString());
-                    currentText.setLength(0); // Очищаем буфер для следующего сегмента текста
-                    i = endBracket + 1;
-                    continue;
-                }
-            }
-            // Обычный символ
-            currentText.append(input.charAt(i));
-            i++;
-        }
-        // Добавляем остаток текста после последнего цвета
-        texts.add(currentText.toString());
-
-        // Если цветов 0 или 1, сдвигать нечего
-        if (colors.size() <= 1) {
-            return input;
-        }
-
-        // Циклический сдвиг коллекции вправо на 1 позицию
-        Collections.rotate(colors, 1);
-
-        // Собираем строку обратно, чередуя сдвинутые цвета и исходные тексты
-        StringBuilder result = new StringBuilder(input.length());
-        result.append(texts.get(0)); // Текст до первого цвета (обычно пустой)
-        for (int k = 0; k < colors.size(); k++) {
-            result.append(colors.get(k));
-            result.append(texts.get(k + 1));
-        }
-
-        return result.toString();
-    }
 
     public static void startInit() {
         mindustry.client.fallen.ActivityLogger.init();
@@ -588,14 +527,6 @@ public class PanelFragment extends Table{
                 t.button(Icon.boxSmall, sstylet, () -> {
                     Core.settings.put("coreitems", !Core.settings.getBool("coreitems"));
                 }).update(i -> i.setChecked(Core.settings.getBool("coreitems"))).name("coreitems").tooltip("@client.fdpanel.coreitems");
-
-                t.row();
-
-                t.button(Icon.warningSmall, sstylet, () -> {
-                    temp_name = shiftColorsRight(Core.settings.getString("mynickshifter", "nani"));
-                    Core.settings.put("shift_nick", !Core.settings.getBool("shift_nick"));
-                }).update(i -> i.setChecked(Core.settings.getBool("shift_nick", false))).name("shift_nick").tooltip("@client.fdpanel.shiftnick");
-
 
 //                t.button(Icon.mapSmall, sstylet, () -> {
 //                    triEnabled = !triEnabled;

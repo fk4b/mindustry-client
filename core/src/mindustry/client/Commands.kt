@@ -370,6 +370,23 @@ fun setupCommands() {
         }
     }
 
+    register("assistshape [circle/square/star]", Core.bundle.get("client.command.assistshape.description")) { args, player ->
+        val options = AssistPath.Companion.OrbitShape.entries.joinToString("/") { it.name }
+        if (args.isEmpty()) {
+            val current = Core.settings.getString("circleassistshape", "circle")
+            player.sendMessage(Core.bundle.format("client.command.assistshape.lookup", current, options))
+        } else {
+            val raw = args[0].lowercase()
+            val shape = AssistPath.Companion.OrbitShape.entries.find { it.name == raw }
+            if (shape == null) {
+                player.sendMessage(Core.bundle.format("client.command.assistshape.invalid", options))
+            } else {
+                Core.settings.put("circleassistshape", shape.name)
+                player.sendMessage(Core.bundle.format("client.command.assistshape.success", shape.name))
+            }
+        }
+    }
+
     register("clearghosts [c]", Core.bundle.get("client.command.clearghosts.description")) { args, player -> 
         val confirmed = args.any() && args[0].startsWith("c") // Don't clear by default
         val all = confirmed && isDeveloper() && args[0] == "clear"

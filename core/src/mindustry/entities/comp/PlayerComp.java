@@ -300,8 +300,8 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
     public void draw(){
         if(unit != null && unit.inFogTo(Vars.player.team())) return;
 
-        //??????
-        if(name == null) return;
+        // Null/empty names and bad color markup must never crash the client.
+        if(name == null || name.isEmpty()) return;
 
         Draw.z(Layer.playerName);
         float z = Drawf.text();
@@ -312,52 +312,55 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         final float textHeight = 15;
 
         boolean ints = font.usesIntegerPositions();
-        font.setUseIntegerPositions(false);
-        font.getData().setScale(0.25f / Scl.scl(1f));
-        layout.setText(font, name);
+        try{
+            font.setUseIntegerPositions(false);
+            font.getData().setScale(0.25f / Scl.scl(1f));
+            layout.setText(font, name);
 
-        if(!isLocal() && UnitType.alpha > 0){
-            Draw.color(0f, 0f, 0f, 0.3f);
-            Fill.rect(unit.x, unit.y + nameHeight - layout.height / 2, layout.width + 2, layout.height + 3);
-            Draw.color();
-            font.setColor(color);
-            font.draw(name, unit.x, unit.y + nameHeight, 0, Align.center, false);
+            if(!isLocal() && UnitType.alpha > 0){
+                Draw.color(0f, 0f, 0f, 0.3f);
+                Fill.rect(unit.x, unit.y + nameHeight - layout.height / 2, layout.width + 2, layout.height + 3);
+                Draw.color();
+                font.setColor(color);
+                font.draw(name, unit.x, unit.y + nameHeight, 0, Align.center, false);
 
-            if(admin){
-                float s = 3f;
-                Draw.color(color.r * 0.5f, color.g * 0.5f, color.b * 0.5f, 1f);
-                Draw.rect(Icon.adminSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1.5f, s, s);
-                Draw.color(color);
-                Draw.rect(Icon.adminSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1f, s, s);
-            }else if(fooUser){
-                float s = 3f;
-                Draw.color(color.r * 0.5f, color.g * 0.5f, color.b * 0.5f, 1f);
-                Draw.rect(Icon.wrenchSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1.5f, s, s);
-                Draw.color(color);
-                Draw.rect(Icon.wrenchSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1f, s, s);
+                if(admin){
+                    float s = 3f;
+                    Draw.color(color.r * 0.5f, color.g * 0.5f, color.b * 0.5f, 1f);
+                    Draw.rect(Icon.adminSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1.5f, s, s);
+                    Draw.color(color);
+                    Draw.rect(Icon.adminSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1f, s, s);
+                }else if(fooUser){
+                    float s = 3f;
+                    Draw.color(color.r * 0.5f, color.g * 0.5f, color.b * 0.5f, 1f);
+                    Draw.rect(Icon.wrenchSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1.5f, s, s);
+                    Draw.color(color);
+                    Draw.rect(Icon.wrenchSmall.getRegion(), unit.x + layout.width / 2f + 2 + 1, unit.y + nameHeight - 1f, s, s);
+                }
             }
+
+            if(Core.settings.getBool("playerchat") && ((textFadeTime > 0 && lastText != null) || typing) && UnitType.alpha > 0){
+                String text = textFadeTime <= 0 || lastText == null ? "[lightgray]" + Strings.animated(Time.time, 4, 15f, ".") : lastText;
+                float width = 100f;
+                float visualFadeTime = 1f - Mathf.curve(1f - textFadeTime, 0.9f);
+                font.setColor(1f, 1f, 1f, textFadeTime <= 0 || lastText == null ? 1f : visualFadeTime);
+
+                layout.setText(font, text, Color.white, width, Align.bottom, true);
+
+                Draw.color(0f, 0f, 0f, 0.3f * (textFadeTime <= 0 || lastText == null ? 1f : visualFadeTime));
+                Fill.rect(unit.x, unit.y + textHeight + layout.height - layout.height / 2f, layout.width + 2, layout.height + 3);
+                font.draw(text, unit.x - width / 2f, unit.y + textHeight + layout.height, width, Align.center, true);
+            }
+        }catch(Throwable ignored){
+            // Font/layout failures (null text, markup bugs, pool glitches) must not kill the process.
+        }finally{
+            Draw.reset();
+            Pools.free(layout);
+            font.getData().setScale(1f);
+            font.setColor(Color.white);
+            font.setUseIntegerPositions(ints);
+            Draw.z(z);
         }
-
-        if(Core.settings.getBool("playerchat") && ((textFadeTime > 0 && lastText != null) || typing) && UnitType.alpha > 0){
-            String text = textFadeTime <= 0 || lastText == null ? "[lightgray]" + Strings.animated(Time.time, 4, 15f, ".") : lastText;
-            float width = 100f;
-            float visualFadeTime = 1f - Mathf.curve(1f - textFadeTime, 0.9f);
-            font.setColor(1f, 1f, 1f, textFadeTime <= 0 || lastText == null ? 1f : visualFadeTime);
-
-            layout.setText(font, text, Color.white, width, Align.bottom, true);
-
-            Draw.color(0f, 0f, 0f, 0.3f * (textFadeTime <= 0 || lastText == null ? 1f : visualFadeTime));
-            Fill.rect(unit.x, unit.y + textHeight + layout.height - layout.height / 2f, layout.width + 2, layout.height + 3);
-            font.draw(text, unit.x - width / 2f, unit.y + textHeight + layout.height, width, Align.center, true);
-        }
-
-        Draw.reset();
-        Pools.free(layout);
-        font.getData().setScale(1f);
-        font.setColor(Color.white);
-        font.setUseIntegerPositions(ints);
-
-        Draw.z(z);
     }
 
     /** @return name with a markup color prefix */
