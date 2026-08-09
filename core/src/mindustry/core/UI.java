@@ -22,6 +22,7 @@ import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.client.claj.*;
+import mindustry.client.fallen.*;
 import mindustry.client.navigation.*;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
@@ -51,6 +52,21 @@ public class UI implements ApplicationListener, Loadable{
     public PlayerListFragment listfrag;
     public LoadingFragment loadfrag;
     public HintsFragment hints;
+
+    // FD / fallen client UI
+    public PanelFragment panelfragment;
+    public PlayerBlockListFragment listblockfrag;
+    public HistoryFragment historyFrag;
+    public FavoriteServersFrag favFrag;
+    public TrashDialog trashbase;
+    public MapInfoDialog mapInfoDial;
+    public WaveInfoFrag waveInfoFrag;
+    public MapInfoFrag mapInfoFrag;
+    public LogicUnitControlFrag logicUnitControlFrag;
+    public ProductionAnalyzerFrag prodAnalyzer;
+    public LogicSearchFrag logicSearchFrag;
+    public QuickSchemFrag quickSchemFrag;
+    public PerformanceFragment perffrag;
 
     public WidgetGroup menuGroup, hudGroup;
 
@@ -189,6 +205,19 @@ public class UI implements ApplicationListener, Loadable{
         listfrag = new PlayerListFragment();
         loadfrag = new LoadingFragment();
         consolefrag = new ConsoleFragment();
+        panelfragment = new PanelFragment();
+        listblockfrag = new PlayerBlockListFragment();
+        historyFrag = new HistoryFragment();
+        favFrag = new FavoriteServersFrag();
+        trashbase = new TrashDialog();
+        mapInfoDial = new MapInfoDialog();
+        waveInfoFrag = new WaveInfoFrag();
+        mapInfoFrag = new MapInfoFrag();
+        logicUnitControlFrag = new LogicUnitControlFrag();
+        prodAnalyzer = new ProductionAnalyzerFrag();
+        logicSearchFrag = new LogicSearchFrag();
+        quickSchemFrag = new QuickSchemFrag();
+        perffrag = new PerformanceFragment();
 
         picker = new ColorPicker();
         effects = new EffectsDialog();
@@ -244,6 +273,21 @@ public class UI implements ApplicationListener, Loadable{
         listfrag.build(hudGroup);
         consolefrag.build(hudGroup);
         loadfrag.build(group);
+        panelfragment.build(hudGroup);
+        listblockfrag.build(hudGroup);
+        historyFrag.build(hudGroup);
+        waveInfoFrag.build(hudGroup);
+        mapInfoFrag.build(hudGroup);
+        logicUnitControlFrag.build(hudGroup);
+        prodAnalyzer.build(hudGroup);
+        logicSearchFrag.build(hudGroup);
+        favFrag.build(hudGroup);
+        quickSchemFrag.build(hudGroup);
+
+        // Mining AI + other FD inits
+        PanelFragment.startInit();
+
+        perffrag.build(group);
         new FadeInFragment().build(group);
     }
 

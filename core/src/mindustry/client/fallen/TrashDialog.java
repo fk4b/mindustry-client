@@ -237,7 +237,8 @@ public class TrashDialog extends BaseDialog {
             addSlider(tt, "@client.fdtrash.crisisThreshold", 1f, 50f, 1f,
                     PanelFragment.crisisThreshold * 100,
                     v -> {
-                        PanelFragment.crisisThreshold = v/100;
+                        PanelFragment.crisisThreshold = v / 100f;
+                        Core.settings.put("fd-crisisThreshold", PanelFragment.crisisThreshold);
                     }, " %");
             tt.check("@client.fdtrash.mineMonos", PanelFragment.mineMonos, b -> PanelFragment.mineMonos = b).row();
             tt.check("@client.fdtrash.minePolys", PanelFragment.minePolys, b -> PanelFragment.minePolys = b).row();
@@ -245,6 +246,11 @@ public class TrashDialog extends BaseDialog {
             tt.check("@client.fdtrash.mineQuazs", PanelFragment.mineQuazs, b -> PanelFragment.mineQuazs = b).row();
             tt.check("@client.fdtrash.mineMegas", PanelFragment.mineMegas, b -> PanelFragment.mineMegas = b).row();
             tt.check("@client.fdtrash.megaAutoHeal", PanelFragment.autoHealMegas, b -> PanelFragment.autoHealMegas = b).row();
+
+            tt.check("@client.fdtrash.autoAssistBuild", MinersFDAI.autoAssistBuild, MinersFDAI::setAutoAssistBuild).row();
+            tt.check("@client.fdtrash.respectManual", MinersFDAI.respectManualCommands, MinersFDAI::setRespectManualCommands).row();
+            tt.check("@client.fdtrash.resetDisabledUnits", MinersFDAI.resetDisabledUnits, MinersFDAI::setResetDisabledUnits).row();
+
             addSlider(tt, "@client.fdtrash.megadistheal", 10, 500, 10,
                     PanelFragment.autoHealDist,
                     v -> {
@@ -256,8 +262,11 @@ public class TrashDialog extends BaseDialog {
                     v -> {
                         PanelFragment.AIMiningUpdateTime = v.intValue();
                         Core.settings.put("AIUpTime", v.intValue());
-                    }, " x");
+                    }, " s");
 
+            addSlider(tt, "@client.fdtrash.helprad", 1, 50, 1,
+                    MinersFDAI.AIHelpRad,
+                    MinersFDAI::setHelpRad, " tile");
 
         }).left().row();
 

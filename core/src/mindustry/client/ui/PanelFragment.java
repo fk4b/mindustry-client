@@ -57,7 +57,8 @@ import static mindustry.Vars.*;
 public class PanelFragment extends Table{
     public Table fdpanel; //Создание интерфейса дял кнопок
     public static Seq<Item> itemtomine = new Seq<>(); //Создание выборки для копания
-    private static boolean minecopper = false, minelead = false, minetitan = false,
+    /** Resource flags for mining AI (public for MinersFDAI / settings). */
+    public static boolean minecopper = false, minelead = false, minetitan = false,
             minesand = false, minecoal = false, minescrap = false;
     private static boolean mineBerylliumwall, mineGraphiticwall;
     private float brokenFade = 0f;
@@ -98,8 +99,6 @@ public class PanelFragment extends Table{
     public static final Seq<Unit> followers = new Seq<>();
     private static int syncTimer = 0;
 
-    private boolean autoMiningActive = false;
-    private Interval miningTimer = new Interval();
     public static boolean mineMonos = true;
     public static boolean minePolys = false;
     public static boolean minePulss = true;
@@ -109,11 +108,11 @@ public class PanelFragment extends Table{
     public static float autoHealDist = 50f;
     public static int minUnitsPerResource = 1;
     public static int AIMiningUpdateTime = Core.settings.getInt("AIUpTime", 10);
-    boolean isCrisisMode = false;
-    Seq<Item> crisisItems = new Seq<>();
     public static float crisisThreshold = 0.10f;
 
     public PanelFragment(){ //Основной класс
+        // Ensure mining AI listeners are registered even if startInit order changes
+        MinersFDAI.init();
 
         Events.run(Trigger.update, () -> {
             if(!Vars.state.isMenu()) {
@@ -155,7 +154,7 @@ public class PanelFragment extends Table{
             }, 5f);
 
             rebuild();
-            autoMiningActive = false;
+            // MinersFDAI resets itself on WorldLoadEvent
             minecopper = true; minelead = true; minetitan = true;
             mineBerylliumwall = true; mineGraphiticwall = true;
             //minesand = false; minecoal = false;
@@ -207,6 +206,7 @@ public class PanelFragment extends Table{
     public static void startInit() {
         mindustry.client.fallen.ActivityLogger.init();
         mindustry.client.fallen.FdLogicQol.init();
+        mindustry.client.fallen.MinersFDAI.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -244,19 +244,11 @@ public class PanelFragment extends Table{
                     tb.button(Icon.wrenchSmall, sstylet, ()->{minePolys = !minePolys;}).tooltip("@client.fdpanel.minepolys").update(i -> i.setChecked(minePolys)).width(settings.getInt("buttonsizefdpamel", 30)).height(settings.getInt("buttonsizefdpamel", 30) / 2f);
                     tb.row();
 
-                    tb.button(Icon.modeSurvivalSmall, sstylet, () -> {
-                                autoMiningActive = !autoMiningActive;
-                                if (autoMiningActive) {
-                                    autoAssignMiningUnitsEqually();
-                                }
-                            }).update(b -> {
-                                b.setChecked(autoMiningActive);
-
-                                b.getImage().setColor(autoMiningActive ? Color.cyan : Color.white);
-
-                                if (autoMiningActive && miningTimer.get(AIMiningUpdateTime*60f)) {
-                                    autoAssignMiningUnitsEqually();
-                                }
+                    tb.button(Icon.modeSurvivalSmall, sstylet, MinersFDAI::toggle)
+                            .update(b -> {
+                                boolean on = MinersFDAI.autoMiningActive;
+                                b.setChecked(on);
+                                b.getImage().setColor(on ? Color.cyan : Color.white);
                             }).tooltip("@client.fdpanel.automine")
                             .width(settings.getInt("buttonsizefdpamel", 30))
                             .height(settings.getInt("buttonsizefdpamel", 30) / 2f);
@@ -312,10 +304,24 @@ public class PanelFragment extends Table{
 
                 });
 
-                t.button(Icon.distributionSmall, sstyle, () -> {
-                    currentfollowmode = 3;
-                    Navigation.follow(new RepairPath(), true);
-                }).name("healer").tooltip("@client.fdpanel.heal");
+                // Heal (top) + AI build-assist toggle (bottom) — same cell size as other full buttons
+                t.table(tb -> {
+                    float sz = settings.getInt("buttonsizefdpamel", 30);
+                    tb.button(Icon.distributionSmall, sstyle, () -> {
+                        currentfollowmode = 3;
+                        Navigation.follow(new RepairPath(), true);
+                    }).name("healer").tooltip("@client.fdpanel.heal")
+                            .width(sz).height(sz / 2f);
+                    tb.row();
+                    tb.button(Icon.hammerSmall, sstylet, () ->
+                                    MinersFDAI.setAutoAssistBuild(!MinersFDAI.autoAssistBuild))
+                            .update(b -> {
+                                boolean on = MinersFDAI.autoAssistBuild;
+                                b.setChecked(on);
+                                b.getImage().setColor(on ? Color.acid : Color.white);
+                            }).name("aiassistbuild").tooltip("@client.fdpanel.assistbuild")
+                            .width(sz).height(sz / 2f);
+                });
 
                 t.button(Icon.distributionSmall, sstyle, () -> {
                     currentfollowmode = 2;
@@ -577,300 +583,11 @@ public class PanelFragment extends Table{
         });
     }
 
+    /** Delegates to {@link MinersFDAI} (kept for any external call sites). */
     private void autoAssignMiningUnitsEqually() {
-        if (player.unit() == null) return;
-        Building core = player.team().core();
-        if (core == null || player.unit() == null) return;
-
-        // --- Проверка режима починки ---
-        boolean needsRepairNearCore = false;
-
-        if(autoHealMegas){
-            for(Building ncore : player.team().cores()){
-                if(ncore == null) return;
-                Building nearest = Units.findDamagedTile(player.team(), ncore.x, ncore.y);
-                if(nearest != null && nearest.dst(ncore)/8f < autoHealDist){
-                    //Log.info("Core at ( @, @) at dist: ", ncore.x()/8, ncore.y()/8);
-                    //Log.info("Nearest : @ at ( @, @) at dist: @ when dist: @ ", nearest, nearest.x()/8, nearest.y()/8, nearest.dst(ncore), autoHealDist);
-                    needsRepairNearCore = true;
-                    break;
-                }
-            }
-        }
-        int megaCounter = 0; // Счетчик для разделения Мег пополам
-
-
-        int capacity = core.core().storageCapacity;
-
-
-        // 1. Считаем веса ресурсов (спрос ядра)
-        Item[] items = {Items.copper, Items.lead, Items.titanium, Items.sand, Items.coal, Items.scrap};
-        boolean[] flags = {minecopper, minelead, minetitan, minesand, minecoal, minescrap};
-        ObjectMap<Item, Float> itemWeights = new ObjectMap<>();
-        Seq<Item> allEnabled = new Seq<>();
-        float totalWeight = 0;
-
-        for(int i = 0; i < items.length; i++){
-            if(!flags[i]) continue;
-            Item it = items[i];
-            allEnabled.add(it);
-            float progress = (float)core.items.get(it) / capacity;
-            float weight = Math.max(0.05f, 1.0f - progress);
-            if(progress < 0.1f) weight *= 5f;
-            itemWeights.put(it, weight);
-            totalWeight += weight;
-        }
-        if(allEnabled.isEmpty() || totalWeight <= 0) return;
-
-        ObjectMap<Item, IntSeq> toBatchSend = new ObjectMap<>();
-        ObjectMap<UnitType, ObjectMap<Item, Integer>> detailedStats = new ObjectMap<>();
-
-        // ============================================================
-        // 2.5. ГЛОБАЛЬНОЕ ОПРЕДЕЛЕНИЕ КРИЗИСА (ВЫНЕСЕНО ЗА ЦИКЛ)
-        // ============================================================
-
-        // Пороги
-        final float CRITICAL_CORE_THRESHOLD = crisisThreshold / 2f; // для меди/свинца/титана
-        final float NORMAL_CRISIS_THRESHOLD = crisisThreshold; // для остальных
-
-        Seq<Item> globalCrisisItems = new Seq<>();
-        boolean isCriticalCoreCrisis = false;
-
-        // --- УРОВЕНЬ 1: Проверка критических ресурсов (медь, свинец, титан) ---
-        Item[] coreResources = {Items.copper, Items.lead, Items.titanium};
-        for(Item it : coreResources) {
-            if(!allEnabled.contains(it)) continue; // Пропускаем, если ресурс выключен
-
-            float progress = (float)core.items.get(it) / capacity;
-            if(progress < CRITICAL_CORE_THRESHOLD) {
-                globalCrisisItems.add(it);
-                isCriticalCoreCrisis = true;
-            }
-        }
-
-        // --- УРОВЕНЬ 2: Если критического кризиса нет, проверяем все ресурсы ---
-        if(!isCriticalCoreCrisis) {
-            for(Item it : allEnabled) {
-                float progress = (float)core.items.get(it) / capacity;
-                if(progress < NORMAL_CRISIS_THRESHOLD) {
-                    globalCrisisItems.add(it);
-                }
-            }
-        }
-
-        boolean isGlobalCrisis = !globalCrisisItems.isEmpty();
-
-        // 2. Группируем юнитов по типам
-        ObjectMap<UnitType, Seq<Unit>> unitGroups = new ObjectMap<>();
-        for(Unit u : Groups.unit){
-            if(u.team != player.team() || !u.isCommandable()) continue;
-            if(u.type == UnitTypes.mono && !mineMonos) continue;
-            if(u.type == UnitTypes.poly && !minePolys) continue;
-            //if(u.type == UnitTypes.mega && !mineMegas) continue;
-            if(u.type == UnitTypes.pulsar && !minePulss) continue;
-            if(u.type == UnitTypes.quasar && !mineQuazs) continue;
-
-            if(u.type == UnitTypes.mega){
-                if(!mineMegas) continue;
-
-                megaCounter++;
-
-                if(autoHealMegas && needsRepairNearCore && (!isGlobalCrisis || megaCounter % 2 == 0)){
-
-                    if(u.controller() instanceof CommandAI cai && cai.command != UnitCommand.repairCommand){
-                        Call.setUnitCommand(player, new int[]{u.id}, UnitCommand.repairCommand);
-                    }
-
-                    continue; // Отправляем хилить, в майнинг не пускаем
-                }
-            }
-
-            if(u.type.mineTier > 0){
-                if(!unitGroups.containsKey(u.type)) unitGroups.put(u.type, new Seq<>());
-                unitGroups.get(u.type).add(u);
-            }
-        }
-        if(unitGroups.isEmpty()) return;
-
-        // 3. ОБРАБОТКА КАЖДОЙ ГРУППЫ (Моно, Мега и т.д.)
-        for(var entry : unitGroups.entries()){
-            UnitType type = entry.key;
-            Seq<Unit> units = entry.value;
-            if(!detailedStats.containsKey(type)) detailedStats.put(type, new ObjectMap<>());
-
-            // Список того, что этот тип может копать
-            Seq<Item> possible = allEnabled.select(it -> type.mineTier >= it.hardness);
-            if(possible.isEmpty()) continue;
-
-            // --- ЛОГИКА КРИЗИСА ДЛЯ ГРУППЫ ---
-            Seq<Item> targets = possible; // По умолчанию целимся во всё доступное
-            boolean isCrisisMode = false;
-
-            if(isGlobalCrisis) {
-                // Если в мире кризис, проверяем, можем ли мы помочь
-                Seq<Item> myCrisisTargets = new Seq<>();
-                for(Item it : globalCrisisItems) {
-                    if(possible.contains(it)) {
-                        myCrisisTargets.add(it);
-                    }
-                }
-
-                if(!myCrisisTargets.isEmpty()) {
-                    // МЫ МОЖЕМ ПОМОЧЬ! Включаем кризис-режим
-                    targets = myCrisisTargets;
-                    isCrisisMode = true;
-                }
-                // Если myCrisisTargets пуст — работаем в обычном режиме
-            }
-
-            // Рассчитываем целевое количество юнитов для каждого ресурса (КВОТЫ)
-            ObjectMap<Item, Integer> quotas = new ObjectMap<>();
-            int assignedCount = 0;
-
-            // СЧИТАЕМ ВЕСА ТОЛЬКО ДЛЯ ВЫБРАННЫХ РЕСУРСОВ (targets)
-            float currentTotalWeight = 0;
-            for(Item it : targets) {
-                currentTotalWeight += itemWeights.get(it, 0f);
-            }
-
-            if(currentTotalWeight <= 0) continue; // Защита от деления на 0
-
-            for(Item it : possible) {
-                int target;
-
-                if(isCrisisMode) {
-                    // В КРИЗИСЕ (только для тех, кто может помочь):
-                    if(!targets.contains(it)) {
-                        target = 0;
-                    } else {
-                        // Равномерное распределение + приоритет самым пустым
-                        int baseShare = units.size / targets.size;
-                        int remainder = units.size % targets.size;
-                        int index = targets.indexOf(it);
-
-                        target = baseShare + (index < remainder ? 1 : 0);
-
-                        // Бонус для критически пустых (<10%)
-                        float progress = (float)core.items.get(it) / capacity;
-                        if(progress < 0.1f) target += 1;
-                    }
-                } else {
-                    // В ОБЫЧНОМ РЕЖИМЕ: пропорции + minUnitsPerResource
-                    int baseTarget = Math.round((itemWeights.get(it, 0f) / currentTotalWeight) * units.size);
-                    target = Math.max(minUnitsPerResource, baseTarget);
-                }
-
-                quotas.put(it, target);
-                assignedCount += target;
-            }
-
-            // 5. КОРРЕКТИРОВКА (БАЛАНСИРОВКА)
-            while(assignedCount > units.size) {
-                Item toReduce = possible.max(it -> {
-                    int q = quotas.get(it, 0);
-                    if(q <= 0) return -1f;
-                    return (float)q / itemWeights.get(it, 0.05f);
-                });
-
-                if(toReduce != null) {
-                    quotas.put(toReduce, quotas.get(toReduce, 0) - 1);
-                    assignedCount--;
-                } else break;
-            }
-
-            while(assignedCount < units.size) {
-                Item toBoost = targets.max(it -> itemWeights.get(it, 0f));
-                if(toBoost != null) {
-                    quotas.put(toBoost, quotas.get(toBoost, 0) + 1);
-                    assignedCount++;
-                } else break;
-            }
-            // --- КОНЕЦ РАСЧЁТА КВОТ ---
-
-            // --- ЛОГИКА "ЛИПКОСТИ" ---
-            Seq<Unit> unassignedUnits = new Seq<>();
-
-            // ШАГ 1: Оставляем тех, кто уже на правильном месте
-            for(Unit u : units) {
-                Item currentItem = null;
-                if(u.controller() instanceof CommandAI cai && cai.command == UnitCommand.mineCommand) {
-                    for(Item it : possible) {
-                        if(cai.hasStance(ItemUnitStance.getByItem(it))) {
-                            currentItem = it;
-                            break;
-                        }
-                    }
-                }
-
-                if(currentItem != null && quotas.get(currentItem, 0) > 0) {
-                    quotas.put(currentItem, quotas.get(currentItem, 0) - 1);
-                    detailedStats.get(type).put(currentItem, detailedStats.get(type).get(currentItem, 0) + 1);
-                } else {
-                    unassignedUnits.add(u);
-                }
-            }
-
-            // ШАГ 2: Распределяем оставшихся по свободным квотам
-            for(Unit u : unassignedUnits) {
-                Item bestTarget = possible.max(it -> quotas.get(it, 0));
-
-                if(bestTarget != null && quotas.get(bestTarget, 0) > 0) {
-                    quotas.put(bestTarget, quotas.get(bestTarget, 0) - 1);
-                    detailedStats.get(type).put(bestTarget, detailedStats.get(type).get(bestTarget, 0) + 1);
-
-                    if(!toBatchSend.containsKey(bestTarget)) toBatchSend.put(bestTarget, new IntSeq());
-                    toBatchSend.get(bestTarget).add(u.id);
-                } else {
-                    Item fallback = possible.max(it -> itemWeights.get(it, 0f));
-                    detailedStats.get(type).put(fallback, detailedStats.get(type).get(fallback, 0) + 1);
-
-                    if(!(u.controller() instanceof CommandAI cai && cai.command == UnitCommand.mineCommand && cai.hasStance(ItemUnitStance.getByItem(fallback)))) {
-                        if(!toBatchSend.containsKey(fallback)) toBatchSend.put(fallback, new IntSeq());
-                        toBatchSend.get(fallback).add(u.id);
-                    }
-                }
-            }
-        }
-
-        // 4. Отправка пакетов
-        for(var entry : toBatchSend.entries()){
-            int[] ids = entry.value.toArray();
-            Call.setUnitCommand(player, ids, UnitCommand.mineCommand);
-            Call.setUnitStance(player, ids, UnitStance.mineAuto, false);
-            Call.setUnitStance(player, ids, ItemUnitStance.getByItem(entry.key), true);
-        }
-
-        // 5. Лог с деталями кризиса
-        if(toBatchSend.size > 0) {
-            StringBuilder crisisLog = new StringBuilder();
-            if(isGlobalCrisis) {
-                crisisLog.append("[");
-                for(Item it : globalCrisisItems) {
-                    int amount = core.items.get(it);
-                    float pct = (float)amount / capacity * 100f;
-                    crisisLog.append(it.localizedName)
-                            .append(":")
-                            .append(amount)
-                            .append("(")
-                            .append(Mathf.floor(pct))
-                            .append("%),");
-                }
-                if(crisisLog.length() > 1) crisisLog.setLength(crisisLog.length() - 1); // убрать последнюю запятую
-                crisisLog.append("]");
-            } else {
-                crisisLog.append("NO");
-            }
-
-            //Log.info("--- SAM Mining [Min:@, Crisis:@] Shifting @ units ---", minUnitsPerResource, crisisLog.toString(), toBatchSend.size);
-
-            for(var entry : detailedStats.entries()){
-                StringBuilder sb = new StringBuilder(" > " + entry.key.localizedName + ": [");
-                for(var itemsMap : entry.value.entries()) sb.append(itemsMap.key.localizedName).append(": ").append(itemsMap.value).append(" | ");
-                if(sb.length() > 5) sb.setLength(sb.length() - 3);
-                //Log.info(sb.append("]").toString());
-            }
-        }
+        MinersFDAI.autoAssignMiningUnitsEqually();
     }
+
 
     public void updateTriControl() {
         if (!triEnabled || !Vars.state.isGame() || Vars.player.unit() == null) return;
