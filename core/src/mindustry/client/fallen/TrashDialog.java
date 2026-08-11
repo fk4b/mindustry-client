@@ -245,7 +245,14 @@ public class TrashDialog extends BaseDialog {
             tt.check("@client.fdtrash.minePulss", PanelFragment.minePulss, b -> PanelFragment.minePulss = b).row();
             tt.check("@client.fdtrash.mineQuazs", PanelFragment.mineQuazs, b -> PanelFragment.mineQuazs = b).row();
             tt.check("@client.fdtrash.mineMegas", PanelFragment.mineMegas, b -> PanelFragment.mineMegas = b).row();
-            tt.check("@client.fdtrash.megaAutoHeal", PanelFragment.autoHealMegas, b -> PanelFragment.autoHealMegas = b).row();
+            tt.check("@client.fdtrash.megaAutoHeal", PanelFragment.autoHealMegas, b -> {
+                PanelFragment.autoHealMegas = b;
+                Core.settings.put("fd-megaAutoHeal", b);
+                // Immediate reassign so megas leave/enter heal without waiting for the timer
+                MinersFDAI.forceReassign();
+            }).row();
+
+            tt.check("@client.fdtrash.autoUnitRepair", MinersFDAI.autoUnitRepair, MinersFDAI::setAutoUnitRepair).row();
 
             tt.check("@client.fdtrash.autoAssistBuild", MinersFDAI.autoAssistBuild, MinersFDAI::setAutoAssistBuild).row();
             tt.check("@client.fdtrash.respectManual", MinersFDAI.respectManualCommands, MinersFDAI::setRespectManualCommands).row();
@@ -255,7 +262,15 @@ public class TrashDialog extends BaseDialog {
                     PanelFragment.autoHealDist,
                     v -> {
                         PanelFragment.autoHealDist = v;
+                        Core.settings.put("fd-megaAutoHealDist", v);
                     }, " x");
+
+            addSlider(tt, "@client.fdtrash.unitRepairGoHp", 30, 95, 5,
+                    MinersFDAI.unitRepairGoHp * 100f,
+                    v -> {
+                        MinersFDAI.unitRepairGoHp = v / 100f;
+                        Core.settings.put("fd-unitRepairGoHp", MinersFDAI.unitRepairGoHp);
+                    }, " %");
 
             addSlider(tt, "@client.fdtrash.updatetime", 1, 20, 1,
                     PanelFragment.AIMiningUpdateTime,

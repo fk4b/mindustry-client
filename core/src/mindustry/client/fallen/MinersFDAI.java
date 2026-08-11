@@ -2,6 +2,7 @@ package mindustry.client.fallen;
 
 import arc.Core;
 import arc.Events;
+import arc.math.geom.Vec2;
 import arc.struct.IntSeq;
 import arc.struct.IntSet;
 import arc.struct.ObjectMap;
@@ -24,6 +25,9 @@ import mindustry.gen.Groups;
 import mindustry.gen.Unit;
 import mindustry.type.Item;
 import mindustry.type.UnitType;
+import mindustry.world.blocks.units.RepairTower;
+import mindustry.world.blocks.units.RepairTurret;
+import mindustry.world.meta.BlockFlag;
 
 import static mindustry.Vars.control;
 import static mindustry.Vars.player;
@@ -31,15 +35,25 @@ import static mindustry.Vars.player;
 /**
  * Auto-mining AI for commandable miners (mono/poly/pulsar/mega/quasar).
  * <p>
- * Distributes units by core demand (weights), min quotas, and crisis priorities.
- * Supports mega auto-repair near cores, build-assist near the player, and
- * optional respect for player-issued commands (including ore stance changes).
+ * Distributes units across enabled ores (even base + demand weights).
+ * Item stances are applied exclusively (one ore per unit) — stock Mindustry
+ * does not make ItemUnitStances mutually exclusive, so without clearing others
+ * every unit keeps copper and all dig the same deposit.
+ * Supports mega auto-repair near cores, build-assist near the player,
+ * damaged units flying to base repair turrets then resuming mine,
+ * and optional respect for player-issued commands (including ore stance changes).
  */
 public class MinersFDAI {
     public static boolean autoMiningActive = false;
     public static boolean autoAssistBuild = Core.settings.getBool("AIAssistBuild", false);
     public static boolean respectManualCommands = Core.settings.getBool("AIRespectManual", true);
     public static boolean resetDisabledUnits = Core.settings.getBool("resetDisabledUnits", false);
+    /** Send damaged miners to repair point/turret at base, then back to mining. */
+    public static boolean autoUnitRepair = Core.settings.getBool("fd-autoUnitRepair", true);
+    /** Fraction of max HP below which unit seeks a repair pad (0.8 = 80%). */
+    public static float unitRepairGoHp = Core.settings.getFloat("fd-unitRepairGoHp", 0.80f);
+    /** Fraction of max HP at/above which unit leaves the pad and mines again. */
+    public static float unitRepairDoneHp = Core.settings.getFloat("fd-unitRepairDoneHp", 0.98f);
 
     public static float AIHelpRad = Core.settings.getFloat("AIHelpRad", 10f);
 
@@ -48,6 +62,7 @@ public class MinersFDAI {
 
     private static final Interval miningTimer = new Interval();
     private static final Interval assistTimer = new Interval();
+    private static final Interval unitRepairTimer = new Interval();
 
     /** Last command this AI issued for a unit. */
     private static final ObjectMap<Integer, UnitCommand> lastAiCommand = new ObjectMap<>();
@@ -55,6 +70,21 @@ public class MinersFDAI {
     private static final ObjectMap<Integer, Item> lastAiItem = new ObjectMap<>();
     private static final IntSet manualUnits = new IntSet();
     private static final IntSet assistingUnits = new IntSet();
+    /** Units currently ordered to a repair pad (self-heal), not mining. */
+    private static final IntSet healingUnits = new IntSet();
+    /** Cached repair pads (repair-point / mend projector flag + unit repair tower). */
+    private static final Seq<Building> repairPadCache = new Seq<>();
+    private static final Vec2 tmpMove = new Vec2();
+
+    /** Ores this AI can assign (order used for display / fallback). */
+    private static final Item[] MINE_ITEMS = {
+        Items.copper, Items.lead, Items.titanium, Items.sand, Items.coal, Items.scrap
+    };
+
+    /** Max share of a type-group that may sit on a single non-crisis ore (spread). */
+    private static final float MAX_SINGLE_ORE_SHARE = 0.55f;
+    /** In crisis, at most this share of the fleet goes to crisis ores; rest stay spread. */
+    private static final float CRISIS_FLEET_SHARE = 0.65f;
 
     private static boolean inited = false;
 
@@ -67,6 +97,11 @@ public class MinersFDAI {
         respectManualCommands = Core.settings.getBool("AIRespectManual", true);
         resetDisabledUnits = Core.settings.getBool("resetDisabledUnits", false);
         AIHelpRad = Core.settings.getFloat("AIHelpRad", 10f);
+        autoUnitRepair = Core.settings.getBool("fd-autoUnitRepair", true);
+        unitRepairGoHp = Core.settings.getFloat("fd-unitRepairGoHp", 0.80f);
+        unitRepairDoneHp = Core.settings.getFloat("fd-unitRepairDoneHp", 0.98f);
+        PanelFragment.autoHealMegas = Core.settings.getBool("fd-megaAutoHeal", false);
+        PanelFragment.autoHealDist = Core.settings.getFloat("fd-megaAutoHealDist", 50f);
 
         Events.on(EventType.WorldLoadEvent.class, e -> resetState());
 
@@ -86,6 +121,11 @@ public class MinersFDAI {
 
             pruneDeadUnitIds();
 
+            // Self-heal at base repair pads — more frequent than mining rebalance
+            if (autoUnitRepair && unitRepairTimer.get(45f)) {
+                handleUnitSelfHeal();
+            }
+
             if (autoAssistBuild && assistTimer.get(60f)) {
                 handleAssistNearPlayer();
             }
@@ -104,10 +144,37 @@ public class MinersFDAI {
         forceAssignNext = false;
         manualUnits.clear();
         assistingUnits.clear();
+        healingUnits.clear();
+        repairPadCache.clear();
         lastAiCommand.clear();
         lastAiItem.clear();
         miningTimer.clear();
         assistTimer.clear();
+        unitRepairTimer.clear();
+    }
+
+    public static void setAutoUnitRepair(boolean v) {
+        autoUnitRepair = v;
+        Core.settings.put("fd-autoUnitRepair", v);
+        if (!v) {
+            // Release any units parked at pads back to mining next tick
+            if (!healingUnits.isEmpty()) {
+                IntSeq ids = new IntSeq();
+                healingUnits.each(ids::add);
+                if (ids.size > 0 && player != null) {
+                    Call.setUnitCommand(player, ids.toArray(), UnitCommand.mineCommand);
+                    for (int i = 0; i < ids.size; i++) {
+                        int id = ids.get(i);
+                        lastAiCommand.put(id, UnitCommand.mineCommand);
+                    }
+                }
+                healingUnits.clear();
+                forceAssignNext = true;
+            }
+        } else {
+            forceAssignNext = true;
+            unitRepairTimer.clear();
+        }
     }
 
     public static void setActive(boolean active) {
@@ -117,6 +184,12 @@ public class MinersFDAI {
             forceAssignNext = true;
             miningTimer.clear();
         }
+    }
+
+    /** Force a full reassignment on the next update tick (e.g. after toggling auto-heal). */
+    public static void forceReassign() {
+        forceAssignNext = true;
+        miningTimer.clear();
     }
 
     public static void toggle() {
@@ -145,6 +218,7 @@ public class MinersFDAI {
     }
 
     private static void onActivated() {
+        healingUnits.clear();
         IntSeq toTakeOver = new IntSeq();
         for (Unit u : Groups.unit) {
             if (u.team != player.team() || !u.isCommandable()) continue;
@@ -153,6 +227,7 @@ public class MinersFDAI {
             toTakeOver.add(u.id);
             manualUnits.remove(u.id);
             assistingUnits.remove(u.id);
+            healingUnits.remove(u.id);
             lastAiCommand.remove(u.id);
             lastAiItem.remove(u.id);
         }
@@ -189,6 +264,7 @@ public class MinersFDAI {
 
         pruneSet(manualUnits, alive);
         pruneSet(assistingUnits, alive);
+        pruneSet(healingUnits, alive);
 
         // ObjectMap has no removeIf on keys in older Arc — collect then remove
         IntSeq deadKeys = new IntSeq();
@@ -200,6 +276,177 @@ public class MinersFDAI {
             lastAiCommand.remove(id);
             lastAiItem.remove(id);
         }
+    }
+
+    // ================== Unit self-heal at base repair pads ==================
+
+    /**
+     * Damaged miners fly to the nearest repair-point / mend-projector / unit-repair-tower,
+     * wait until HP is restored, then resume mining (previous ore if known).
+     */
+    private static void handleUnitSelfHeal() {
+        if (player == null || player.unit() == null) return;
+        if (player.team() == null || player.team().core() == null) return;
+
+        refreshRepairPadCache();
+        if (repairPadCache.isEmpty()) {
+            // No pads — free anyone stuck in healing set
+            if (!healingUnits.isEmpty()) {
+                IntSeq free = new IntSeq();
+                healingUnits.each(free::add);
+                healingUnits.clear();
+                resumeMiningAfterHeal(free);
+            }
+            return;
+        }
+
+        IntSeq toSend = new IntSeq();
+        IntSeq toResume = new IntSeq();
+        // pad id → units that need a move order to that pad (batch by position later)
+        ObjectMap<Building, IntSeq> moveBatches = new ObjectMap<>();
+
+        for (Unit u : Groups.unit) {
+            if (u.team != player.team() || !u.isCommandable()) continue;
+            if (!isManagedMinerType(u.type)) continue;
+            if (manualUnits.contains(u.id)) continue;
+
+            float hp = u.maxHealth <= 0f ? 1f : u.health / u.maxHealth;
+            boolean atPad = healingUnits.contains(u.id);
+            Building pad = findNearestRepairPad(u);
+
+            if (atPad) {
+                // Healed enough → back to mining
+                if (!u.damaged() || hp >= unitRepairDoneHp) {
+                    healingUnits.remove(u.id);
+                    toResume.add(u.id);
+                    continue;
+                }
+                // Still healing — keep them at the pad (re-path if outside radius)
+                if (pad == null) {
+                    healingUnits.remove(u.id);
+                    toResume.add(u.id);
+                    continue;
+                }
+                float rad = repairRadiusOf(pad);
+                // Sit near center; re-issue move if they drifted out
+                if (u.dst(pad) > rad * 0.75f) {
+                    if (!moveBatches.containsKey(pad)) moveBatches.put(pad, new IntSeq());
+                    moveBatches.get(pad).add(u.id);
+                }
+                // Drop assist mark so build-assist does not steal them mid-heal
+                assistingUnits.remove(u.id);
+                continue;
+            }
+
+            // Not currently healing — send if low HP
+            if (u.damaged() && hp < unitRepairGoHp && pad != null) {
+                healingUnits.add(u.id);
+                assistingUnits.remove(u.id);
+                toSend.add(u.id);
+                if (!moveBatches.containsKey(pad)) moveBatches.put(pad, new IntSeq());
+                moveBatches.get(pad).add(u.id);
+            }
+        }
+
+        // Issue move orders (grouped by pad)
+        for (var e : moveBatches.entries()) {
+            Building pad = e.key;
+            int[] ids = e.value.toArray();
+            if (ids.length == 0) continue;
+            tmpMove.set(pad.x, pad.y);
+            // Foo client Call: (player, ids, build, unit, pos, queue, stopWhenInRange-ish)
+            Call.commandUnits(player, ids, null, null, tmpMove, false, true);
+            for (int id : ids) {
+                lastAiCommand.put(id, UnitCommand.moveCommand);
+                // keep lastAiItem so resume can restore the same ore
+            }
+        }
+
+        if (toResume.size > 0) {
+            resumeMiningAfterHeal(toResume);
+        }
+    }
+
+    private static void resumeMiningAfterHeal(IntSeq ids) {
+        if (ids == null || ids.size == 0 || player == null) return;
+        int[] arr = ids.toArray();
+        Call.setUnitCommand(player, arr, UnitCommand.mineCommand);
+        ObjectMap<Item, IntSeq> resume = new ObjectMap<>();
+        for (int id : arr) {
+            lastAiCommand.put(id, UnitCommand.mineCommand);
+            Item prev = lastAiItem.get(id);
+            if (prev != null) {
+                if (!resume.containsKey(prev)) resume.put(prev, new IntSeq());
+                resume.get(prev).add(id);
+            }
+        }
+        if (!resume.isEmpty()) {
+            sendOreStances(resume);
+        }
+        forceAssignNext = true;
+    }
+
+    private static void refreshRepairPadCache() {
+        repairPadCache.clear();
+        if (player == null || player.team() == null) return;
+
+        // Serpulo: repair-point / mend projector (BlockFlag.repair)
+        try {
+            Seq<Building> flagged = Vars.indexer.getFlagged(player.team(), BlockFlag.repair);
+            if (flagged != null) {
+                for (Building b : flagged) {
+                    if (isUsableRepairPad(b)) repairPadCache.add(b);
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        // Erekir unit-repair-tower (no repair flag)
+        for (Building b : Groups.build) {
+            if (b == null || b.team != player.team()) continue;
+            if (b.block instanceof RepairTower && isUsableRepairPad(b) && !repairPadCache.contains(b)) {
+                repairPadCache.add(b);
+            }
+        }
+    }
+
+    private static boolean isUsableRepairPad(Building b) {
+        if (b == null || !b.isValid()) return false;
+        // Prefer powered pads; still accept unpowered so units can park (power may come back)
+        if (b.block instanceof RepairTurret || b.block instanceof RepairTower) {
+            return true;
+        }
+        // Other BlockFlag.repair buildings (modded etc.)
+        return b.block != null && b.block.flags != null && b.block.flags.contains(BlockFlag.repair);
+    }
+
+    private static float repairRadiusOf(Building b) {
+        if (b == null) return 40f;
+        if (b.block instanceof RepairTurret rt) return Math.max(24f, rt.repairRadius);
+        if (b.block instanceof RepairTower rt) return Math.max(24f, rt.range);
+        return 48f;
+    }
+
+    private static Building findNearestRepairPad(Unit u) {
+        Building best = null;
+        float bestD2 = Float.MAX_VALUE;
+        // Prefer pads that are actually working (efficiency > 0)
+        Building bestAny = null;
+        float bestAnyD2 = Float.MAX_VALUE;
+
+        for (int i = 0; i < repairPadCache.size; i++) {
+            Building b = repairPadCache.get(i);
+            if (!isUsableRepairPad(b)) continue;
+            float d2 = u.dst2(b);
+            if (d2 < bestAnyD2) {
+                bestAnyD2 = d2;
+                bestAny = b;
+            }
+            if (b.efficiency > 0.01f && d2 < bestD2) {
+                bestD2 = d2;
+                best = b;
+            }
+        }
+        return best != null ? best : bestAny;
     }
 
     private static void pruneSet(IntSet set, IntSet alive) {
@@ -227,6 +474,8 @@ public class MinersFDAI {
             if (u.type.buildSpeed <= 0f) continue;
             if (!isManagedMinerType(u.type)) continue;
             if (manualUnits.contains(u.id)) continue;
+            // Units at repair pads stay there until healed
+            if (healingUnits.contains(u.id)) continue;
 
             boolean inRange = u.dst(px, py) <= radiusPx;
             boolean isCurrentlyAssist = u.controller() instanceof CommandAI cai
@@ -249,7 +498,7 @@ public class MinersFDAI {
             Call.setUnitCommand(player, ids, UnitCommand.assistCommand);
             for (int id : ids) {
                 lastAiCommand.put(id, UnitCommand.assistCommand);
-                lastAiItem.remove(id);
+                // Keep lastAiItem so after assist they resume the same ore
             }
         }
 
@@ -258,9 +507,19 @@ public class MinersFDAI {
             Call.setUnitCommand(player, ids, UnitCommand.mineCommand);
             for (int id : ids) {
                 lastAiCommand.put(id, UnitCommand.mineCommand);
-                lastAiItem.remove(id);
             }
-            // Re-run distribution soon so they get item stances immediately
+            // Re-apply previous ore stances immediately when known, then full rebalance
+            ObjectMap<Item, IntSeq> resume = new ObjectMap<>();
+            for (int id : ids) {
+                Item prev = lastAiItem.get(id);
+                if (prev != null) {
+                    if (!resume.containsKey(prev)) resume.put(prev, new IntSeq());
+                    resume.get(prev).add(id);
+                }
+            }
+            if (!resume.isEmpty()) {
+                sendOreStances(resume);
+            }
             forceAssignNext = true;
         }
     }
@@ -285,7 +544,6 @@ public class MinersFDAI {
         // CoreBuild.storageCapacity (team.core() is a core building)
         int capacity = core.core() != null ? Math.max(1, core.core().storageCapacity) : 1;
 
-        Item[] items = {Items.copper, Items.lead, Items.titanium, Items.sand, Items.coal, Items.scrap};
         boolean[] flags = {
                 PanelFragment.minecopper, PanelFragment.minelead, PanelFragment.minetitan,
                 PanelFragment.minesand, PanelFragment.minecoal, PanelFragment.minescrap
@@ -294,14 +552,28 @@ public class MinersFDAI {
         Seq<Item> allEnabled = new Seq<>();
         float totalWeight = 0;
 
-        for (int i = 0; i < items.length; i++) {
-            if (!flags[i]) continue;
-            Item it = items[i];
+        Seq<Item> flagged = new Seq<>();
+        for (int i = 0; i < MINE_ITEMS.length; i++) {
+            if (flags[i]) flagged.add(MINE_ITEMS[i]);
+        }
+        // Prefer ores present on the map; if indexer reports none yet, fall back to all flagged
+        Seq<Item> present = new Seq<>();
+        if (Vars.indexer != null) {
+            for (Item it : flagged) {
+                try {
+                    if (Vars.indexer.hasOre(it) || Vars.indexer.hasWallOre(it)) present.add(it);
+                } catch (Throwable ignored) {}
+            }
+        }
+        Seq<Item> use = present.isEmpty() ? flagged : present;
+
+        for (Item it : use) {
             allEnabled.add(it);
             float progress = (float) core.items.get(it) / capacity;
             if (Float.isNaN(progress) || Float.isInfinite(progress)) progress = 0f;
-            float weight = Math.max(0.05f, 1.0f - progress);
-            if (progress < 0.1f) weight *= 5f;
+            // Mild demand weight — do NOT multiply so hard that one ore eats the fleet
+            float weight = Math.max(0.15f, 1.0f - progress);
+            if (progress < PanelFragment.crisisThreshold) weight *= 2.2f;
             itemWeights.put(it, weight);
             totalWeight += weight;
         }
@@ -309,7 +581,7 @@ public class MinersFDAI {
 
         ObjectMap<Item, IntSeq> toBatchSend = new ObjectMap<>();
 
-        // ---- Global crisis ----
+        // ---- Soft crisis (boost only; never exclusive single-ore mode) ----
         final float CRITICAL_CORE_THRESHOLD = PanelFragment.crisisThreshold / 2f;
         final float NORMAL_CRISIS_THRESHOLD = PanelFragment.crisisThreshold;
 
@@ -335,6 +607,11 @@ public class MinersFDAI {
             }
         }
         boolean isGlobalCrisis = !globalCrisisItems.isEmpty();
+        if (isGlobalCrisis) {
+            for (Item it : globalCrisisItems) {
+                itemWeights.put(it, itemWeights.get(it, 0.15f) * 2.5f);
+            }
+        }
 
         IntSeq toReleaseAsAssist = new IntSeq();
         IntSeq toReleaseAsMine = new IntSeq();
@@ -349,7 +626,7 @@ public class MinersFDAI {
             if (u.team != player.team() || !u.isCommandable()) continue;
 
             if (!isManagedMinerType(u.type)) {
-                if (lastAiCommand.containsKey(u.id)) {
+                if (lastAiCommand.containsKey(u.id) || healingUnits.contains(u.id)) {
                     if (u.type == UnitTypes.poly) {
                         toReleaseAsAssist.add(u.id);
                     } else if (u.type == UnitTypes.mega || u.type == UnitTypes.quasar
@@ -358,9 +635,13 @@ public class MinersFDAI {
                     }
                     lastAiCommand.remove(u.id);
                     lastAiItem.remove(u.id);
+                    healingUnits.remove(u.id);
                 }
                 continue;
             }
+
+            // At repair pad — do not reassign to mine/building-heal until self-heal finishes
+            if (healingUnits.contains(u.id)) continue;
 
             // Respect player overrides (command and/or mine item stance)
             if (respectManualCommands && u.controller() instanceof CommandAI cai) {
@@ -382,7 +663,9 @@ public class MinersFDAI {
             }
         }
 
-        // Megas: stable half-to-heal when needed
+        // Megas: stable half-to-heal ONLY when auto-heal toggle is on and damage is near cores.
+        // Mega defaultCommand is repair — without an explicit mine command they keep healing.
+        IntSeq toPullFromHeal = new IntSeq();
         megaUnits.sort(u -> u.id);
         for (int i = 0; i < megaUnits.size; i++) {
             Unit u = megaUnits.get(i);
@@ -397,6 +680,13 @@ public class MinersFDAI {
                     lastAiItem.remove(u.id);
                 }
             } else if (u.type.mineTier > 0) {
+                // Auto-heal off / no damage: never leave megas on repair (default or leftover AI heal)
+                if (u.controller() instanceof CommandAI cai && cai.command == UnitCommand.repairCommand) {
+                    toPullFromHeal.add(u.id);
+                    lastAiCommand.put(u.id, UnitCommand.mineCommand);
+                    lastAiItem.remove(u.id);
+                    manualUnits.remove(u.id); // own previous repair packet must not mark as manual forever
+                }
                 if (!unitGroups.containsKey(u.type)) unitGroups.put(u.type, new Seq<>());
                 unitGroups.get(u.type).add(u);
             }
@@ -419,7 +709,17 @@ public class MinersFDAI {
             }
             // They are also in unitGroups and will receive stances this tick
         }
-        if (toRepair.size > 0) {
+        // Pull megas off heal before any repair packet this tick (auto-heal off / no need)
+        if (toPullFromHeal.size > 0) {
+            int[] ids = toPullFromHeal.toArray();
+            Call.setUnitCommand(player, ids, UnitCommand.mineCommand);
+            for (int id : ids) {
+                lastAiCommand.put(id, UnitCommand.mineCommand);
+                lastAiItem.remove(id);
+            }
+        }
+        // Hard gate: never send repair if the toggle is off (or nothing to heal near cores)
+        if (toRepair.size > 0 && PanelFragment.autoHealMegas && needsRepairNearCore) {
             int[] ids = toRepair.toArray();
             Call.setUnitCommand(player, ids, UnitCommand.repairCommand);
             for (int id : ids) {
@@ -433,146 +733,288 @@ public class MinersFDAI {
         for (var entry : unitGroups.entries()) {
             UnitType type = entry.key;
             Seq<Unit> units = entry.value;
+            // Stable order so assignment is deterministic across ticks
+            units.sort(u -> u.id);
 
             Seq<Item> possible = allEnabled.select(it -> type.mineTier >= it.hardness);
             if (possible.isEmpty()) continue;
 
-            Seq<Item> targets = possible;
-            boolean isCrisisMode = false;
-
-            if (isGlobalCrisis) {
-                Seq<Item> myCrisisTargets = new Seq<>();
-                for (Item it : globalCrisisItems) {
-                    if (possible.contains(it)) myCrisisTargets.add(it);
-                }
-                if (!myCrisisTargets.isEmpty()) {
-                    targets = myCrisisTargets;
-                    isCrisisMode = true;
-                }
-            }
-
-            ObjectMap<Item, Integer> quotas = new ObjectMap<>();
-            int assignedCount = 0;
-
-            float currentTotalWeight = 0;
-            for (Item it : targets) currentTotalWeight += itemWeights.get(it, 0f);
-            if (currentTotalWeight <= 0) continue;
-
-            // Cap min-per-resource so quotas can fit the fleet
-            int minPer = PanelFragment.minUnitsPerResource;
-            if (minPer > 0 && minPer * targets.size > units.size) {
-                minPer = Math.max(0, units.size / targets.size);
-            }
-
-            for (Item it : possible) {
-                int target;
-
-                if (isCrisisMode) {
-                    if (!targets.contains(it)) {
-                        target = 0;
-                    } else {
-                        // Even split only — no +1 over-allocation that fighting balance undoes
-                        int baseShare = units.size / targets.size;
-                        int remainder = units.size % targets.size;
-                        int index = targets.indexOf(it);
-                        target = baseShare + (index < remainder ? 1 : 0);
-                    }
-                } else {
-                    // Weight only among resources that can actually be mined by this type
-                    float typeWeightSum = 0;
-                    for (Item p : possible) typeWeightSum += itemWeights.get(p, 0f);
-                    if (typeWeightSum <= 0) typeWeightSum = currentTotalWeight;
-
-                    int baseTarget = Math.round((itemWeights.get(it, 0f) / typeWeightSum) * units.size);
-                    // min only for items that are in "targets" (all possible in normal mode)
-                    target = Math.max(minPer, baseTarget);
-                }
-
-                quotas.put(it, target);
-                assignedCount += target;
-            }
-
-            // Balance down: prefer cutting high quota / low weight
-            while (assignedCount > units.size) {
-                Item toReduce = possible.max(it -> {
-                    int q = quotas.get(it, 0);
-                    if (q <= 0) return -1f;
-                    // Prefer reducing fuller (lower weight) resources first
-                    return q * 1000f + (1f / itemWeights.get(it, 0.05f));
-                });
-                if (toReduce != null && quotas.get(toReduce, 0) > 0) {
-                    quotas.put(toReduce, quotas.get(toReduce, 0) - 1);
-                    assignedCount--;
-                } else break;
-            }
-
-            while (assignedCount < units.size) {
-                Item toBoost = targets.max(it -> itemWeights.get(it, 0f));
-                if (toBoost != null) {
-                    quotas.put(toBoost, quotas.get(toBoost, 0) + 1);
-                    assignedCount++;
-                } else break;
-            }
+            ObjectMap<Item, Integer> quotas = buildOreQuotas(
+                units.size, possible, itemWeights, globalCrisisItems, isGlobalCrisis
+            );
 
             // Stickiness: keep units already on a resource that still has quota
+            // Prefer live stance; fall back to last AI assignment (packet lag / assist resume)
             Seq<Unit> unassignedUnits = new Seq<>();
 
             for (Unit u : units) {
+                // Never sticky-skip a unit that is still on repair — must get mine + ore stance
+                if (u.controller() instanceof CommandAI cai && cai.command == UnitCommand.repairCommand) {
+                    unassignedUnits.add(u);
+                    continue;
+                }
+
                 Item currentItem = getMiningItem(u, possible);
+                if (currentItem == null) {
+                    Item remembered = lastAiItem.get(u.id);
+                    if (remembered != null && possible.contains(remembered)) {
+                        currentItem = remembered;
+                    }
+                }
 
                 if (currentItem != null && quotas.get(currentItem, 0) > 0) {
                     quotas.put(currentItem, quotas.get(currentItem, 0) - 1);
-                    // Remember AI ownership without re-sending
                     lastAiCommand.put(u.id, UnitCommand.mineCommand);
                     lastAiItem.put(u.id, currentItem);
+                    // Re-send exclusive stance if unit still has extra item stances / mineAuto
+                    if (needsExclusiveOreStance(u, currentItem)) {
+                        if (!toBatchSend.containsKey(currentItem)) toBatchSend.put(currentItem, new IntSeq());
+                        toBatchSend.get(currentItem).add(u.id);
+                    }
                 } else {
                     unassignedUnits.add(u);
                 }
             }
 
             for (Unit u : unassignedUnits) {
-                Item bestTarget = null;
-                int bestQ = 0;
+                Item bestTarget = pickHighestQuota(possible, quotas);
+                if (bestTarget == null) {
+                    bestTarget = possible.max(it -> itemWeights.get(it, 0f));
+                }
+                if (bestTarget == null) continue;
+
+                int q = quotas.get(bestTarget, 0);
+                if (q > 0) quotas.put(bestTarget, q - 1);
+
+                if (!toBatchSend.containsKey(bestTarget)) toBatchSend.put(bestTarget, new IntSeq());
+                toBatchSend.get(bestTarget).add(u.id);
+            }
+        }
+
+        sendOreStances(toBatchSend);
+    }
+
+    /**
+     * Even base split across ores + demand weights, with soft crisis boost.
+     * Guarantees multi-ore spread when the fleet is large enough.
+     */
+    private static ObjectMap<Item, Integer> buildOreQuotas(
+            int unitCount,
+            Seq<Item> possible,
+            ObjectMap<Item, Float> itemWeights,
+            Seq<Item> crisisItems,
+            boolean isGlobalCrisis
+    ) {
+        ObjectMap<Item, Integer> quotas = new ObjectMap<>();
+        if (unitCount <= 0 || possible.isEmpty()) return quotas;
+
+        int nOres = possible.size;
+        int minPer = PanelFragment.minUnitsPerResource;
+        if (minPer > 0 && minPer * nOres > unitCount) {
+            minPer = Math.max(0, unitCount / nOres);
+        }
+
+        // 1) Even base (round-robin remainder by weight)
+        int base = unitCount / nOres;
+        int rem = unitCount % nOres;
+        Seq<Item> byWeight = possible.copy();
+        byWeight.sort((a, b) -> Float.compare(itemWeights.get(b, 0f), itemWeights.get(a, 0f)));
+
+        for (Item it : possible) {
+            quotas.put(it, Math.max(minPer, base));
+        }
+        // Remainder → highest demand first
+        for (int i = 0; i < rem; i++) {
+            Item it = byWeight.get(i % byWeight.size);
+            quotas.put(it, quotas.get(it, 0) + 1);
+        }
+
+        // 2) Soft demand rebalance: move a few slots toward needy ores without collapsing spread
+        float weightSum = 0f;
+        for (Item it : possible) weightSum += itemWeights.get(it, 0f);
+        if (weightSum > 0 && unitCount >= nOres) {
+            int maxSingle = Math.max(minPer, (int) Math.ceil(unitCount * MAX_SINGLE_ORE_SHARE));
+            if (nOres == 1) maxSingle = unitCount;
+
+            // Desired by weight
+            ObjectMap<Item, Integer> desired = new ObjectMap<>();
+            int desiredSum = 0;
+            for (Item it : possible) {
+                int d = Math.round((itemWeights.get(it, 0f) / weightSum) * unitCount);
+                d = Math.max(minPer, Math.min(maxSingle, d));
+                desired.put(it, d);
+                desiredSum += d;
+            }
+            while (desiredSum > unitCount) {
+                // Cut highest surplus above minPer
+                Item worst = null;
+                int worstExtra = -1;
                 for (Item it : possible) {
-                    int q = quotas.get(it, 0);
-                    if (q > bestQ) {
-                        bestQ = q;
-                        bestTarget = it;
+                    int extra = desired.get(it, 0) - minPer;
+                    if (extra > worstExtra) {
+                        worstExtra = extra;
+                        worst = it;
                     }
                 }
-
-                if (bestTarget != null && bestQ > 0) {
-                    quotas.put(bestTarget, bestQ - 1);
-                    if (!toBatchSend.containsKey(bestTarget)) toBatchSend.put(bestTarget, new IntSeq());
-                    toBatchSend.get(bestTarget).add(u.id);
-                } else {
-                    // Fallback among crisis targets if in crisis, else all possible
-                    Seq<Item> fallbackPool = isCrisisMode ? targets : possible;
-                    Item fallback = fallbackPool.max(it -> itemWeights.get(it, 0f));
-                    if (fallback == null) continue;
-
-                    if (!(u.controller() instanceof CommandAI cai
-                            && cai.command == UnitCommand.mineCommand
-                            && cai.hasStance(ItemUnitStance.getByItem(fallback)))) {
-                        if (!toBatchSend.containsKey(fallback)) toBatchSend.put(fallback, new IntSeq());
-                        toBatchSend.get(fallback).add(u.id);
-                    } else {
-                        lastAiCommand.put(u.id, UnitCommand.mineCommand);
-                        lastAiItem.put(u.id, fallback);
+                if (worst == null || desired.get(worst, 0) <= minPer) break;
+                desired.put(worst, desired.get(worst, 0) - 1);
+                desiredSum--;
+            }
+            while (desiredSum < unitCount) {
+                Item boost = byWeight.first();
+                for (Item it : byWeight) {
+                    if (desired.get(it, 0) < maxSingle) {
+                        boost = it;
+                        break;
                     }
+                }
+                desired.put(boost, desired.get(boost, 0) + 1);
+                desiredSum++;
+            }
+
+            // Blend: keep at least even-ish floor, move halfway toward desired
+            for (Item it : possible) {
+                int even = quotas.get(it, 0);
+                int want = desired.get(it, even);
+                int blended = (even + want) / 2;
+                if (minPer > 0) blended = Math.max(minPer, blended);
+                quotas.put(it, blended);
+            }
+        }
+
+        // 3) Soft crisis: up to CRISIS_FLEET_SHARE on crisis ores; always leave others mining too
+        if (isGlobalCrisis && unitCount > 1) {
+            Seq<Item> crisisHere = new Seq<>();
+            for (Item it : crisisItems) {
+                if (possible.contains(it)) crisisHere.add(it);
+            }
+            if (!crisisHere.isEmpty() && crisisHere.size < possible.size) {
+                int nonCrisisOres = possible.size - crisisHere.size;
+                // Floor on non-crisis ores so copper crisis never steals 100% of monos
+                int keepEach = minPer;
+                if (keepEach <= 0 && unitCount >= possible.size) keepEach = 1;
+                int maxNonCrisis = unitCount - crisisHere.size; // at least 1 slot per crisis ore
+                int nonCrisisBudget = Math.min(maxNonCrisis, nonCrisisOres * Math.max(keepEach, 0));
+                // Also enforce: crisis gets at most CRISIS_FLEET_SHARE
+                int maxCrisis = Math.max(crisisHere.size, Math.round(unitCount * CRISIS_FLEET_SHARE));
+                nonCrisisBudget = Math.max(nonCrisisBudget, unitCount - maxCrisis);
+
+                int given = 0;
+                for (Item it : possible) {
+                    if (crisisHere.contains(it)) continue;
+                    int keep = keepEach;
+                    quotas.put(it, keep);
+                    given += keep;
+                }
+                // If over budget, strip non-crisis down
+                while (given > nonCrisisBudget) {
+                    Item cut = null;
+                    for (Item it : possible) {
+                        if (!crisisHere.contains(it) && quotas.get(it, 0) > 0) {
+                            cut = it;
+                            break;
+                        }
+                    }
+                    if (cut == null) break;
+                    quotas.put(cut, quotas.get(cut, 0) - 1);
+                    given--;
+                }
+                int left = Math.max(0, unitCount - given);
+                int per = left / crisisHere.size;
+                int r = left % crisisHere.size;
+                for (int i = 0; i < crisisHere.size; i++) {
+                    quotas.put(crisisHere.get(i), per + (i < r ? 1 : 0));
                 }
             }
         }
 
+        // 4) Normalize sum == unitCount
+        int sum = 0;
+        for (Item it : possible) sum += quotas.get(it, 0);
+        while (sum > unitCount) {
+            Item cut = null;
+            int best = -1;
+            for (Item it : possible) {
+                int q = quotas.get(it, 0);
+                if (q > best && q > minPer) {
+                    best = q;
+                    cut = it;
+                }
+            }
+            if (cut == null) {
+                for (Item it : possible) {
+                    if (quotas.get(it, 0) > 0) {
+                        cut = it;
+                        break;
+                    }
+                }
+            }
+            if (cut == null) break;
+            quotas.put(cut, quotas.get(cut, 0) - 1);
+            sum--;
+        }
+        while (sum < unitCount) {
+            Item boost = possible.max(it -> itemWeights.get(it, 0f));
+            if (boost == null) break;
+            quotas.put(boost, quotas.get(boost, 0) + 1);
+            sum++;
+        }
+
+        return quotas;
+    }
+
+    private static Item pickHighestQuota(Seq<Item> possible, ObjectMap<Item, Integer> quotas) {
+        Item best = null;
+        int bestQ = 0;
+        for (Item it : possible) {
+            int q = quotas.get(it, 0);
+            if (q > bestQ) {
+                bestQ = q;
+                best = it;
+            }
+        }
+        return bestQ > 0 ? best : null;
+    }
+
+    /**
+     * True if unit is not exclusively on the given ore stance (mineAuto or other items still on).
+     */
+    private static boolean needsExclusiveOreStance(Unit u, Item want) {
+        if (!(u.controller() instanceof CommandAI cai)) return true;
+        if (cai.command != UnitCommand.mineCommand) return true;
+        if (cai.hasStance(UnitStance.mineAuto)) return true;
+        UnitStance wantSt = ItemUnitStance.getByItem(want);
+        if (wantSt == null || !cai.hasStance(wantSt)) return true;
+        for (Item it : MINE_ITEMS) {
+            if (it == want) continue;
+            UnitStance st = ItemUnitStance.getByItem(it);
+            if (st != null && cai.hasStance(st)) return true;
+        }
+        return false;
+    }
+
+    /** Apply exclusive ore stances (clear mineAuto + all other items first). */
+    private static void sendOreStances(ObjectMap<Item, IntSeq> toBatchSend) {
+        if (toBatchSend.isEmpty() || player == null) return;
+
         for (var entry : toBatchSend.entries()) {
             int[] ids = entry.value.toArray();
+            if (ids.length == 0) continue;
             Item item = entry.key;
+
             Call.setUnitCommand(player, ids, UnitCommand.mineCommand);
+            // Clear auto + every other item so only one ore remains (stances are NOT exclusive by default)
             Call.setUnitStance(player, ids, UnitStance.mineAuto, false);
+            for (Item other : MINE_ITEMS) {
+                if (other == item) continue;
+                UnitStance st = ItemUnitStance.getByItem(other);
+                if (st != null) Call.setUnitStance(player, ids, st, false);
+            }
             UnitStance stance = ItemUnitStance.getByItem(item);
             if (stance != null) {
                 Call.setUnitStance(player, ids, stance, true);
             }
+
             for (int id : ids) {
                 lastAiCommand.put(id, UnitCommand.mineCommand);
                 lastAiItem.put(id, item);
@@ -588,6 +1030,34 @@ public class MinersFDAI {
         UnitCommand expected = lastAiCommand.get(u.id);
         Item expectedItem = lastAiItem.get(u.id);
         Item currentItem = getMiningItem(u, null);
+
+        // Self-heal trip uses moveCommand — never treat as player override
+        if (healingUnits.contains(u.id)) {
+            return false;
+        }
+        if (expected == UnitCommand.moveCommand && current == UnitCommand.moveCommand) {
+            // stale move after heal ended — reclaim to mine below via commandDiff if needed
+        }
+
+        // Mega default / leftover heal while auto-heal is OFF is never a "manual" choice —
+        // reclaim immediately so we do not spam-skip and leave them healing buildings.
+        if (u.type == UnitTypes.mega
+                && current == UnitCommand.repairCommand
+                && !PanelFragment.autoHealMegas) {
+            toForceRestore.add(u.id);
+            manualUnits.remove(u.id);
+            return false;
+        }
+
+        // Our own repair→mine handoff can look like a player override (lastCommanded = us)
+        // while the server still shows repair for a few ticks. Do not mark as manual.
+        if (expected == UnitCommand.mineCommand
+                && current == UnitCommand.repairCommand
+                && !PanelFragment.autoHealMegas) {
+            toForceRestore.add(u.id);
+            manualUnits.remove(u.id);
+            return false;
+        }
 
         boolean commandDiff = expected != null && current != expected;
         boolean itemDiff = expected == UnitCommand.mineCommand
@@ -613,6 +1083,14 @@ public class MinersFDAI {
         String myName = Strings.stripColors(player.name);
 
         if (cmdr.equals(myName)) {
+            // Ignore lag after AI-issued mine while unit still reports previous command briefly
+            if (expected == current) {
+                return false;
+            }
+            // If AI expected mine and unit still shows repair after we just ordered mine — wait, do not manual-lock
+            if (expected == UnitCommand.mineCommand && current == UnitCommand.repairCommand) {
+                return false;
+            }
             manualUnits.add(u.id);
             return true;
         }
@@ -630,16 +1108,29 @@ public class MinersFDAI {
     private static Item getMiningItem(Unit u, Seq<Item> limitTo) {
         if (!(u.controller() instanceof CommandAI cai)) return null;
         if (cai.command != UnitCommand.mineCommand) return null;
+        // mineAuto alone → not a specific ore assignment
+        if (cai.hasStance(UnitStance.mineAuto)) return null;
 
-        Item[] check = {
-                Items.copper, Items.lead, Items.titanium, Items.sand, Items.coal, Items.scrap
-        };
-        for (Item it : check) {
+        // Prefer remembered exclusive assignment when multiple item stances are still on
+        Item remembered = lastAiItem.get(u.id);
+        if (remembered != null
+                && (limitTo == null || limitTo.contains(remembered))) {
+            UnitStance rs = ItemUnitStance.getByItem(remembered);
+            if (rs != null && cai.hasStance(rs)) return remembered;
+        }
+
+        Item found = null;
+        int count = 0;
+        for (Item it : MINE_ITEMS) {
             if (limitTo != null && !limitTo.contains(it)) continue;
             UnitStance st = ItemUnitStance.getByItem(it);
-            if (st != null && cai.hasStance(st)) return it;
+            if (st != null && cai.hasStance(st)) {
+                found = it;
+                count++;
+            }
         }
-        return null;
+        // Only trust exclusive single-ore stance; multi-stance is legacy pollution
+        return count == 1 ? found : null;
     }
 
     /**

@@ -104,8 +104,8 @@ public class PanelFragment extends Table{
     public static boolean minePulss = true;
     public static boolean mineMegas = true;
     public static boolean mineQuazs = true;
-    public static boolean autoHealMegas = false;
-    public static float autoHealDist = 50f;
+    public static boolean autoHealMegas = Core.settings.getBool("fd-megaAutoHeal", false);
+    public static float autoHealDist = Core.settings.getFloat("fd-megaAutoHealDist", 50f);
     public static int minUnitsPerResource = 1;
     public static int AIMiningUpdateTime = Core.settings.getInt("AIUpTime", 10);
     public static float crisisThreshold = 0.10f;
