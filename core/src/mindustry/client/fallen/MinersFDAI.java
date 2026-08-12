@@ -46,6 +46,11 @@ import static mindustry.Vars.player;
 public class MinersFDAI {
     public static boolean autoMiningActive = false;
     public static boolean autoAssistBuild = Core.settings.getBool("AIAssistBuild", false);
+    /** Per-type build-assist (builders only — mono has no buildSpeed). Independent of mine toggles. */
+    public static boolean assistBuildPoly = Core.settings.getBool("AIAssistPoly", true);
+    public static boolean assistBuildPulsar = Core.settings.getBool("AIAssistPulsar", true);
+    public static boolean assistBuildMega = Core.settings.getBool("AIAssistMega", true);
+    public static boolean assistBuildQuasar = Core.settings.getBool("AIAssistQuasar", true);
     public static boolean respectManualCommands = Core.settings.getBool("AIRespectManual", true);
     public static boolean resetDisabledUnits = Core.settings.getBool("resetDisabledUnits", false);
     /** Send damaged miners to repair point/turret at base, then back to mining. */
@@ -94,6 +99,10 @@ public class MinersFDAI {
 
         // Reload settings in case class was loaded before settings were ready
         autoAssistBuild = Core.settings.getBool("AIAssistBuild", false);
+        assistBuildPoly = Core.settings.getBool("AIAssistPoly", true);
+        assistBuildPulsar = Core.settings.getBool("AIAssistPulsar", true);
+        assistBuildMega = Core.settings.getBool("AIAssistMega", true);
+        assistBuildQuasar = Core.settings.getBool("AIAssistQuasar", true);
         respectManualCommands = Core.settings.getBool("AIRespectManual", true);
         resetDisabledUnits = Core.settings.getBool("resetDisabledUnits", false);
         AIHelpRad = Core.settings.getFloat("AIHelpRad", 10f);
@@ -117,17 +126,22 @@ public class MinersFDAI {
                 wasAutoMiningActive = false;
             }
 
-            if (!autoMiningActive) return;
+            // Build-assist works independently of auto-mining AI
+            boolean needAssist = autoAssistBuild;
+            if (!autoMiningActive && !needAssist) return;
 
             pruneDeadUnitIds();
+
+            // ~2×/sec so helpers react quickly when player starts/stops building
+            if (needAssist && assistTimer.get(30f)) {
+                handleAssistNearPlayer();
+            }
+
+            if (!autoMiningActive) return;
 
             // Self-heal at base repair pads — more frequent than mining rebalance
             if (autoUnitRepair && unitRepairTimer.get(45f)) {
                 handleUnitSelfHeal();
-            }
-
-            if (autoAssistBuild && assistTimer.get(60f)) {
-                handleAssistNearPlayer();
             }
 
             int intervalSec = Math.max(1, PanelFragment.AIMiningUpdateTime);
@@ -204,6 +218,30 @@ public class MinersFDAI {
     public static void setAutoAssistBuild(boolean v) {
         autoAssistBuild = v;
         Core.settings.put("AIAssistBuild", v);
+        if (!v) {
+            // Release units we put on assist so they do not stay stuck
+            releaseAssistingUnits();
+        }
+    }
+
+    public static void setAssistBuildPoly(boolean v) {
+        assistBuildPoly = v;
+        Core.settings.put("AIAssistPoly", v);
+    }
+
+    public static void setAssistBuildPulsar(boolean v) {
+        assistBuildPulsar = v;
+        Core.settings.put("AIAssistPulsar", v);
+    }
+
+    public static void setAssistBuildMega(boolean v) {
+        assistBuildMega = v;
+        Core.settings.put("AIAssistMega", v);
+    }
+
+    public static void setAssistBuildQuasar(boolean v) {
+        assistBuildQuasar = v;
+        Core.settings.put("AIAssistQuasar", v);
     }
 
     public static void setRespectManualCommands(boolean v) {
@@ -253,6 +291,33 @@ public class MinersFDAI {
         return false;
     }
 
+    /** Builder types allowed to help construct near the player (not mono). */
+    private static boolean isAssistBuilderType(UnitType type) {
+        if (type == null || type.buildSpeed <= 0f) return false;
+        if (type == UnitTypes.poly) return assistBuildPoly;
+        if (type == UnitTypes.pulsar) return assistBuildPulsar;
+        if (type == UnitTypes.mega) return assistBuildMega;
+        if (type == UnitTypes.quasar) return assistBuildQuasar;
+        return false;
+    }
+
+    /** Send currently assisting units back to mine and clear the set. */
+    private static void releaseAssistingUnits() {
+        if (assistingUnits.isEmpty() || player == null) {
+            assistingUnits.clear();
+            return;
+        }
+        IntSeq ids = new IntSeq();
+        assistingUnits.each(ids::add);
+        assistingUnits.clear();
+        if (ids.size == 0) return;
+        Call.setUnitCommand(player, ids.toArray(), UnitCommand.mineCommand);
+        for (int i = 0; i < ids.size; i++) {
+            lastAiCommand.put(ids.get(i), UnitCommand.mineCommand);
+        }
+        if (autoMiningActive) forceAssignNext = true;
+    }
+
     /** Drop stale ids so reused unit ids do not inherit manual/AI state. */
     private static void pruneDeadUnitIds() {
         if (manualUnits.isEmpty() && assistingUnits.isEmpty() && lastAiCommand.isEmpty()) return;
@@ -300,10 +365,11 @@ public class MinersFDAI {
             return;
         }
 
-        IntSeq toSend = new IntSeq();
         IntSeq toResume = new IntSeq();
-        // pad id → units that need a move order to that pad (batch by position later)
+        // pad → units that need a move order to that pad (batch by position later)
         ObjectMap<Building, IntSeq> moveBatches = new ObjectMap<>();
+        // Mechs that can boost (pulsar/quasar): keep boost stance so they FLY to heal, not walk
+        IntSeq needBoost = new IntSeq();
 
         for (Unit u : Groups.unit) {
             if (u.team != player.team() || !u.isCommandable()) continue;
@@ -333,6 +399,10 @@ public class MinersFDAI {
                     if (!moveBatches.containsKey(pad)) moveBatches.put(pad, new IntSeq());
                     moveBatches.get(pad).add(u.id);
                 }
+                // Pulsar/quasar must stay boosted while on pad so repair beam hits them in air
+                if (shouldBoostForHeal(u)) {
+                    needBoost.add(u.id);
+                }
                 // Drop assist mark so build-assist does not steal them mid-heal
                 assistingUnits.remove(u.id);
                 continue;
@@ -342,9 +412,11 @@ public class MinersFDAI {
             if (u.damaged() && hp < unitRepairGoHp && pad != null) {
                 healingUnits.add(u.id);
                 assistingUnits.remove(u.id);
-                toSend.add(u.id);
                 if (!moveBatches.containsKey(pad)) moveBatches.put(pad, new IntSeq());
                 moveBatches.get(pad).add(u.id);
+                if (shouldBoostForHeal(u)) {
+                    needBoost.add(u.id);
+                }
             }
         }
 
@@ -362,14 +434,44 @@ public class MinersFDAI {
             }
         }
 
+        // Enable boost so mechs (pulsar/quasar) fly to the pad and hover while healing
+        if (needBoost.size > 0 && UnitStance.boost != null) {
+            // Deduplicate ids
+            IntSet seen = new IntSet();
+            IntSeq unique = new IntSeq();
+            for (int i = 0; i < needBoost.size; i++) {
+                int id = needBoost.get(i);
+                if (seen.add(id)) unique.add(id);
+            }
+            if (unique.size > 0) {
+                Call.setUnitStance(player, unique.toArray(), UnitStance.boost, true);
+            }
+        }
+
         if (toResume.size > 0) {
             resumeMiningAfterHeal(toResume);
         }
     }
 
+    /** Pulsar/quasar (and any other canBoost miner): heal in the air, not on foot. */
+    private static boolean shouldBoostForHeal(Unit u) {
+        return u != null && u.type != null && u.type.canBoost;
+    }
+
     private static void resumeMiningAfterHeal(IntSeq ids) {
         if (ids == null || ids.size == 0 || player == null) return;
         int[] arr = ids.toArray();
+
+        // Land mechs after heal — mining on foot is fine; clear boost stance
+        IntSeq unboost = new IntSeq();
+        for (int id : arr) {
+            Unit u = Groups.unit.getByID(id);
+            if (u != null && shouldBoostForHeal(u)) unboost.add(id);
+        }
+        if (unboost.size > 0 && UnitStance.boost != null) {
+            Call.setUnitStance(player, unboost.toArray(), UnitStance.boost, false);
+        }
+
         Call.setUnitCommand(player, arr, UnitCommand.mineCommand);
         ObjectMap<Item, IntSeq> resume = new ObjectMap<>();
         for (int id : arr) {
@@ -471,9 +573,16 @@ public class MinersFDAI {
 
         for (Unit u : Groups.unit) {
             if (u.team != player.team() || !u.isCommandable()) continue;
-            if (u.type.buildSpeed <= 0f) continue;
-            if (!isManagedMinerType(u.type)) continue;
-            if (manualUnits.contains(u.id)) continue;
+            if (!isAssistBuilderType(u.type)) {
+                // Type disabled or not a builder — release if we were assisting them
+                if (assistingUnits.contains(u.id)) {
+                    toReturn.add(u.id);
+                    assistingUnits.remove(u.id);
+                }
+                continue;
+            }
+            // Only respect manual lock while auto-mining AI is managing units
+            if (autoMiningActive && manualUnits.contains(u.id)) continue;
             // Units at repair pads stay there until healed
             if (healingUnits.contains(u.id)) continue;
 
@@ -484,12 +593,10 @@ public class MinersFDAI {
             if (building && inRange) {
                 if (!isCurrentlyAssist) toAssist.add(u.id);
                 assistingUnits.add(u.id);
-            } else if (assistingUnits.contains(u.id) || isCurrentlyAssist) {
-                // Only reclaim assists we own (or still marked as assisting)
-                if (assistingUnits.contains(u.id)) {
-                    toReturn.add(u.id);
-                    assistingUnits.remove(u.id);
-                }
+            } else if (assistingUnits.contains(u.id)) {
+                // Only reclaim assists we own
+                toReturn.add(u.id);
+                assistingUnits.remove(u.id);
             }
         }
 
@@ -508,19 +615,21 @@ public class MinersFDAI {
             for (int id : ids) {
                 lastAiCommand.put(id, UnitCommand.mineCommand);
             }
-            // Re-apply previous ore stances immediately when known, then full rebalance
-            ObjectMap<Item, IntSeq> resume = new ObjectMap<>();
-            for (int id : ids) {
-                Item prev = lastAiItem.get(id);
-                if (prev != null) {
-                    if (!resume.containsKey(prev)) resume.put(prev, new IntSeq());
-                    resume.get(prev).add(id);
+            // Ore rebalance only when auto-mining AI is active
+            if (autoMiningActive) {
+                ObjectMap<Item, IntSeq> resume = new ObjectMap<>();
+                for (int id : ids) {
+                    Item prev = lastAiItem.get(id);
+                    if (prev != null) {
+                        if (!resume.containsKey(prev)) resume.put(prev, new IntSeq());
+                        resume.get(prev).add(id);
+                    }
                 }
+                if (!resume.isEmpty()) {
+                    sendOreStances(resume);
+                }
+                forceAssignNext = true;
             }
-            if (!resume.isEmpty()) {
-                sendOreStances(resume);
-            }
-            forceAssignNext = true;
         }
     }
 
@@ -1134,15 +1243,14 @@ public class MinersFDAI {
     }
 
     /**
-     * Player is "building" only when actually constructing or build mode with plans —
-     * not merely having stale plans in the queue.
+     * Player is building: placing, has plans, or actively constructing.
+     * Slightly looser than before so assist engages as soon as build mode / plans appear.
      */
     private static boolean isPlayerBuilding() {
         Unit u = player.unit();
         if (u == null) return false;
         if (u.activelyBuilding()) return true;
-        return control != null && control.input != null
-                && control.input.isBuilding
-                && u.plans.size > 0;
+        if (u.plans != null && u.plans.size > 0) return true;
+        return control != null && control.input != null && control.input.isBuilding;
     }
 }

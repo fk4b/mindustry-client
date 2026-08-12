@@ -1058,6 +1058,9 @@ public class MobileInput extends InputHandler implements GestureListener{
         }
 
         unit.controlWeapons(player.shooting && !boosted);
+
+        // hidecursor: report unit position while not shooting
+        mindustry.client.CursorHide.applyReportedCursor(unit);
     }
 
     //endregion

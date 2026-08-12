@@ -43,6 +43,7 @@ import mindustry.world.*;
 import mindustry.world.blocks.*;
 import mindustry.world.blocks.ConstructBlock.*;
 import mindustry.world.blocks.distribution.*;
+import mindustry.world.blocks.environment.*;
 import mindustry.world.blocks.logic.*;
 import mindustry.world.blocks.payloads.*;
 import mindustry.world.blocks.storage.*;
@@ -926,7 +927,12 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
 
             if(selectedUnits.size > 0){
 
-                Teamc attack = world.buildWorld(target.x, target.y);
+                Teamc attack = null;
+                // bridgeModifier («модификатор мостов и контроля юнитов»):
+                // move-to-point — не брать вражеский блок/юнит под курсором как цель атаки
+                if(!Core.input.keyDown(Binding.bridgeModifier)){
+                    attack = world.buildWorld(target.x, target.y);
+                }
 
                 if(attack == null || attack.team() == player.team()){
                     attack = selectedEnemyUnit(target.x, target.y);
@@ -946,10 +952,10 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
                 if(ids.length > maxChunkSize){
                     for(int i = 0; i < ids.length; i += maxChunkSize){
                         int[] data = Arrays.copyOfRange(ids, i, Math.min(i + maxChunkSize, ids.length));
-                        Call.commandUnits(player, data, attack instanceof Building b ? b : null, attack instanceof Unit u ? u : null, target);
+                        Call.commandUnits(player, data, attack instanceof Building b && !Core.input.keyDown(Binding.bridgeModifier) ? b : null, attack instanceof Unit u && !Core.input.keyDown(Binding.bridgeModifier) ? u : null, target, false, i + maxChunkSize >= ids.length);
                     }
                 }else{
-                    Call.commandUnits(player, ids, attack instanceof Building b ? b : null, attack instanceof Unit u ? u : null, target);
+                    Call.commandUnits(player, ids, attack instanceof Building b && !Core.input.keyDown(Binding.bridgeModifier) ? b : null, attack instanceof Unit u && !Core.input.keyDown(Binding.bridgeModifier) ? u : null, target, false, true);
                 }
             }
 
@@ -1637,14 +1643,54 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
 
     protected void updateLine(int x1, int y1, int x2, int y2){
         linePlans.clear();
-        iterateLine(x1, y1, x2, y2, l -> {
+        Block old = block;
+        boolean bridgeMod = Core.input.keyDown(Binding.bridgeModifier);
+        // diagonal route only if the hotbar selection is already a bridge (not conveyor→bridge swap)
+        boolean selectedBridge = isBridgePlacement(old);
+
+        // walls + Shift: replace other wall types in drag rect (vanilla-style, no extra bind)
+        if(block != null && block.group == BlockGroup.walls && Core.input.shift()){
+            updateWallLine(x1, y1, x2, y2);
+        }else if(bridgeMod && old != null && old.group == BlockGroup.walls && !(x1 == x2 && y1 == y2)){
+            // walls + Alt: diagonal staircase of walls
+            buildDiagonalBlockLine(x1, y1, x2, y2);
+            block = old;
+            return;
+        }else if(bridgeMod){
+            // conveyor/duct/conduit → router (point) / bridge (line) — orthogonal line as before
+            if(old == Blocks.duct){
+                block = (x1 == x2 && y1 == y2) ? Blocks.ductRouter : Blocks.ductBridge;
+            }else if(old == Blocks.conveyor || old == Blocks.titaniumConveyor){
+                block = (x1 == x2 && y1 == y2) ? Blocks.router : Blocks.itemBridge;
+            }else if(old == Blocks.conduit || old == Blocks.pulseConduit){
+                block = (x1 == x2 && y1 == y2) ? Blocks.liquidRouter : Blocks.bridgeConduit;
+            }else if(old == Blocks.reinforcedConduit){
+                block = (x1 == x2 && y1 == y2) ? Blocks.reinforcedLiquidRouter : Blocks.reinforcedBridgeConduit;
+            }
+        }
+
+        // Bridge + Shift + drag: pathfind around obstacles (axis hops ≤ range)
+        if(selectedBridge && Core.input.shift() && !(x1 == x2 && y1 == y2)){
+            buildPathfindBridgeLine(x1, y1, x2, y2);
+            block = old;
+            return;
+        }
+
+        // Bridge selected in hotbar + bridgeModifier (Alt): optimal diagonal (L-shape) route
+        if(bridgeMod && selectedBridge && !(x1 == x2 && y1 == y2)){
+            buildDiagonalBridgeLine(x1, y1, x2, y2);
+            block = old;
+            return;
+        }
+
+        iterateLine(x1, y1, x2, y2, (l) -> {
             rotation = l.rotation;
-            var plan = new BuildPlan(l.x, l.y, l.rotation, block, block.nextConfig());
+            BuildPlan plan = new BuildPlan(l.x, l.y, l.rotation, this.block, this.block.nextConfig());
             plan.animScale = 1f;
             linePlans.add(plan);
         });
 
-        if(Core.settings.getBool("blockreplace") != control.input.conveyorPlaceNormal || block instanceof ItemBridge){ // Bridges need this for weaving, I'm too lazy to fix this properly
+        if(block != null && (Core.settings.getBool("blockreplace") != conveyorPlaceNormal || block instanceof ItemBridge)){ // Bridges need this for weaving, I'm too lazy to fix this properly
             linePlans.each(plan -> {
                 Block replace = plan.block.getReplacement(plan, linePlans);
                 if(replace.unlockedNow()){
@@ -1653,6 +1699,120 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             });
 
             block.handlePlacementLine(linePlans);
+        }
+        block = old;
+    }
+
+    /** Full staircase of the current block (walls etc.) toward the cursor. */
+    private void buildDiagonalBlockLine(int x1, int y1, int x2, int y2){
+        if(block == null) return;
+        Seq<Point2> path = Placement.pathfindLine(false, x1, y1, x2, y2);
+        if(path.isEmpty()) return;
+
+        linePlans.clear();
+        for(Point2 p : path){
+            BuildPlan plan = new BuildPlan(p.x, p.y, 0, block, block.nextConfig());
+            plan.animScale = 1f;
+            linePlans.add(plan);
+        }
+    }
+
+    /** Bridge range for ItemBridge / DirectionBridge (default 4). */
+    private int bridgePlaceRange(){
+        if(block instanceof ItemBridge ib) return Math.max(1, ib.range);
+        if(block instanceof DirectionBridge db) return Math.max(1, db.range);
+        return 4;
+    }
+
+    /**
+     * Bridge + Shift: pathfind around obstacles (hop A*, else tile walk-around).
+     * Never places intermediate nodes on solids / never L-cuts through walls.
+     */
+    private void buildPathfindBridgeLine(int x1, int y1, int x2, int y2){
+        if(block == null) return;
+        int range = bridgePlaceRange();
+        Seq<Point2> nodes = new Seq<>();
+        Placement.buildBridgePath(x1, y1, x2, y2, range, block, rotation, nodes);
+        fillBridgeLinePlans(nodes);
+    }
+
+    /**
+     * Diagonal bridge via Alt: staircase toward cursor + range spacing + free corners.
+     */
+    private void buildDiagonalBridgeLine(int x1, int y1, int x2, int y2){
+        if(block == null) return;
+        int range = bridgePlaceRange();
+        Seq<Point2> nodes = new Seq<>();
+        Placement.diagonalBridgeNodes(x1, y1, x2, y2, range, block, rotation, nodes);
+        fillBridgeLinePlans(nodes);
+    }
+
+    /** Build linePlans from sparse bridge nodes; set ItemBridge configs to next node. */
+    private void fillBridgeLinePlans(Seq<Point2> nodes){
+        linePlans.clear();
+        if(nodes.isEmpty() || block == null) return;
+
+        for(int i = 0; i < nodes.size; i++){
+            Point2 p = nodes.get(i);
+            Point2 next = i + 1 < nodes.size ? nodes.get(i + 1) : null;
+            int rot = rotation;
+            if(next != null){
+                int r = Tile.relativeTo(p.x, p.y, next.x, next.y);
+                if(r != -1) rot = r;
+            }else if(i > 0){
+                Point2 prev = nodes.get(i - 1);
+                int r = Tile.relativeTo(prev.x, prev.y, p.x, p.y);
+                if(r != -1) rot = r;
+            }
+            rotation = rot;
+
+            // configs set explicitly so Shift weaving in handlePlacementLine does not skip hops
+            Object config = null;
+            if(next != null && block instanceof ItemBridge ib
+                    && ib.positionsValid(p.x, p.y, next.x, next.y)){
+                config = new Point2(next.x - p.x, next.y - p.y);
+            }
+
+            BuildPlan plan = new BuildPlan(p.x, p.y, rot, block, config);
+            plan.animScale = 1f;
+            linePlans.add(plan);
+        }
+
+        // DirectionBridge / others: still run handlePlacementLine when not shift-weaving sparse list
+        if(!(block instanceof ItemBridge) && linePlans.size > 0){
+            block.handlePlacementLine(linePlans);
+        }
+    }
+
+    /**
+     * Replace other wall types in the drag rectangle with an equivalent-size wall of the selected type.
+     * Triggered by holding Shift while placing walls (see {@link #updateLine}).
+     */
+    private void updateWallLine(int x1, int y1, int x2, int y2){
+        if(block == null) return;
+        String blockType = block.name.split("-wall")[0];
+        Seq<Block> equivalents = content.blocks().select(b -> b.name.startsWith(blockType + "-wall"));
+        int xmin = Math.min(x1, x2);
+        int xmax = Math.max(x1, x2);
+        int ymin = Math.min(y1, y2);
+        int ymax = Math.max(y1, y2);
+
+        for(int y = ymin; y <= ymax; y++){
+            for(int x = xmin; x <= xmax; x++){
+                Tile tile = world.tile(x, y);
+                if(tile == null) continue;
+                Block otherBlock = tile.block();
+                if(otherBlock == null || otherBlock == block || otherBlock.group != BlockGroup.walls || tile.build == null) continue;
+                Tile otherTile = tile.build.tile;
+                if(otherTile == null) continue;
+                if(otherTile != tile && !(x == xmin && otherTile.y == y) && y != ymin && otherTile.x != x) continue;
+                if(equivalents.contains(otherBlock, true)) continue;
+                Block replacement = equivalents.find(candidate -> candidate.size == otherBlock.size);
+                if(replacement == null) continue;
+                BuildPlan plan = new BuildPlan(otherTile.x, otherTile.y, 0, replacement, null);
+                plan.animScale = 1f;
+                linePlans.add(plan);
+            }
         }
     }
 
@@ -1768,10 +1928,44 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
     }
 
     boolean canMine(Tile tile){
-        return !Core.scene.hasMouse()
-            && player.unit().validMine(tile)
-            && player.unit().acceptsItem(player.unit().getMineResult(tile))
-            && !((!Core.settings.getBool("doubletapmine") && tile.floor().playerUnmineable) && tile.overlay().itemDrop == null);
+        Unit unit = player.unit();
+        if(tile == null || !unit.isValid() || Core.scene.hasMouse()) return false;
+        UnitType type = unit.type;
+        Block block = tile.block();
+        Item blockDrop = block.itemDrop;
+        Floor overlay = tile.overlay();
+        Item item = block == Blocks.air && type.mineFloor ? (overlay == Blocks.air ? tile.floor().itemDrop : overlay.itemDrop) : !type.mineWalls ? null : blockDrop != null ? blockDrop : overlay.wallOre ? overlay.itemDrop : null;
+        if(item == null || type.mineTier < item.hardness) return false;
+        float unitX = unit.x;
+        float unitY = unit.y;
+        float vecX = unitX - tile.x * 8f;
+        float vecY = unitY - tile.y * 8f;
+        float mineRange = type.mineRange;
+        if(vecX * vecX + vecY * vecY >= mineRange * mineRange) return false;
+        TeamData data = state.teams.getOrNull(unit.team);
+        if(data != null){
+            for(CoreBuild rawCore : data.cores){
+                vecX = unitX - rawCore.x;
+                vecY = unitY - rawCore.y;
+                if(vecX * vecX + vecY * vecY < 46225f) return true;
+            }
+        }
+        ItemStack stack = unit.stack;
+        int amount = stack.amount;
+        return amount == 0 || (stack.item == item && amount < type.itemCapacity);
+    }
+
+    boolean isSand(Tile tile){
+        if(tile == null) return false;
+        Unit unit = player.unit();
+        if(!unit.isValid()) return false;
+        UnitType type = unit.type;
+        Block block = tile.block();
+        Item blockDrop = block.itemDrop;
+        Floor overlay = tile.overlay();
+        Item item = block == Blocks.air && type.mineFloor ? (overlay == Blocks.air ? tile.floor().itemDrop : overlay.itemDrop) : !type.mineWalls ? null : blockDrop != null ? blockDrop : overlay.wallOre ? overlay.itemDrop : null;
+
+        return item != null && item.lowPriority;
     }
 
     /** Returns the tile at the specified MOUSE coordinates. */
@@ -2074,6 +2268,11 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         rotation * 90 - 90);
     }
 
+    /** True for item/liquid/duct bridges that support spaced diagonal placement lines. */
+    private static boolean isBridgePlacement(Block b){
+        return b instanceof ItemBridge || b instanceof DirectionBridge;
+    }
+
     void iterateLine(int startX, int startY, int endX, int endY, Cons<PlaceLine> cons){
         Seq<Point2> points;
         boolean diagonal = Core.input.keyDown(Binding.diagonal_placement);
@@ -2193,8 +2392,8 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         unit.controlWeapons(true, player.shooting && !boosted);
 
         player.boosting = !movement.isZero();
-        player.mouseX = unit.aimX();
-        player.mouseY = unit.aimY();
+        // hidecursor: report unit position while not shooting
+        CursorHide.applyReportedCursor(unit);
     }
 
     static class PlaceLine{

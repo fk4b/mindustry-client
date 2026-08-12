@@ -794,6 +794,8 @@ public class NetClient implements ApplicationListener{
             Unit unit = player.dead() ? Nulls.unit : player.unit();
             int uid = player.dead() ? -1 : unit.id;
             Vec2 aimPos = Main.INSTANCE.floatEmbed();
+            // Note: hide-cursor is applied via CursorHide.applyReportedCursor (unit.aim + mouseX/Y).
+            // Do not recompile whole NetClient for this — CFR decompile breaks ObjectMap.get(Prov).
 
             TypeIO.useConfigLocal = true; // Awful.
             Call.clientSnapshot(

@@ -100,6 +100,13 @@ public enum Binding implements KeyBind{
     show_massdriver_configs(KeyCode.f3),
     force_place_modifier(KeyCode.altLeft),
     run_js(KeyCode.u),
+
+    /**
+     * Модификатор мостов и контроля юнитов (default Alt).
+     * • line place: conveyor/duct/conduit → router / bridge
+     * • command mode: move-to-point, ignore enemy block/unit under cursor as attack target
+     */
+    bridgeModifier(KeyCode.altLeft, "client"),
     ;
 
     private final KeybindValue defaultValue;

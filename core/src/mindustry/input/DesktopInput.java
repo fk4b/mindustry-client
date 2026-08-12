@@ -935,8 +935,9 @@ public class DesktopInput extends InputHandler{
                 commandRectY = input.mouseWorldY();
             }else if(!checkConfigTap() && selected != null){
                 //only begin shooting if there's no cursor event
+                // sand (lowPriority ore): single click mines; doubletapmine still applies to other tiles
                 if(!tryTapPlayer(Core.input.mouseWorld().x, Core.input.mouseWorld().y) && !tileTapped(selected.build) && !player.unit().activelyBuilding() && !droppingItem
-                    && !(tryStopMine(selected) || (!settings.getBool("doubletapmine") || selected == prevSelected && Time.timeSinceMillis(selectMillis) < 500) && tryBeginMine(selected)) && !Core.scene.hasKeyboard()){
+                    && !(tryStopMine(selected) || (!(isSand(selected) || settings.getBool("doubletapmine")) || selected == prevSelected && Time.timeSinceMillis(selectMillis) < 500) && tryBeginMine(selected)) && !Core.scene.hasKeyboard()){
                     player.shooting = shouldShoot;
                 }
             }else if(!Core.scene.hasKeyboard()){ //if it's out of bounds, shooting is just fine
@@ -1146,8 +1147,8 @@ public class DesktopInput extends InputHandler{
         } else if (Navigation.currentlyFollowing instanceof MinePath mp && mp.getNewGame() && !movement.isZero()) Navigation.stopFollowing(); // Stop automatic mining on player move
         unit.controlWeapons(true, player.shooting && !boosted);
 
-        player.mouseX = unit.aimX();
-        player.mouseY = unit.aimY();
+        // hidecursor: report unit position while not shooting (hides real mouse from other players)
+        CursorHide.applyReportedCursor(unit);
 
         //update payload input
         if(unit instanceof Payloadc){

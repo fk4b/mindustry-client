@@ -1,6 +1,7 @@
 package mindustry.client.ui;
 
 import arc.*;
+import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 
@@ -12,6 +13,7 @@ import arc.scene.*;
 import arc.scene.event.ClickListener;
 import arc.scene.event.InputEvent;
 import arc.scene.event.InputListener;
+import arc.scene.style.TextureRegionDrawable;
 import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
@@ -219,6 +221,31 @@ public class PanelFragment extends Table{
         fdpanel.setZIndex(index);
     }
 
+    /** Equal-size assist-type toggle; unit icon forced small so mega/quasar do not blow up the grid. */
+    private static void addAssistTypeBtn(Table t, ImageButton.ImageButtonStyle style, UnitType type,
+                                         float cell, float iconSize, Boolp enabled, Boolc set, String tooltip){
+        TextureRegionDrawable icon = new TextureRegionDrawable(type.uiIcon);
+        // Force min size so Table does not expand to full unit sprite (mega/quasar)
+        icon.setMinWidth(iconSize);
+        icon.setMinHeight(iconSize);
+        var cellBtn = t.button(icon, style, () -> {
+            boolean next = !enabled.get();
+            set.get(next);
+            // turning a type on also enables master assist so the button actually does something
+            if(next && !MinersFDAI.autoAssistBuild){
+                MinersFDAI.setAutoAssistBuild(true);
+            }
+        }).size(cell).name("assist-" + type.name).tooltip(tooltip);
+        ImageButton b = cellBtn.get();
+        b.resizeImage(iconSize);
+        b.getImage().setScaling(Scaling.fit);
+        b.update(() -> {
+            boolean on = enabled.get() && MinersFDAI.autoAssistBuild;
+            b.setChecked(enabled.get());
+            b.getImage().setColor(on ? Color.acid : Color.white);
+        });
+    }
+
     public void build(Group parent){
         parent.fill(full -> {
             fdpanel = full;
@@ -304,7 +331,8 @@ public class PanelFragment extends Table{
 
                 });
 
-                // Heal (top) + AI build-assist toggle (bottom) — same cell size as other full buttons
+                // Heal (top) + AI build-assist master (bottom) — same cell size as other full buttons.
+                // Per-type Poly/Pulsar/Mega/Quasar toggles live in Trash (unit sprites break this grid).
                 t.table(tb -> {
                     float sz = settings.getInt("buttonsizefdpamel", 30);
                     tb.button(Icon.distributionSmall, sstyle, () -> {
@@ -353,7 +381,34 @@ public class PanelFragment extends Table{
 
                 t.row();
 
-                // Keep exactly 6 equal-size buttons per row so the panel stays a regular grid
+                // Build-assist types — own row, same cell size as the rest; icons forced small (no full-body sprites)
+                {
+                    float sz = settings.getInt("buttonsizefdpamel", 30);
+                    float icon = sz * 0.55f;
+                    addAssistTypeBtn(t, sstylet, UnitTypes.poly, sz, icon,
+                            () -> MinersFDAI.assistBuildPoly, MinersFDAI::setAssistBuildPoly, "@client.fdpanel.assistpoly");
+                    addAssistTypeBtn(t, sstylet, UnitTypes.pulsar, sz, icon,
+                            () -> MinersFDAI.assistBuildPulsar, MinersFDAI::setAssistBuildPulsar, "@client.fdpanel.assistpulsar");
+                    addAssistTypeBtn(t, sstylet, UnitTypes.mega, sz, icon,
+                            () -> MinersFDAI.assistBuildMega, MinersFDAI::setAssistBuildMega, "@client.fdpanel.assistmega");
+                    addAssistTypeBtn(t, sstylet, UnitTypes.quasar, sz, icon,
+                            () -> MinersFDAI.assistBuildQuasar, MinersFDAI::setAssistBuildQuasar, "@client.fdpanel.assistquasar");
+
+                    // Conveyor placement pathfinding (game setting) — same cell size
+                    t.button(Icon.diagonalSmall, sstylet, () -> {
+                        boolean on = !settings.getBool("conveyorpathfinding", true);
+                        settings.put("conveyorpathfinding", on);
+                    }).update(b -> {
+                        boolean on = settings.getBool("conveyorpathfinding", true);
+                        b.setChecked(on);
+                        b.getImage().setColor(on ? Color.acid : Color.white);
+                    }).name("conveyorpathfind").tooltip("@client.fdpanel.conveyorpathfind")
+                            .size(sz);
+                }
+
+                t.row();
+
+                // Keep equal-size buttons per row so the panel stays a regular grid
                 t.button(Icon.eyeOffSmall, sstyle, () -> {
                     enableLight = !enableLight;
                 }).name("light").tooltip("@client.fdpanel.light");

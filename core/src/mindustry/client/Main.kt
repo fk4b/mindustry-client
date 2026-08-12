@@ -278,7 +278,8 @@ object Main : ApplicationListener {
         communicationClient.send(transmission, onFinish)
     }
 
-    /** Uses [Tmp.v1], do not cache returned vec or call this function on non-main thread. */
+    /** Uses [Tmp.v1], do not cache returned vec or call this function on non-main thread.
+     *  Note: NetClient also applies [CursorHide.adjustSnapshotAim] so hide works without recompiling this class. */
     fun floatEmbed(): Vec2 {
         val show = Core.settings.getBool("displayasuser")
         return when {

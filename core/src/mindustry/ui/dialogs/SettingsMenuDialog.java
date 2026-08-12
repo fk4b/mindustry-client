@@ -385,6 +385,7 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("drawpath", true);
         client.checkPref("drawselectionvanilla", false);
         client.checkPref("drawcursors", false);
+        client.checkPref("hidecursor", false); // pin reported cursor to unit while not shooting
         client.checkPref("drawdisplayborder", false);
         client.checkPref("tracelogicunits", false);
         client.checkPref("enemyunitranges", false);
