@@ -1122,29 +1122,31 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         plans.each(plan -> {
             if(plan.breaking) return;
 
+            // even-size: rotate relative configs around half-tile center
+            float off = plan.block.size % 2 == 0 ? -0.5f : 0f;
             plan.pointConfig(p -> {
-                int cx = p.x, cy = p.y;
-                int lx = cx;
-
+                float cx = p.x + off, cy = p.y + off;
+                float tmp = cx;
                 if(direction >= 0){
                     cx = -cy;
-                    cy = lx;
+                    cy = tmp;
                 }else{
                     cx = cy;
-                    cy = -lx;
+                    cy = -tmp;
                 }
-                p.set(cx, cy);
+                p.set(Mathf.floor(cx - off), Mathf.floor(cy - off));
             });
 
-            //rotate actual plan, centered on its multiblock position
-            float wx = (plan.x - ox) * tilesize + plan.block.offset, wy = (plan.y - oy) * tilesize + plan.block.offset;
-            float x = wx;
+            // rotate plan position about schematic origin (temp keeps old wx)
+            float wx = (plan.x - ox) * tilesize + plan.block.offset;
+            float wy = (plan.y - oy) * tilesize + plan.block.offset;
+            float tmp = wx;
             if(direction >= 0){
                 wx = -wy;
-                wy = x;
+                wy = tmp;
             }else{
                 wx = wy;
-                wy = -x;
+                wy = -tmp;
             }
             plan.x = World.toTile(wx - plan.block.offset) + ox;
             plan.y = World.toTile(wy - plan.block.offset) + oy;

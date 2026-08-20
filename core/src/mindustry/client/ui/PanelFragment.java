@@ -404,6 +404,16 @@ public class PanelFragment extends Table{
                         b.getImage().setColor(on ? Color.acid : Color.white);
                     }).name("conveyorpathfind").tooltip("@client.fdpanel.conveyorpathfind")
                             .size(sz);
+
+                    // Safe mining: skip enemy turret range + 5 tiles
+                    t.button(Icon.defenseSmall, sstylet, () ->
+                                    MinersFDAI.setSafeMining(!MinersFDAI.safeMining))
+                            .update(b -> {
+                                boolean on = MinersFDAI.safeMining;
+                                b.setChecked(on);
+                                b.getImage().setColor(on ? Color.acid : Color.white);
+                            }).name("safemine").tooltip("@client.fdpanel.safemine")
+                            .size(sz);
                 }
 
                 t.row();

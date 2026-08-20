@@ -253,6 +253,7 @@ public class TrashDialog extends BaseDialog {
             }).row();
 
             tt.check("@client.fdtrash.autoUnitRepair", MinersFDAI.autoUnitRepair, MinersFDAI::setAutoUnitRepair).row();
+            tt.check("@client.fdtrash.safeMining", MinersFDAI.safeMining, MinersFDAI::setSafeMining).row();
 
             tt.check("@client.fdtrash.autoAssistBuild", MinersFDAI.autoAssistBuild, MinersFDAI::setAutoAssistBuild).row();
             tt.check("@client.fdtrash.assistBuildPoly", MinersFDAI.assistBuildPoly, MinersFDAI::setAssistBuildPoly).row();

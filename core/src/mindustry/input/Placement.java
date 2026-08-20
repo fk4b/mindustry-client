@@ -549,84 +549,89 @@ public class Placement{
     }
 
     public static void calculateBridges(Seq<BuildPlan> plans, ItemBridge bridge){
-        if(isSidePlace(plans)) return;
+        // jar Conveyor may call the 4-arg overload; 2-arg is a thin wrapper
+        calculateBridges(plans, bridge, false, t -> false);
+    }
 
-        //check for orthogonal placement + unlocked state
-        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()){
-            return;
-        }
+    /**
+     * ItemBridge bridging over gaps in a line (used by Conveyor/Conduit in this client).
+     * Signature must stay: (Seq, ItemBridge, boolean, Boolf) — see Conveyor.handlePlacementLine.
+     */
+    public static void calculateBridges(Seq<BuildPlan> plans, ItemBridge bridge, boolean hasJunction, Boolf<Block> avoid){
+        if(isSidePlace(plans) || plans.size == 0) return;
+        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()) return;
 
-        Boolf<BuildPlan> placeable = plan -> (plan.placeable(player.team())) ||
-            (plan.tile() != null && (plan.tile().block() == plan.block || plan.tile().block().group == plan.block.group &&
-            !(plan.tile().block() instanceof StackConveyor) && !(plan.tile().block() instanceof PayloadConveyor)));
+        Boolf<BuildPlan> placeable = plan ->
+            (plan.placeable(player.team())
+                || (plan.tile() != null && plan.tile().block() == plan.block && plan.tile().interactable(player.team())))
+            && (plan == plans.first() || plan.build() == null || plan.build().rotation == plan.rotation
+                || plan.tile() == null || !avoid.get(plan.tile().block()));
 
         var result = plans1.clear();
-        var team = player.team();
-        var rotated = plans.first().tile() != null && plans.first().tile().absoluteRelativeTo(plans.peek().x, plans.peek().y) == Mathf.mod(plans.first().rotation + 2, 4);
+        boolean rotated = plans.first().tile() != null
+            && plans.first().tile().absoluteRelativeTo(plans.peek().x, plans.peek().y)
+                == Mathf.mod(plans.first().rotation + 2, 4);
 
         outer:
         for(int i = 0; i < plans.size;){
             var cur = plans.get(i);
             result.add(cur);
 
-            //gap found
             if(i < plans.size - 1 && placeable.get(cur) && !placeable.get(plans.get(i + 1))){
+                boolean wereSame = true;
 
-                //find the closest valid position within range
                 for(int j = i + 1; j < plans.size; j++){
                     var other = plans.get(j);
 
-                    //out of range now, set to current position and keep scanning forward for next occurrence
                     if(!bridge.positionsValid(cur.x, cur.y, other.x, other.y)){
-                        //add 'missed' conveyors
                         for(int k = i + 1; k < j; k++){
                             result.add(plans.get(k));
                         }
                         i = j;
                         continue outer;
-                    }else if(other.placeable(team)){
-                        //found a link, assign bridges
+                    }
+
+                    if(placeable.get(other)){
+                        if(wereSame && hasJunction){
+                            i++;
+                            continue outer;
+                        }
                         cur.block = bridge;
                         other.block = bridge;
                         if(rotated){
-                            other.config = new Point2(cur.x - other.x,  cur.y - other.y);
+                            other.config = new Point2(cur.x - other.x, cur.y - other.y);
                         }else{
                             cur.config = new Point2(other.x - cur.x, other.y - cur.y);
                         }
-
                         i = j;
                         continue outer;
                     }
+
+                    if(other.tile() != null && (!avoid.get(other.tile().block()) || !other.tile().interactable(player.team()))){
+                        wereSame = false;
+                    }
                 }
 
-                //if it got here, that means nothing was found. this likely means there's a bunch of stuff at the end; add it and bail out
                 for(int j = i + 1; j < plans.size; j++){
                     result.add(plans.get(j));
                 }
                 break;
             }else{
-                i ++;
+                i++;
             }
         }
 
         plans.set(result);
     }
 
-    public static void calculateBridges(Seq<BuildPlan> plans, DirectionBridge bridge, boolean hasJunction, Boolf<Block> same){
-        if(isSidePlace(plans)) return;
+    public static void calculateBridges(Seq<BuildPlan> plans, DirectionBridge bridge, boolean hasJunction, Boolf<Block> avoid){
+        if(isSidePlace(plans) || plans.size == 0) return;
+        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()) return;
 
-        //check for orthogonal placement + unlocked state
-        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()){
-            return;
-        }
-
-        Boolf<BuildPlan> rotated = plan -> plan.build() != null && same.get(plan.build().block) && plan.rotation != plan.build().rotation;
-
-        //TODO for chains of ducts, do not count consecutives in a different rotation as 'placeable'
         Boolf<BuildPlan> placeable = plan ->
-            !(!hasJunction && rotated.get(plan)) &&
-            (plan.placeable(player.team()) ||
-            (plan.tile() != null && same.get(plan.tile().block()))); //don't count the same block as inaccessible
+            (plan.placeable(player.team()) || (plan.tile() != null && plan.tile().block() == plan.block))
+            && (plan == plans.first() || plan.build() == null || plan.build().rotation == plan.rotation
+                || plan.tile() == null || !avoid.get(plan.tile().block()));
 
         var result = plans1.clear();
 
@@ -635,38 +640,42 @@ public class Placement{
             var cur = plans.get(i);
             result.add(cur);
 
-            //gap found
-            if(i < plans.size - 1 && placeable.get(cur) && (!placeable.get(plans.get(i + 1)) || (hasJunction && rotated.get(plans.get(i + 1)) && i < plans.size - 2 && !placeable.get(plans.get(i + 2))))){
+            if(i < plans.size - 1 && placeable.get(cur) && !placeable.get(plans.get(i + 1))){
+                boolean wereSame = true;
 
-                //find the closest valid position within range
-                for(int j = i + 2; j < plans.size; j++){
+                for(int j = i + 1; j < plans.size; j++){
                     var other = plans.get(j);
 
-                    //out of range now, set to current position and keep scanning forward for next occurrence
                     if(!bridge.positionsValid(cur.x, cur.y, other.x, other.y)){
-                        //add 'missed' conveyors
                         for(int k = i + 1; k < j; k++){
                             result.add(plans.get(k));
                         }
                         i = j;
                         continue outer;
-                    }else if(placeable.get(other)){
-                        //found a link, assign bridges
+                    }
+
+                    if(placeable.get(other)){
+                        if(wereSame && hasJunction){
+                            i++;
+                            continue outer;
+                        }
                         cur.block = bridge;
                         other.block = bridge;
-
                         i = j;
                         continue outer;
                     }
+
+                    if(other.tile() != null && !avoid.get(other.tile().block())){
+                        wereSame = false;
+                    }
                 }
 
-                //if it got here, that means nothing was found. this likely means there's a bunch of stuff at the end; add it and bail out
                 for(int j = i + 1; j < plans.size; j++){
                     result.add(plans.get(j));
                 }
                 break;
             }else{
-                i ++;
+                i++;
             }
         }
 

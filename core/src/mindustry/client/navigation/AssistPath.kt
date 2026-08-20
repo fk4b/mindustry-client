@@ -11,8 +11,10 @@ import mindustry.client.ClientVars.*
 import mindustry.client.communication.*
 import mindustry.entities.units.*
 import mindustry.game.EventType.*
+import mindustry.game.Team
 import mindustry.gen.*
 import mindustry.input.*
+import mindustry.world.blocks.defense.turrets.BaseTurret
 import mindustry.world.blocks.distribution.ItemBridge
 import mindustry.world.blocks.liquid.LiquidBridge
 import mindustry.world.blocks.power.PowerNode
@@ -39,6 +41,9 @@ class AssistPath(
     private var orbitRadius = 0f
     private val transferTimer = Interval()
     private val orbitPos = Vec2()
+    /** Circle-assist freeze: orbit would enter an enemy turret, stay at a safe help point. */
+    private var orbitPaused = false
+    private val safeHoldOffset = Vec2()
 
     companion object {
         private var lastType: Type = Type.Regular
@@ -174,15 +179,6 @@ class AssistPath(
         if (player?.dead() != false) return
         assisting?.unit() ?: return
 
-        if (circling) {
-            // hold does not need phase motion; other routes advance theta
-            // Negative speed = clockwise / reverse patrol direction
-            if (OrbitShape.fromSetting() != OrbitShape.hold) {
-                theta += Time.delta / 60f * Core.settings.getFloat("circleassistspeed", 0f) * Mathf.PI2
-                theta = Mathf.mod(theta, Mathf.PI2)
-            }
-        }
-
         aStarTolerance = assisting.unit().hitSize * Core.settings.getFloat("assistdistance", 5f) + tilesize * 5
         tolerance = if (circling) 0.1f else assisting.unit().hitSize * Core.settings.getFloat("assistdistance", 5f)
         orbitRadius = if (circling) {
@@ -225,6 +221,122 @@ class AssistPath(
         }
     }
 
+    /**
+     * Advance the orbit only while the next point is outside enemy turret range.
+     * If the circle would enter a turret, freeze rotation and stand at a safe
+     * point still inside [orbitRadius] of the assisted player (so we can keep helping).
+     */
+    private fun updateSafeOrbit() {
+        val ax = assisting!!.x
+        val ay = assisting.y
+        val shape = OrbitShape.fromSetting()
+        val speed = Core.settings.getFloat("circleassistspeed", 0f)
+
+        var tryTheta = theta
+        if (shape != OrbitShape.hold) {
+            tryTheta = Mathf.mod(theta + Time.delta / 60f * speed * Mathf.PI2, Mathf.PI2)
+        }
+
+        orbitOffset(tryTheta, orbitRadius, out = orbitPos, facingDeg = assisting.unit().rotation)
+        val nx = ax + orbitPos.x
+        val ny = ay + orbitPos.y
+
+        if (enemyTurretCovers(nx, ny)) {
+            val holdX = ax + safeHoldOffset.x
+            val holdY = ay + safeHoldOffset.y
+            val holdStillGood = orbitPaused
+                && safeHoldOffset.len() <= orbitRadius + tilesize
+                && !enemyTurretCovers(holdX, holdY)
+
+            if (!holdStillGood) {
+                if (findSafeAssistPoint(ax, ay, orbitRadius, player.x, player.y, safeHoldOffset)) {
+                    safeHoldOffset.sub(ax, ay)
+                } else {
+                    // No safe help spot in radius — stay put rather than fly into the turret
+                    safeHoldOffset.set(player.x - ax, player.y - ay)
+                    if (safeHoldOffset.len() > orbitRadius) safeHoldOffset.setLength(orbitRadius)
+                }
+            }
+            orbitPos.set(safeHoldOffset)
+            orbitPaused = true
+            return
+        }
+
+        if (orbitPaused) {
+            // Path is clear again — resume from our current angle so we do not jump
+            theta = Mathf.mod(Mathf.atan2(player.x - ax, player.y - ay), Mathf.PI2)
+            orbitPaused = false
+            orbitOffset(theta, orbitRadius, out = orbitPos, facingDeg = assisting.unit().rotation)
+            if (enemyTurretCovers(ax + orbitPos.x, ay + orbitPos.y)) {
+                // Snapped angle is still in the turret (edge case) — stay frozen
+                orbitPaused = true
+                orbitPos.set(safeHoldOffset)
+                return
+            }
+        } else {
+            theta = tryTheta
+        }
+    }
+
+    /** True if an enemy turret that can hit our unit covers (x, y). */
+    private fun enemyTurretCovers(x: Float, y: Float): Boolean {
+        val u = player.unit() ?: return false
+        val flying = u.isFlying
+        val extra = u.hitSize * 0.5f + tilesize
+        val self = player.team()
+        var covered = false
+        Groups.build.each { b ->
+            if (covered || b == null || !b.isValid) return@each
+            if (b.team == self || b.team == Team.derelict) return@each
+            val tb = b as? BaseTurret.BaseTurretBuild ?: return@each
+            if (flying && !tb.targetAir()) return@each
+            if (!flying && !tb.targetGround()) return@each
+            val r = tb.range() + extra
+            if (b.within(x, y, r)) covered = true
+        }
+        return covered
+    }
+
+    /**
+     * Find a point within [radius] of (ax, ay) that is not in enemy turret range.
+     * Prefers staying near (fromX, fromY) so we do not run through the turret to the far side.
+     * @return true and writes world coords into [out]
+     */
+    private fun findSafeAssistPoint(
+        ax: Float,
+        ay: Float,
+        radius: Float,
+        fromX: Float,
+        fromY: Float,
+        out: Vec2
+    ): Boolean {
+        if (Mathf.dst(fromX, fromY, ax, ay) <= radius + tilesize && !enemyTurretCovers(fromX, fromY)) {
+            out.set(fromX, fromY)
+            return true
+        }
+
+        var bestD = Float.POSITIVE_INFINITY
+        var found = false
+        val steps = 24
+        val rings = floatArrayOf(0.3f, 0.55f, 0.8f, 1f)
+        for (ring in rings) {
+            val r = radius * ring
+            for (i in 0 until steps) {
+                val ang = i * Mathf.PI2 / steps
+                val px = ax + Mathf.cos(ang) * r
+                val py = ay + Mathf.sin(ang) * r
+                if (enemyTurretCovers(px, py)) continue
+                val d = Mathf.dst2(fromX, fromY, px, py)
+                if (d < bestD) {
+                    bestD = d
+                    out.set(px, py)
+                    found = true
+                }
+            }
+        }
+        return found
+    }
+
     private fun handleInput() {
         if (player?.dead() != false) return
         assisting?.unit() ?: return
@@ -250,13 +362,9 @@ class AssistPath(
         unit.lookAt(lookPos)
 
         if (circling && orbitRadius > 0f) {
-            orbitOffset(
-                theta,
-                orbitRadius,
-                out = orbitPos,
-                facingDeg = assisting.unit().rotation
-            )
+            updateSafeOrbit()
         } else {
+            orbitPaused = false
             orbitPos.setZero()
         }
 

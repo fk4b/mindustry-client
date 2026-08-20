@@ -5,6 +5,7 @@ import arc.math.geom.*
 import arc.struct.*
 import arc.util.*
 import mindustry.Vars.*
+import mindustry.client.fallen.MinersFDAI
 import mindustry.client.utils.*
 import mindustry.game.*
 import mindustry.gen.*
@@ -135,7 +136,16 @@ class MinePath @JvmOverloads constructor(
             else -> false
         }
 
-        tile = indexer.findClosestMineableOre(player.unit(), bestItem)
+        tile = if (MinersFDAI.safeMining) {
+            val safe = MinersFDAI.findSafeOreFor(player.unit(), bestItem)
+            if (safe == null) {
+                MinersFDAI.disableMineResource(bestItem, Core.bundle.get("client.fd.safemine.reason.turrets"))
+                items.remove(bestItem)
+            }
+            safe
+        } else {
+            indexer.findClosestMineableOre(player.unit(), bestItem)
+        }
 
         val canContinueMiningWithFullInventory = if (tile != null && isInventoryFull) {
             val isPlayerNearCore = player.within(core, tilesize * 27f)
