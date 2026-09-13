@@ -55,8 +55,12 @@ public class OverlayRenderer{
 
         Seq<Vec2> pos = new Seq<>();
         Seq<CoreBuild> teams = new Seq<>();
-        for(TeamData team : state.teams.active){
-            for(CoreBuild b : team.cores){
+        for(TeamData data : state.teams.active){
+            if(!data.team.rules().protectCores){
+                continue;
+            }
+
+            for(CoreBuild b : data.cores){
                 teams.add(b);
                 pos.add(new Vec2(b.x, b.y));
             }
@@ -74,25 +78,33 @@ public class OverlayRenderer{
     }
 
     public void drawBottom(){
-        if(ClientVars.hidingPlans || player.dead()) return;
+        if(ClientVars.hidingPlans) return;
 
-//        if (player.isBuilder()) player.unit().drawBuildPlans();
-        player.unit().drawBuildPlans();
+        InputHandler input = control.input;
+
+        if(renderer.showOtherBuildPlans){
+            input.drawOtherBuildPlans();
+        }
+
         drawFrozenPlans();
+//        if(player.isBuilder()){
+            input.drawBuildPlans();
+//        }
 
-//        InputHandler input = control.input;
-//        input.drawBottom();
-        control.input.drawBottom();
+        input.drawBottom();
     }
 
     public void drawFrozenPlans(){
         // move frozenPlans.size == 0 out from skip
         if(frozenPlans.size == 0) return;
 
-        // see player.unit().drawBuildPlans();
+        // see input.drawBuildPlans();
         var team = player.team();
         var plantopAlpha = 0.24F + Mathf.absin(Time.globalTime, 6.0F, 0.28F);
-        Boolf<BuildPlan> skip = plan ->/*plan.progress > 0.01F ||*/ frozenPlans.first() == plan && plan.initialized && (player.unit().within(plan.x * tilesize, plan.y * tilesize, buildingRange) || state.isEditor());
+        Boolf<BuildPlan> skip = plan -> {
+            Unit unit = player.unit();
+            return /*plan.progress > 0.01F ||*/ frozenPlans.first() == plan && plan.initialized && (unit != null && unit.within(plan.x * tilesize, plan.y * tilesize, buildingRange) || state.isEditor());
+        };
 
         for (int i = 0; i < 2; i++) {
             for (BuildPlan plan : frozenPlans) {
@@ -116,7 +128,7 @@ public class OverlayRenderer{
 
     public void drawTop(){
 
-        if(!player.dead() && ui.hudfrag.shown){
+        if(!player.dead() && ui.hudfrag.shown()){
             if(Core.settings.getBool("playerindicators")){
                 for(Player player : Groups.player){
                     if(Vars.player != player && Vars.player.team() == player.team()){
@@ -147,13 +159,6 @@ public class OverlayRenderer{
             }
         }
 
-        //draw objective markers
-        state.rules.objectives.eachRunning(obj -> {
-            for(var marker : obj.markers) marker.draw();
-        });
-
-        if(player.dead()) return; //dead players don't draw
-
         InputHandler input = control.input;
 
         Sized select = input.selectedUnit();
@@ -169,9 +174,11 @@ public class OverlayRenderer{
             Draw.mixcol(showingError ? Pal.remove : Pal.accent, 1f);
             Draw.alpha(unitFade);
             Building build = (select instanceof BlockUnitc b ? b.tile() : select instanceof Building b ? b : null);
-            TextureRegion region = build != null ? build.block.fullIcon : select instanceof Unit u ? u.icon() : Core.atlas.white();
+            TextureRegion region = build != null ? build.block.fullIcon : Core.atlas.white();
 
-            Draw.rect(region, select.getX(), select.getY(), select instanceof Unit u && !(select instanceof BlockUnitc) ? u.rotation - 90f : 0f);
+            if(select instanceof BlockUnitc){
+                Draw.rect(region, select.getX(), select.getY());
+            }
 
             for(int i = 0; i < 4; i++){
                 if(showingError){//Show a warning icon
@@ -195,7 +202,10 @@ public class OverlayRenderer{
             tile.drawConfigure();
         }
 
-        input.drawTop();
+        if(!player.dead()) input.drawTop();
+        input.drawUnitSelection();
+
+        if(player.dead()) return; //dead players don't draw
 
         buildFade = Mathf.lerpDelta(buildFade, input.isPlacing() || input.isUsingSchematic() ? 1f : 0f, 0.06f);
 
@@ -222,11 +232,12 @@ public class OverlayRenderer{
             }else{
                 state.teams.eachEnemyCore(player.team(), core -> {
                     //it must be clear that there is a core here.
-                    if(/*core.wasVisible && */Core.camera.bounds(Tmp.r1).overlaps(Tmp.r2.setCentered(core.x, core.y, state.rules.enemyCoreBuildRadius * 2f))){
+                    float br = state.rules.buildRadius(core.team);
+                    if(/*core.wasVisible && */br > 0f && Core.camera.bounds(Tmp.r1).overlaps(Tmp.r2.setCentered(core.x, core.y, br * 2f))){
                         Draw.color(Color.darkGray);
-                        Lines.circle(core.x, core.y - 2, state.rules.enemyCoreBuildRadius);
+                        Lines.circle(core.x, core.y - 2,br);
                         Draw.color(Pal.accent, core.team.color, 0.5f + Mathf.absin(Time.time, 10f, 0.5f));
-                        Lines.circle(core.x, core.y, state.rules.enemyCoreBuildRadius);
+                        Lines.circle(core.x, core.y, br);
                     }
                 });
             }
@@ -235,12 +246,14 @@ public class OverlayRenderer{
         Lines.stroke(2f);
         Draw.color(Color.gray, Color.lightGray, Mathf.absin(Time.time, 8f, 1f));
 
-        if(state.hasSpawns()){
+        if(state.hasSpawns() || state.hasSector() && state.getSector().vulnerable()){
             Core.camera.bounds(Tmp.r1);
+            boolean isBuilding = input.isBreaking() || input.isPlacing() || input.selectPlans.any() || Core.settings.getBool("alwaysshowdropzone", true);
+            float r = state.rules.dropZoneRadius;
             for(Tile tile : spawner.getSpawns()){
-                if(tile.within(player.x, player.y, state.rules.dropZoneRadius + spawnerMargin) || (input.isBreaking() || input.isPlacing() || input.selectPlans.any()) && Tmp.r1.overlaps(tile.getX() - state.rules.dropZoneRadius, tile.getY() - state.rules.dropZoneRadius, state.rules.dropZoneRadius * 2, state.rules.dropZoneRadius * 2)){
-                    Draw.alpha(input.isBreaking() || input.isPlacing() || input.selectPlans.any() ? 1 : Mathf.clamp(1f - (player.dst(tile) - state.rules.dropZoneRadius) / spawnerMargin));
-                    Lines.dashCircle(tile.worldx(), tile.worldy(), state.rules.dropZoneRadius);
+                if(tile.within(player.x, player.y, r + spawnerMargin) || (Tmp.r1.overlaps(tile.getX() - r, tile.getY() - r, r * 2, r * 2) && isBuilding)){
+                    Draw.alpha(!state.hasSpawns() ? 0.3f : isBuilding ? 1 : Mathf.clamp(1f - (player.dst(tile) - r) / spawnerMargin));
+                    Lines.dashCircle(tile.worldx(), tile.worldy(), r);
                 }
             }
         }
@@ -258,7 +271,7 @@ public class OverlayRenderer{
                    build.drawDisabled();
                 }
 
-                if(Core.input.keyDown(Binding.rotateplaced) && !ui.chatfrag.shown() && build.block.rotate && build.block.quickRotate && build.interactable(player.team())){
+                if(Core.input.keyDown(Binding.rotatePlaced) && !ui.chatfrag.shown() && build.block.rotate && build.block.quickRotate && build.interactable(player.team())){
                     control.input.drawArrow(build.block, build.tileX(), build.tileY(), build.rotation, true);
                     Draw.color(Pal.accent, 0.3f + Mathf.absin(4f, 0.2f));
                     Fill.square(build.x, build.y, build.block.size * tilesize/2f);
@@ -269,7 +282,7 @@ public class OverlayRenderer{
 
         input.drawOverSelect();
 
-        if(ui.hudfrag.blockfrag.hover() instanceof Unit unit && unit.controller() instanceof LogicAI ai && ai.controller != null && ai.controller.isValid()){
+        if(ui.hudfrag.blockfrag.hover() instanceof Unit unit && unit.controller() instanceof LogicAI ai && ai.controller != null && ai.controller.isValid() && !hidingUnits && !(hidingAirUnits && unit.isFlying())){
             var build = ai.controller;
             Drawf.square(build.x, build.y, build.block.size * tilesize/2f + 2f);
             if (Core.settings.getBool("tracelogicunits")) build.drawSelect();
@@ -288,8 +301,10 @@ public class OverlayRenderer{
             Draw.reset();
 
             Building build = world.buildWorld(v.x, v.y);
-            if(input.canDropItem() && build != null && build.interactable(player.team()) && build.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit()) > 0 && player.within(build, itemTransferRange)){
-                boolean invalid = (state.rules.onlyDepositCore && !(build instanceof CoreBuild));
+            if(input.canDropItem() && build != null && build.interactable(player.team()) && build.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit()) > 0 && player.within(build, itemTransferRange) &&
+                input.canDepositItem(build)){
+
+                boolean invalid = !build.allowDeposit();
 
                 Lines.stroke(3f, Pal.gray);
                 Lines.square(build.x, build.y, build.block.size * tilesize / 2f + 3 + Mathf.absin(Time.time, 5f, 1f));
@@ -302,8 +317,15 @@ public class OverlayRenderer{
                 }
             }
         }
-        
+
         ProcessorFinder.INSTANCE.draw();
+    }
+
+    public void checkApplySelection(Unit u){
+        if(unitFade > 0.001f && lastSelect == u){
+            Color prev = Draw.getMixColor();
+            Draw.mixcol(prev.a > 0.001f ? prev.lerp(Pal.accent, unitFade) : Pal.accent, Math.max(unitFade, prev.a));
+        }
     }
 
     private static class CoreEdge{

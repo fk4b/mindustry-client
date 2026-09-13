@@ -8,6 +8,8 @@ import mindustry.gen.*;
 import mindustry.world.*;
 import mindustry.world.meta.*;
 
+import static mindustry.Vars.state;
+
 public class SwitchBlock extends Block{
     public Sound clickSound = Sounds.click;
 
@@ -19,13 +21,38 @@ public class SwitchBlock extends Block{
         update = true;
         drawDisabled = false;
         autoResetEnabled = false;
+        configureSound = Sounds.none;
         group = BlockGroup.logic;
         envEnabled = Env.any;
 
         config(Boolean.class, (SwitchBuild entity, Boolean b) -> entity.enabled = b);
     }
 
+    public boolean accessible(){
+        return !privileged || state.rules.editor || state.rules.allowEditWorldProcessors;
+    }
+
+    @Override
+    public boolean canBreak(Tile tile){
+        return accessible();
+    }
+
     public class SwitchBuild extends Building{
+        @Override
+        public void damage(float damage){
+            if(privileged) return;
+            super.damage(damage);
+        }
+
+        @Override
+        public boolean canPickup(){
+            return !privileged;
+        }
+
+        @Override
+        public boolean collide(Bullet other){
+            return !privileged;
+        }
 
         @Override
         public boolean configTapped(){
@@ -54,8 +81,8 @@ public class SwitchBlock extends Block{
         }
 
         @Override
-        public void readAll(Reads read, byte revision){
-            super.readAll(read, revision);
+        public void read(Reads read, byte revision){
+            super.read(read, revision);
 
             if(revision == 1){
                 enabled = read.bool();

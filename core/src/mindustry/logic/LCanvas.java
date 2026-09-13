@@ -21,6 +21,7 @@ import mindustry.ui.*;
 
 import java.util.*;
 
+import static arc.Core.scene;
 import static mindustry.Vars.*;
 
 public class LCanvas extends Table{
@@ -61,14 +62,18 @@ public class LCanvas extends Table{
         rebuild();
     }
 
-    /** @return if statement elements should have rows. */
-    public static boolean useRows(){
-        return Core.graphics.getWidth() < Scl.scl(900f) / (Core.settings.getInt("processorstatementscale") / 100f);
+    public static boolean isCompact(){
+        return Core.graphics.getWidth() < Scl.scl(900f);
+    }
+
+
+    public static float getTargetWidth(){
+        return isCompact() ? (512.5f * Core.settings.getInt("processorstatementscale") / 100f) : Mathf.clamp(Core.graphics.getWidth() / Scl.scl(1f) * 0.95f - Scl.scl(80f), 400f, 1200f);
     }
 
     public static void tooltip(Cell<?> cell, String key){
         String lkey = key.toLowerCase().replace(" ", "");
-        if(Core.settings.getBool("logichints", true) && Core.bundle.has(lkey)){
+        if(Core.bundle.has(lkey)){
             var tip = new Tooltip(t -> t.background(Styles.black8).margin(4f).add("[lightgray]" + Core.bundle.get(lkey)).style(Styles.outlineLabel));
 
             //mobile devices need long-press tooltips
@@ -90,7 +95,6 @@ public class LCanvas extends Table{
             }else{
                 cell.get().addListener(tip);
             }
-
         }
     }
 
@@ -104,8 +108,7 @@ public class LCanvas extends Table{
     }
 
     public void rebuild(){
-//        targetWidth = useRows() ? 400f : 900f;
-        targetWidth = Core.graphics.getWidth() * Core.settings.getInt("processorstatementscale") / 100f;
+        targetWidth = getTargetWidth();
         float s = pane != null ? pane.getVisualScrollY() : 0f;
         String toLoad = statements != null ? save() : null;
 
@@ -114,12 +117,27 @@ public class LCanvas extends Table{
         statements = new DragLayout();
         jumps = new WidgetGroup();
 
-        pane = pane(t -> {
-            t.center();
-            t.add(statements).pad(2f).center().width(targetWidth);
-            t.add(jumps);
-            jumps.cullable = false;
+        Table t = new Table();
+        t.center();
+        t.add(statements).pad(2f).center().width(targetWidth);
+        t.add(jumps);
+        jumps.cullable = false;
+        pane = add(new ScrollPane(t, scene.getStyle(ScrollPane.ScrollPaneStyle.class)){
+            private long lastScrollTime = 0L;
+            private long scrollDuration = 0L;
+            @Override
+            protected float getMouseWheelY() {
+                long currTime = Time.millis();
+                if (currTime - lastScrollTime > 300) scrollDuration = 0L;
+                else scrollDuration += (currTime - lastScrollTime);
+                lastScrollTime = currTime;
+                float fastSpeed = super.getMouseWheelY(), slowSpeed = getHeight() / 4f;
+                if (slowSpeed > fastSpeed) return fastSpeed;
+                return Mathf.lerp(slowSpeed, fastSpeed * 2f, // why 4 and 2? i just came up with it
+                        Mathf.clamp((float)scrollDuration / 3000f));
+            }
         }).grow().get();
+
         Element e = new Element();
         e.setColor(0, 0, 0, 0);
         e.setSize(0);
@@ -132,14 +150,7 @@ public class LCanvas extends Table{
             visibleBoundUpper = visibleBoundLower + pane.getHeight();
         });
         pane.setFlickScroll(false);
-
         pane.setScrollYForce(s);
-        pane.updateVisualScroll();
-        //load old scroll percent
-        Core.app.post(() -> {
-            pane.setScrollYForce(s);
-            pane.updateVisualScroll();
-        });
 
         if(toLoad != null){
             load(toLoad);
@@ -223,8 +234,14 @@ public class LCanvas extends Table{
         recalculate();
     }
 
+    public void clearStatements(){
+        jumps.clear();
+        statements.clearChildren();
+        statements.layout();
+    }
+
     StatementElem checkHovered(){
-        Element e = Core.scene.hit(Core.input.mouseX(), Core.input.mouseY(), true);
+        Element e = Core.scene.getHoverElement();
         if(e != null){
             while(e != null && !(e instanceof StatementElem)){
                 e = e.parent;
@@ -307,7 +324,8 @@ public class LCanvas extends Table{
                     (e = (StatementElem) seq.get(i)).updateAddress(e.index + 1);
                 }
             }
-            pack();
+
+            if(parent != null) parent.invalidateHierarchy();
         }
 
         public void forceLayout(){
@@ -395,25 +413,23 @@ public class LCanvas extends Table{
                 t.margin(6f);
                 t.touchable = Touchable.enabled;
 
-                t.add(st.name()).style(Styles.outlineLabel).name("statement-name").color(color).padRight(8);
+                t.add(st.localizedName()).style(Styles.outlineLabel).name("statement-name").color(color).padRight(8);
                 t.add().growX();
 
                 addressLabel = t.add(index + "").style(Styles.outlineLabel).color(color).padRight(8).get();
 
-                t.button(Icon.add, Styles.logici, () -> Vars.ui.logic.addDialog(statements.insertPosition + 1)).tooltip("Add Here")
+                t.button(Icon.add, Styles.logici, () -> Vars.ui.logic.showAddDialog(index + 1)).tooltip("Add Here")
                     .disabled(b -> canvas.statements.getChildren().size >= LExecutor.maxInstructions).size(24f).padRight(6);
 
-                t.button(Icon.copy, Styles.logici, () -> {
-                }).size(24f).padRight(6).get().tapped(this::copy);
+                t.button(Icon.copy, Styles.logici, this::copy).size(24f).padRight(6).disabled(i -> canvas.statements.getChildren().size >= LExecutor.maxInstructions);
 
                 t.button(Icon.paste, Styles.logici, () -> {
-                }).size(24f).padRight(6).tooltip("Paste Here").get().tapped(() -> {
                     try {
                         this.paste(LAssembler.read(Core.app.getClipboardText().replace("\r\n", "\n"), privileged));
                     } catch (Throwable e) {
                         ui.showException(e);
                     }
-                });
+                }).size(24f).padRight(6).tooltip("Paste Here");
 
                 var temp = t.button(Icon.cancel, Styles.logici, () -> {
                     remove();
@@ -429,7 +445,10 @@ public class LCanvas extends Table{
 
                     @Override
                     public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
+                        //don't start dragging when pressing the menu buttons
+                        if(event.targetActor instanceof Image) return false;
                         canvas.setLayoutEnabled(false);
+
                         if(button == KeyCode.mouseMiddle){
                             copy();
                             return false;
@@ -468,15 +487,18 @@ public class LCanvas extends Table{
 
             row();
 
-            table(t -> {
-                t.left();
-                t.marginLeft(4);
-                t.setColor(color);
-                st.build(t);
-                if(st instanceof JumpStatement){
-                    button = (JumpButton)t.getChildren().peek();
-                }
-            }).pad(4).padTop(2).left().grow();
+            Table t = st.useWrapping() ? new WrapTable() : new Table();
+
+            t.left();
+            t.marginLeft(4);
+            t.setColor(color);
+            if(st.useWrapping()) t.marginRight(4f);
+            st.build(t);
+            if(st instanceof JumpStatement){
+                button = (JumpButton)t.getChildren().peek();
+            }
+
+            add(t).pad(4).padTop(2).left().grow();
 
             marginBottom(7);
         }
@@ -527,7 +549,9 @@ public class LCanvas extends Table{
 
         public void paste(Seq<LStatement> states) {
             var idx = statements.getChildren().indexOf(this) + 1;
-            states.truncate(LExecutor.maxInstructions - statements.getChildren().size);
+            var maxAdd = LExecutor.maxInstructions - statements.getChildren().size;
+            if (states.size > maxAdd) ui.announce(Core.bundle.format("client.pastelimit", maxAdd, states.size), 5);
+            states.truncate(maxAdd);
             states.reverse();
 
             for (var state : states) {

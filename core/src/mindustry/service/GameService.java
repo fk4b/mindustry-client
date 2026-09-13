@@ -5,12 +5,12 @@ import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
+import mindustry.entities.bullet.*;
 import mindustry.game.EventType.*;
 import mindustry.game.SectorInfo.*;
 import mindustry.gen.*;
 import mindustry.type.*;
 import mindustry.world.*;
-import mindustry.world.blocks.defense.*;
 import mindustry.world.blocks.defense.Wall.*;
 import mindustry.world.blocks.defense.turrets.Turret.*;
 import mindustry.world.blocks.distribution.*;
@@ -82,12 +82,12 @@ public class GameService{
     }
 
     private void registerEvents(){
-        allTransportSerpulo = content.blocks().select(b -> b.category == Category.distribution && b.isVisibleOn(Planets.serpulo) && b.isVanilla() && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
-        allTransportErekir = content.blocks().select(b -> b.category == Category.distribution && b.isVisibleOn(Planets.erekir) && b.isVanilla() && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
+        allTransportSerpulo = content.blocks().select(b -> b.category == Category.distribution && b.isOnPlanet(Planets.serpulo) && b.isVanilla() && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
+        allTransportErekir = content.blocks().select(b -> b.category == Category.distribution && b.isOnPlanet(Planets.erekir) && b.isVanilla() && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
 
         //cores are ignored since they're upgrades and can be skipped
-        allSerpuloBlocks = content.blocks().select(b -> b.synthetic() && b.isVisibleOn(Planets.serpulo) && b.isVanilla() && !(b instanceof CoreBlock) && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
-        allErekirBlocks = content.blocks().select(b -> b.synthetic() && b.isVisibleOn(Planets.erekir) && b.isVanilla() && !(b instanceof CoreBlock) && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
+        allSerpuloBlocks = content.blocks().select(b -> b.synthetic() && b.isOnPlanet(Planets.serpulo) && b.isVanilla() && !(b instanceof CoreBlock) && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
+        allErekirBlocks = content.blocks().select(b -> b.synthetic() && b.isOnPlanet(Planets.erekir) && b.isVanilla() && !(b instanceof CoreBlock) && b.buildVisibility == BuildVisibility.shown).toArray(Block.class);
 
         unitsBuilt = Core.settings.getJson("units-built" , ObjectSet.class, String.class, ObjectSet::new);
         blocksBuilt = Core.settings.getJson("blocks-built" , ObjectSet.class, String.class, ObjectSet::new);
@@ -111,17 +111,11 @@ public class GameService{
             completeSerpulo.complete();
         }
 
-        if(mods.list().size > 0){
+        if(mods != null && mods.list().size > 0){
             installMod.complete();
         }
 
-        Events.on(ClientLoadEvent.class, e -> {
-            if(mods.list().size > 0){
-                installMod.complete();
-            }
-        });
-
-        if(Core.bundle.get("yes").equals("router")){
+        if(Core.bundle.get("ok").equals(Blocks.router.emoji()+Blocks.router.emoji())){
             routerLanguage.complete();
         }
 
@@ -178,7 +172,13 @@ public class GameService{
                 }
             }
 
-            if(campaign() && player.unit().type.canBoost && player.unit().elevation >= 0.25f){
+            if(campaign() && !player.dead() && player.unit().type.canBoost && player.unit().elevation >= 0.25f){
+                boostUnit.complete();
+            }
+        });
+
+        Events.run(Trigger.unitCommandBoost, () -> {
+           if(campaign()){
                 boostUnit.complete();
             }
         });
@@ -202,10 +202,10 @@ public class GameService{
         });
 
         Events.on(BlockBuildEndEvent.class, e -> {
-            if(campaign() && e.unit != null && e.unit.isLocal() && !e.breaking){
+            if(campaign() && e.unit != null && e.unit.team == state.rules.defaultTeam && !e.breaking){
                 SStat.blocksBuilt.add();
 
-                if(e.tile.block() == Blocks.router && e.tile.build.proximity().contains(t -> t.block == Blocks.router)){
+                if(e.tile.block() == Blocks.router && e.tile.build.proximity.contains(t -> t.block == Blocks.router)){
                     chainRouters.complete();
                 }
 
@@ -231,8 +231,8 @@ public class GameService{
                     }
                 }
 
-                if(e.tile.block() instanceof MendProjector || e.tile.block() instanceof RegenProjector) buildMendProjector.complete();
-                if(e.tile.block() instanceof OverdriveProjector) buildOverdriveProjector.complete();
+                if(e.tile.block() == Blocks.mendProjector) buildMendProjector.complete();
+                if(e.tile.block() == Blocks.overdriveProjector) buildOverdriveProjector.complete();
 
                 if(e.tile.block() == Blocks.waterExtractor){
                     if(e.tile.getLinkedTiles(tmpTiles).contains(t -> t.floor().liquidDrop == Liquids.water)){
@@ -298,13 +298,13 @@ public class GameService{
         });
 
         Events.on(SectorLaunchLoadoutEvent.class, e -> {
-            if(!schematics.isDefaultLoadout(e.loadout)){
+            if(e.sector.planet == Planets.serpulo && !schematics.isDefaultLoadout(e.loadout)){
                 launchCoreSchematic.complete();
             }
         });
 
         Events.on(UnitCreateEvent.class, e -> {
-            if(campaign()){
+            if(campaign() && e.unit.team == state.rules.defaultTeam){
                 if(unitsBuilt.add(e.unit.type.name)){
                     SStat.unitTypesBuilt.max(content.units().count(u -> unitsBuilt.contains(u.name) && !u.isHidden()));
                     save();
@@ -315,6 +315,29 @@ public class GameService{
                 }
             }
         });
+
+        Events.on(SaveLoadEvent.class, e -> Core.app.post(() -> Core.app.post(() -> {
+            if(campaign()){
+                boolean added = false;
+                for(UnitType type : Vars.content.units()){
+                    var all = state.rules.defaultTeam.data().getUnits(type);
+                    if(all != null && all.size > 0){
+                        if(t5s.contains(type)){
+                            buildT5.complete();
+                        }
+
+                        if(unitsBuilt.add(type.name)){
+                            added = true;
+                        }
+                    }
+                }
+
+                if(added){
+                    SStat.unitTypesBuilt.max(content.units().count(u -> unitsBuilt.contains(u.name) && !u.isHidden()));
+                    save();
+                }
+            }
+        })));
 
         Events.on(UnitControlEvent.class, e -> {
             if(e.unit instanceof BlockUnitc unit && unit.tile().block == Blocks.router){
@@ -401,6 +424,10 @@ public class GameService{
                 if(e.unit.type == UnitTypes.eclipse && e.bullet.owner instanceof TurretBuild turret && turret.block == Blocks.duo){
                     killEclipseDuo.complete();
                 }
+
+                if(e.bullet.type instanceof MassDriverBolt){
+                    killMassDriver.complete();
+                }
             }
         });
 
@@ -434,7 +461,8 @@ public class GameService{
             if(campaign()){
                 SStat.maxWavesSurvived.max(Vars.state.wave);
 
-                if(state.stats.buildingsBuilt == 0 && state.wave >= 10){
+                //TODO: remove (263 is uniquely broken)
+                if(state.stats.buildingsBuilt == 0 && state.wave >= 10 && !(Vars.state.getSector() != null && Vars.state.getPlanet() == Planets.serpulo && Vars.state.getSector().id == 263)){
                     survive10WavesNoBlocks.complete();
                 }
             }
@@ -459,7 +487,8 @@ public class GameService{
         //check unlocked stuff on load as well
         Events.on(ResearchEvent.class, e -> checkUnlocks.run());
         Events.on(UnlockEvent.class, e -> checkUnlocks.run());
-        Events.on(ClientLoadEvent.class, e -> checkUnlocks.run());
+
+        checkUnlocks.run();
 
         Events.on(WinEvent.class, e -> {
             if(state.rules.pvp){
@@ -532,7 +561,7 @@ public class GameService{
             }
 
             for(Building entity : player.team().cores()){
-                if(!content.items().contains(i -> !state.rules.hiddenBuildItems.contains(i) && entity.items.get(i) < entity.block.itemCapacity)){
+                if(!content.items().contains(i -> i.isOnPlanet(state.getPlanet()) && entity.items.get(i) < entity.block.itemCapacity)){
                     fillCoreAllCampaign.complete();
                     break;
                 }

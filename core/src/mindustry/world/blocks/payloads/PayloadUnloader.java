@@ -51,6 +51,9 @@ public class PayloadUnloader extends PayloadLoader{
         public void updateTile(){
             if(payload != null){
                 payload.update(null, this);
+                if(payload.isDead()){
+                    payload = null;
+                }
             }
             lastOutputPower = 0f;
 
@@ -87,7 +90,7 @@ public class PayloadUnloader extends PayloadLoader{
                     (liquids.current() == payload.build.liquids.current() || liquids.currentAmount() <= 0.2f)){
                     var liq = payload.build.liquids.current();
                     float remaining = liquidCapacity - liquids.currentAmount();
-                    float flow = Math.min(Math.min(liquidsLoaded * delta(), remaining), payload.build.liquids.currentAmount());
+                    float flow = Math.min(Math.min(liquidsLoaded * edelta(), remaining), payload.build.liquids.currentAmount());
 
                     liquids.add(liq, flow);
                     payload.build.liquids.remove(liq, flow);

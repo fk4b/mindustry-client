@@ -27,7 +27,7 @@ import static mindustry.Vars.*;
 
 public class BuildPath extends Path { // FINISHME: Dear god, this file does not belong on this planet, its so bad.
     private boolean show, activeVirus;
-    Interval timer = new Interval(2);
+    private final Interval timer = new Interval(2);
     public Queue<BuildPlan> broken = new Queue<>(), boulders = new Queue<>(), assist = new Queue<>(), unfinished = new Queue<>(), cleanup = new Queue<>(), networkAssist = new Queue<>(), virus = new Queue<>(), drills = new Queue<>(), belts = new Queue<>(), overdrives = new Queue<>();
     public Seq<Queue<BuildPlan>> queues = new Seq<>();
     public Seq<Item> mineItems;
@@ -40,7 +40,6 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
         Blocks.conduit, Blocks.pulseConduit,
         Blocks.mechanicalDrill, Blocks.pneumaticDrill
     );
-    private BuildPlan req;
     private boolean valid;
     private final Pool<BuildPlan> pool = Pools.get(BuildPlan.class, BuildPlan::new, 15_000); // This is cursed but
     private final Seq<BuildPlan> priority = new Seq<>(301);
@@ -129,20 +128,25 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
         for (var queue : queues) {
             for (var plan : queue) {
                 if (queue == networkAssist && !plan.isDone() || plan.freed) continue;
-                player.unit().plans.remove(plan);
+                if (!player.dead()) player.unit().plans.remove(plan);
                 pool.free(plan);
             }
             if (queue != networkAssist) queue.clear();
         }
-
     }
 
     @Override
     public void follow() {
+        if (player.core() == null || player.dead()) return;
+
         var core = player.core();
         if (timer.get(delay) && core != null) {
             if (mineItems != null) {
-                Item item = mineItems.min(i -> indexer.hasOre(i) && player.unit().canMine(i), i -> core.items.get(i));
+                var u = player.unit();
+                Item item = mineItems.min(
+                    i -> ((u.type.mineFloor && indexer.hasOre(i)) || (u.type.mineWalls && indexer.hasWallOre(i))) && player.unit().canMine(i),
+                    i -> core.items.get(i)
+                );
 
                 if (item != null && core.items.get(item) <= (cap == 0 ? core.storageCapacity : cap) / 2) { // Switch back to MinePath when core is low on items
                     player.sendMessage("[accent]Automatically switching to back to MinePath as the core is low on items.");
@@ -152,10 +156,11 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
 
             if (timer.get(1, 300)) {
                 clientThread.post(() -> {
+                    var start = Time.millis();
                     for (var turret : Navigation.getEnts()) {
                         var canHit = turret.canHitPlayer();
                         if (!turret.canShoot() || !(turret.targetGround || canHit) || turret.entity.team() == Team.derelict) continue;
-                        Geometry.circle(World.toTile(turret.x()), World.toTile(turret.y()), Mathf.ceil(turret.range / tilesize) + tilesize, (x, y) -> {
+                        Geometry.circle(World.toTile(turret.x()), World.toTile(turret.y()), Mathf.ceil(turret.range() / tilesize) + tilesize, (x, y) -> {
                             if (Structs.inBounds(x, y, world.width(), world.height()) && turret.contains(x * tilesize, y * tilesize)) {
                                 temp.set(x, y);
                                 if (turret.targetGround) blocked.set(x, y);
@@ -170,6 +175,7 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
                         }
                     }
                     temp.clear();
+                    Log.debug("BuildPath grid update in @ms", Time.timeSinceMillis(start));
                 });
             }
 
@@ -183,7 +189,7 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
 
             if (queues.contains(broken, true) && !player.unit().team.data().plans.isEmpty()) {
                 for (Teams.BlockPlan block : player.unit().team.data().plans) {
-                    broken.add(pool.obtain().set(block.x, block.y, block.rotation, content.block(block.block), block.config));
+                    broken.add(pool.obtain().set(block.x, block.y, block.rotation, block.block, block.config));
                 }
             }
 
@@ -272,7 +278,7 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
 
         // Remove config from the furthest virus blocks until we hit the ratelimit
         if (activeVirus && !virus.isEmpty()) {
-            req = Geometry.findFurthest(player.x, player.y, virus);
+            var req = Geometry.findFurthest(player.x, player.y, virus);
             virus.remove(req);
             player.unit().plans.remove(req);
             if (req.build() instanceof LogicBlock.LogicBuild l) {
@@ -309,7 +315,7 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
 
     @Override
     public synchronized void draw() {
-        if (valid && player.unit().isBuilding()) waypoints.draw();
+        if (valid && !player.dead() && player.unit().isBuilding()) waypoints.draw();
     }
 
     @Override

@@ -16,6 +16,7 @@ import mindustry.entities.units.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.logic.*;
+import mindustry.world.blocks.*;
 import mindustry.world.meta.*;
 
 import static mindustry.Vars.*;
@@ -23,7 +24,7 @@ import static mindustry.world.blocks.payloads.PayloadMassDriver.PayloadDriverSta
 
 public class PayloadMassDriver extends PayloadBlock{
     public float range = 100f;
-    public float rotateSpeed = 2f;
+    public float rotateSpeed = 5f;
     public float length = 89 / 8f;
     public float knockback = 5f;
     public float reload = 30f;
@@ -33,7 +34,9 @@ public class PayloadMassDriver extends PayloadBlock{
     public Effect shootEffect = Fx.shootBig2;
     public Effect smokeEffect = Fx.shootPayloadDriver;
     public Effect receiveEffect = Fx.payloadReceive;
-    public Sound shootSound = Sounds.shootBig;
+    public Sound shootSound = Sounds.massdriver;
+    public Sound receiveSound = Sounds.massdriverReceive;
+    public float shootSoundVolume = 0.7f;
     public float shake = 3f;
 
     public Effect transferEffect = new Effect(11f, 600f, e -> {
@@ -73,7 +76,7 @@ public class PayloadMassDriver extends PayloadBlock{
     @Override
     public void init(){
         super.init();
-        updateClipRadius(range);
+        updateClipRadius(range + 4f);
     }
 
     @Override
@@ -124,11 +127,11 @@ public class PayloadMassDriver extends PayloadBlock{
     }
 
     @Override
-    public TextureRegion[] makeIconRegions(){
-        return new TextureRegion[]{leftRegion, rightRegion, capRegion};
+    public void getRegionsToOutline(Seq<TextureRegion> out){
+        out.add(leftRegion, rightRegion, capRegion);
     }
 
-    public class PayloadDriverBuild extends PayloadBlockBuild<Payload>{
+    public class PayloadDriverBuild extends PayloadBlockBuild<Payload> implements RotBlock{
         public int link = -1;
         public float turretRotation = 90;
         public float reloadCounter = 0f, charge = 0f;
@@ -158,6 +161,16 @@ public class PayloadMassDriver extends PayloadBlock{
         }
 
         @Override
+        public boolean acceptUnitPayload(Unit unit){
+            return unit != null && unit.hitSize <= maxPayloadSize * tilesize;
+        }
+
+        @Override
+        public float buildRotation(){
+            return rotation;
+        }
+
+        @Override
         public void updateTile(){
             super.updateTile();
             Building link = world.build(this.link);
@@ -184,6 +197,7 @@ public class PayloadMassDriver extends PayloadBlock{
                 receiveEffect.at(x - cx/2f, y - cy/2f, turretRotation);
                 reloadCounter = 1f;
                 Effect.shake(shake, shake, this);
+                receiveSound.at(x, y, 1f + Mathf.range(0.2f), shootSoundVolume);
             }
 
             charging = false;
@@ -302,7 +316,7 @@ public class PayloadMassDriver extends PayloadBlock{
                                 smokeEffect.at(x, y, turretRotation);
 
                                 Effect.shake(shake, shake, this);
-                                shootSound.at(this, Mathf.random(0.9f, 1.1f));
+                                shootSound.at(x, y, Mathf.random(0.9f, 1.1f), shootSoundVolume);
                                 transferEffect.at(x + cx, y + cy, turretRotation, new PayloadMassDriverData(x + cx, y + cy, other.x - cx, other.y - cy, payload));
                                 Payload pay = payload;
                                 other.recPayload = payload;
@@ -383,11 +397,10 @@ public class PayloadMassDriver extends PayloadBlock{
             Draw.rect(topRegion, x, y);
 
             Draw.z(Layer.turret);
-            //TODO
             Drawf.shadow(region, tx - (size / 2f), ty - (size / 2f), r);
 
             Tmp.v1.trns(turretRotation, 0, -(curSize/2f - grabWidth));
-            Tmp.v2.trns(rotation, -Math.max(curSize/2f - grabHeight - length, 0f), 0f);
+            Tmp.v2.trns(turretRotation, -Math.max(curSize/2f - grabHeight - length, 0f), 0f);
             float rx = tx + Tmp.v1.x + Tmp.v2.x, ry = ty + Tmp.v1.y + Tmp.v2.y;
             float lx = tx - Tmp.v1.x + Tmp.v2.x, ly = ty - Tmp.v1.y + Tmp.v2.y;
 
@@ -438,7 +451,7 @@ public class PayloadMassDriver extends PayloadBlock{
 
             if(linkValid()){
                 Building target = world.build(link);
-                Drawf.circles(target.x, target.y, (target.block().size / 2f + 1) * tilesize + sin - 2f, Pal.place);
+                Drawf.circles(target.x, target.y, (target.block.size / 2f + 1) * tilesize + sin - 2f, Pal.place);
                 Drawf.arrow(x, y, target.x, target.y, size * tilesize + sin, 4f + sin);
             }
 

@@ -1,14 +1,12 @@
 package mindustry.client.utils
 
 import arc.*
-import arc.struct.*
 import arc.util.*
 import mindustry.Vars.*
 import mindustry.client.*
 import mindustry.client.antigrief.*
 import mindustry.client.navigation.*
 import mindustry.gen.*
-import mindustry.world.blocks.logic.*
 import mindustry.world.blocks.logic.LogicBlock.*
 
 object ProcessorPatcher {
@@ -99,7 +97,7 @@ object ProcessorPatcher {
     }
 
     fun fixCode(mode: FixCodeMode?) {
-        val builds = player.team().data().buildings.filterIsInstance<LogicBlock.LogicBuild>() // Must be done on the main thread
+        val builds = player.team().data().buildings.filterIsInstance<LogicBuild>() // Must be done on the main thread
         clientThread.post {
             val confirmed = mode == FixCodeMode.Fix || mode == FixCodeMode.Remove
             val locations = mode == FixCodeMode.List
@@ -110,7 +108,7 @@ object ProcessorPatcher {
             if (confirmed && !inProgress) {
                 Log.debug("Patching!")
                 builds.forEach {
-                    val patched = patch(it.code, mode!!)
+                    val patched = patch(it.code, mode)
                     if (patched != it.code) {
                         ClientVars.configs.add(ConfigRequest(it.tileX(), it.tileY(), compress(patched, it.relativeConnections())))
                         n++

@@ -7,25 +7,28 @@ import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.editor.data.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.io.*;
 import mindustry.maps.filters.*;
+import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
 
 import static mindustry.Vars.*;
 
 public class MapInfoDialog extends BaseDialog{
-    private final WaveInfoDialog waveInfo;
-    private final MapGenerateDialog generate;
-    private final CustomRulesDialog ruleInfo = new CustomRulesDialog();
-    private final MapObjectivesDialog objectives = new MapObjectivesDialog();
+    private WaveInfoDialog waveInfo  = new WaveInfoDialog();
+    private MapGenerateDialog generate = new MapGenerateDialog(false);
+    private CustomRulesDialog ruleInfo = new CustomRulesDialog();
+    private MapObjectivesDialog objectives = new MapObjectivesDialog();
+    private MapLocalesDialog locales = new MapLocalesDialog();
+    private MapProcessorsDialog processors = new MapProcessorsDialog();
+    private MapAssetsDialog patches = new MapAssetsDialog();
 
     public MapInfoDialog(){
         super("@editor.mapinfo");
-        this.waveInfo = new WaveInfoDialog();
-        this.generate = new MapGenerateDialog(false);
 
         addCloseButton();
 
@@ -36,7 +39,7 @@ public class MapInfoDialog extends BaseDialog{
         cont.clear();
 
         ObjectMap<String, String> tags = editor.tags;
-        
+
         cont.pane(t -> {
             t.add("@editor.mapname").padRight(8).left();
             t.defaults().padTop(15);
@@ -86,7 +89,7 @@ public class MapInfoDialog extends BaseDialog{
             c2.touchable = Touchable.disabled;
             s2.changed(() -> {
                 l2.setText(Integer.toString((int)s2.getValue()));
-                Core.settings.put("mapautosavetime", (int)(s.getValue() * Time.toMinutes));
+                Core.settings.put("mapautosavetime", (int)(s2.getValue() * Time.toMinutes));
             });
             s2.change();
             t.stack(s2, c2).width(400);
@@ -128,6 +131,31 @@ public class MapInfoDialog extends BaseDialog{
                     });
                     hide();
                 }).marginLeft(10f);
+
+                r.row();
+
+                r.button("@editor.locales", Icon.fileText, style, () -> {
+                    try{
+                        MapLocales res = JsonIO.read(MapLocales.class, editor.tags.get("locales", "{}"));
+                        locales.show(res);
+                    }catch(Throwable e){
+                        locales.show(new MapLocales());
+                        ui.showException(e);
+                    }
+                    hide();
+                }).marginLeft(10f);
+
+                r.button("@editor.worldprocessors", Icon.logic, style, () -> {
+                    hide();
+                    processors.show();
+                }).marginLeft(10f);
+
+                r.row();
+
+                r.button("@asset.title", Icon.fileCode, style, () -> {
+                    hide();
+                    patches.show();
+                }).marginLeft(10f).colspan(2).width(460f).row();
             }).colspan(2).center();
 
             name.change();
@@ -135,6 +163,6 @@ public class MapInfoDialog extends BaseDialog{
             author.change();
 
             t.margin(16f);
-        });
+        }).growX().scrollX(false);
     }
 }

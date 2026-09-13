@@ -4,12 +4,15 @@ import arc.*
 import arc.input.*
 import arc.scene.ui.*
 import arc.scene.ui.layout.*
+import arc.struct.*
 import mindustry.Vars.*
 import mindustry.client.*
 import mindustry.client.utils.*
+import mindustry.content.*
 import mindustry.core.*
 import mindustry.ui.dialogs.*
 import mindustry.world.*
+import mindustry.world.blocks.environment.*
 
 object FindDialog : BaseDialog("@client.find") {
     private val imageTable = Table()
@@ -18,7 +21,16 @@ object FindDialog : BaseDialog("@client.find") {
     private var guesses: MutableList<Block> = mutableListOf()
 
     private fun updateGuesses() {
-        guesses = content.blocks().copy().toMutableList().apply { sortBy { biasedLevenshtein(it.localizedName, inputField.text) } }
+        guesses = content.blocks().copy().apply {
+            //these remove()s will be fast because they are at indexes 0, 2, and 3
+            removeAll(Seq.with(Blocks.air, Blocks.removeWall, Blocks.removeOre), true)
+        }.toMutableList().apply {
+            if(" " in inputField.text) sortBy {
+                biasedLevenshtein(it.localizedName, inputField.text, false, true)
+            } else sortBy {
+                biasedLevenshtein(it.localizedName.replace(" ", ""), inputField.text, false, true)
+            }
+        }
     }
 
     private fun updateImages() {
@@ -32,6 +44,7 @@ object FindDialog : BaseDialog("@client.find") {
     init {
         for ((i, img) in images.withIndex()) {
             img.clicked { // When image clicked, select it
+                if (guesses.size <= i) return@clicked
                 val gi = guesses[i]
                 guesses[i] = guesses[0]
                 guesses[0] = gi
@@ -47,17 +60,21 @@ object FindDialog : BaseDialog("@client.find") {
         cont.add(imageTable)
 
         inputField.typed {
-            updateGuesses()
-            updateImages()
+            if (!inputField.text.isEmpty()){
+                updateGuesses()
+                updateImages()
+            }
         }
 
         keyDown(KeyCode.enter) {
             if (guesses.isEmpty()) return@keyDown // Pasting an emoji will cause this to crash otherwise
             val block = guesses[0]
             val results = mutableListOf<Tile>()
+            val disallowBlockCover = block is OreBlock && !block.wallOre;
 
             for (t in world.tiles) { // FINISHME: Add an option to not show things such as ores which are covered by blocks
                 if (!t.isCenter) continue
+                if (disallowBlockCover && t.solid() && !t.breakable()) continue
                 if (t.block() != block && t.floor() != block && t.overlay() != block) continue
                 if (allyOnly.isChecked && t.team() != player.team()) continue
                 results += t
@@ -71,7 +88,7 @@ object FindDialog : BaseDialog("@client.find") {
                 ClientVars.lastSentPos.set(closest.x.toFloat(), closest.y.toFloat())
 
 //                    val text = "${Core.bundle.format("client.find.found", block.localizedName, closest.x, closest.y, results.size)} ${Iconc.left} ${Iconc.right}"
-                val text = Core.bundle.format("client.find.found", block.localizedName, closest.x, closest.y, results.size)
+                val text = Core.bundle.format("client.find.found", block.localizedName, closest.x.toString(), closest.y.toString(), results.size)
                 val msg = ui.chatfrag.addMsg(text)
 
 /*                  FINISHME: This implementation will cause a mem leak as the results list will exist forever

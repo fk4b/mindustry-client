@@ -5,6 +5,7 @@ import arc.struct.*;
 import arc.util.*;
 import mindustry.content.*;
 import mindustry.gen.*;
+import mindustry.logic.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
@@ -20,12 +21,15 @@ public class StorageBlock extends Block{
         hasItems = true;
         solid = true;
         update = false;
+        sync = true;
         destructible = true;
         separateItemCapacity = true;
         group = BlockGroup.transportation;
         flags = EnumSet.of(BlockFlag.storage);
         allowResupply = true;
         envEnabled = Env.any;
+        drawCached = true;
+        drawDynamic = false;
     }
 
     @Override
@@ -49,6 +53,11 @@ public class StorageBlock extends Block{
         @Override
         public boolean acceptItem(Building source, Item item){
             return linkedCore != null ? linkedCore.acceptItem(source, item) : items.get(item) < getMaximumAccepted(item);
+        }
+
+        @Override
+        public boolean canUnload(){
+            return linkedCore == null ? super.canUnload() : linkedCore.canUnload();
         }
 
         @Override
@@ -101,11 +110,17 @@ public class StorageBlock extends Block{
         }
 
         @Override
+        public double sense(LAccess sensor){
+            if(sensor == LAccess.itemCapacity && linkedCore != null) return linkedCore.sense(sensor);
+            return super.sense(sensor);
+        }
+
+        @Override
         public void overwrote(Seq<Building> previous){
             //only add prev items when core is not linked
             if(linkedCore == null){
                 for(Building other : previous){
-                    if(other.items != null && other.items != items){
+                    if(other.items != null && other.items != items && !(other instanceof StorageBuild b && b.linkedCore != null)){
                         items.add(other.items);
                     }
                 }
@@ -117,6 +132,11 @@ public class StorageBlock extends Block{
         @Override
         public boolean canPickup(){
             return linkedCore == null;
+        }
+
+        @Override
+        public boolean allowDeposit(){
+            return linkedCore != null || super.allowDeposit();
         }
     }
 }

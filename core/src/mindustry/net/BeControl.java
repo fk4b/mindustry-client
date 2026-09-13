@@ -26,18 +26,23 @@ public class BeControl{
     private static final int updateInterval = 120; // Poll every 120s (30/hr), this leaves us with 30 requests per hour to spare.
 
     /** Whether or not to automatically display an update prompt on client load and every couple of minutes. */
-    public boolean checkUpdates = Core.settings.getBool("autoupdate");
+    public boolean checkUpdates;
     private boolean updateAvailable;
     private String updateUrl;
     private String updateBuild;
 
     /** @return whether this is a bleeding edge build. */
     public boolean active(){
-        return Version.type.equals("bleeding-edge");
+        return Version.type.equals("bleeding-edge") && !steam;
     }
 
     public BeControl(){
+    
+    }
+
+    public void init(){
         Events.on(EventType.ClientLoadEvent.class, event -> {
+            checkUpdates = Core.settings.getBool("autoupdate");
             Timer.schedule(() -> {
                     if(checkUpdates && !mobile){ // Don't auto update on manually cloned copies of the repo
                         checkUpdate(result -> {
@@ -70,10 +75,10 @@ public class BeControl{
     /** asynchronously checks for updates. */
     public void checkUpdate(Boolc done, String repo){
         Http.get("https://api.github.com/repos/" + repo + "/releases/latest")
-            .error(e -> {
+            .error(e -> Core.app.post(() -> {
                 done.get(false);
-                Log.err(e);
-            })
+                Log.err("Failed to check for updates", e);
+            }))
             .submit(res -> {
                 Jval val = Jval.read(res.getResultAsString());
                 String newBuild = val.getString("name");
@@ -148,6 +153,11 @@ public class BeControl{
             }
             checkUpdates = false;
         }
+    }
+
+    /** Convenience method to download a jar so that this doesn't need to get copied multiple times */
+    public void downloadJar(String url, Fi dest, Runnable done, Cons<Throwable> error){
+        download(url, dest, l -> {}, p -> {}, () -> false, done, error);
     }
 
     private void download(String furl, Fi dest, Intc length, Floatc progressor, Boolp canceled, Runnable done, Cons<Throwable> error){

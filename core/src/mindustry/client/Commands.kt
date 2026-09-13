@@ -1,6 +1,7 @@
 package mindustry.client
 
 import arc.*
+import arc.files.*
 import arc.func.*
 import arc.graphics.*
 import arc.math.*
@@ -8,6 +9,7 @@ import arc.math.geom.*
 import arc.struct.*
 import arc.util.*
 import arc.util.CommandHandler.*
+import arc.util.serialization.*
 import mindustry.Vars.*
 import mindustry.ai.types.*
 import mindustry.client.ClientVars.*
@@ -22,10 +24,12 @@ import mindustry.client.utils.*
 import mindustry.content.*
 import mindustry.core.*
 import mindustry.entities.*
+import mindustry.game.*
 import mindustry.gen.*
 import mindustry.input.*
 import mindustry.logic.*
 import mindustry.net.*
+import mindustry.ui.fragments.*
 import mindustry.world.blocks.distribution.*
 import mindustry.world.blocks.distribution.DirectionalUnloader.*
 import mindustry.world.blocks.logic.*
@@ -39,6 +43,7 @@ import java.math.*
 import java.security.cert.*
 import java.time.*
 import java.time.temporal.*
+import java.util.concurrent.*
 import java.util.regex.*
 import kotlin.math.*
 import kotlin.random.*
@@ -49,7 +54,7 @@ fun setupCommands() {
         if (args.isNotEmpty() && !Strings.canParseInt(args[0])) {
             val command = clientCommandHandler.commandList.find { it.text == args[0] }
             if (command != null) {
-                player.sendMessage(Strings.format("[orange] !@[white] @[lightgray] - @", command.text, command.paramText, command.description))
+                player.sendMessage("[orange] ${clientCommandHandler.prefix}${command.text}[white] ${command.paramText}[lightgray] - ${command.description}")
                 return@register
             }
             player.sendMessage("[scarlet]input must be a number or command.")
@@ -108,26 +113,17 @@ fun setupCommands() {
             }
         }
 
-        player.sendMessage(
-            """
-            [accent]${type.localizedName}:
-            Total(Cap): $total($cap)
-            Free(Free Flagged): $free($freeFlagged)
-            Flagged(Unflagged): $flagged($unflagged)
-            Players(Command): $players($command)
-            Logic(Logic Flagged): $logic($logicFlagged)
-            """.trimIndent()
-        )
+        player.sendMessage("client.command.count.success".bundle(type.localizedName, total, cap, free, freeFlagged, flagged, unflagged, players, command, logic, logicFlagged))
     }
 
     // FINISHME: Add unit control/select command(s)
 
-    register("spawn <type> [team] [x] [y] [count]", Core.bundle.get("client.command.spawn.description")) { args, player ->
+    register("spawn <type> [team|me] [count] [x|c] [y|c]", Core.bundle.get("client.command.spawn.description")) { args, player ->
         val type = findUnit(args[0])
-        val team = if (args.size < 2) player.team() else findTeam(args[1])
-        val x = if (args.size < 3 || !Strings.canParsePositiveFloat(args[2])) player.x else args[2].toFloat() * tilesizeF
-        val y = if (args.size < 4 || !Strings.canParsePositiveFloat(args[3])) player.y else args[3].toFloat() * tilesizeF
-        val count = if (args.size < 5 || !Strings.canParsePositiveInt(args[4])) 1 else args[4].toInt()
+        val team = if (args.size < 2) player.team() else if (args[1].lowercase() == "me") player.team() else findTeam(args[1])
+        val count = if (args.size < 3 || !Strings.canParsePositiveInt(args[2])) 1 else args[2].toInt() // FINISHME: When exactly two numbers given after team, treat them as x and y instead of count and x
+        val x = if (args.size >= 4 && args[3].lowercase() == "c") Core.input.mouseWorldX() else if (args.size >= 4 && Strings.canParsePositiveFloat(args[3])) args[3].toFloat() * tilesizeF else player.x
+        val y = if (args.size >= 5 && args[4].lowercase() == "c") Core.input.mouseWorldY() else if (args.size >= 5 && Strings.canParsePositiveFloat(args[4])) args[4].toFloat() * tilesizeF else player.y
 
         if (net.client()) Call.sendChatMessage("/js for(let i = 0; i < $count; i++) UnitTypes.$type.spawn(Team.all[${team.id}], $x, $y)")
         else repeat(count) {
@@ -139,7 +135,7 @@ fun setupCommands() {
         try {
             if (args.size == 2) lastSentPos.set(args[0].toFloat(), args[1].toFloat())
             else throw IOException()
-            Navigation.navigateTo(lastSentPos.cpy().scl(tilesize.toFloat()))
+            Navigation.navigateTo(lastSentPos.cpy().scl(tilesizeF))
         } catch (e: Exception) {
             player.sendMessage(Core.bundle.format("client.command.coordsinvalid", clientCommandHandler.prefix + "go"))
         }
@@ -149,7 +145,7 @@ fun setupCommands() {
         try {
             (control.input as? DesktopInput)?.panning = true
             if (args.size == 2) lastSentPos.set(args[0].toFloat(), args[1].toFloat())
-            Spectate.spectate(lastSentPos.cpy().scl(tilesize.toFloat()))
+            Spectate.spectate(lastSentPos.cpy().scl(tilesizeF))
         } catch (e: Exception) {
             player.sendMessage(Core.bundle.format("client.command.coordsinvalid", clientCommandHandler.prefix + "lookat"))
         }
@@ -159,8 +155,7 @@ fun setupCommands() {
         try {
             if (args.size == 2) lastSentPos.set(args[0].toFloat(), args[1].toFloat())
             NetClient.setPosition(
-                lastSentPos.cpy().scl(tilesize.toFloat()).x, lastSentPos.cpy().scl(
-                    tilesize.toFloat()).y)
+                lastSentPos.cpy().scl(tilesizeF).x, lastSentPos.cpy().scl(tilesizeF).y)
         } catch (e: Exception) {
             player.sendMessage(Core.bundle.format("client.command.coordsinvalid", clientCommandHandler.prefix + "tp"))
         }
@@ -186,21 +181,12 @@ fun setupCommands() {
         follow(BuildMinePath())
     }
 
-    register("buildmine", Core.bundle.get("client.command.buildmine.description")) {_, _: Player ->
-        follow(BuildMinePath())
-    }
-
-    register(" [message...]", Core.bundle.get("client.command.!.description")) { args, _ ->
-        sendMessage("!" + if (args.size == 1) args[0] else "")
+    register(" [message...]", Core.bundle.get("client.command.!.description").replace("!", clientCommandHandler.prefix)) { args, _ ->
+        sendMessage(clientCommandHandler.prefix + if (args.size == 1) args[0] else "")
     }
 
     register("shrug [message...]", Core.bundle.get("client.command.shrug.description")) { args, _ ->
         sendMessage("¯\\_(ツ)_/¯ " + if (args.size == 1) args[0] else "")
-    }
-
-    register("login [name] [pw]", Core.bundle.get("client.command.login.description")) { args, _ ->
-        if (args.size == 2) Core.settings.put("cnpw", "${args[0]} ${args[1]}")
-        else sendMessage("/login ${Core.settings.getString("cnpw", "")}")
     }
 
     register("marker <name> [x] [y]", Core.bundle.get("client.command.marker.description")) { args, player ->
@@ -212,16 +198,34 @@ fun setupCommands() {
     }
 
     register("js <code...>", Core.bundle.get("client.command.js.description")) { args, player: Player ->
-        val out = mods.scripts.runConsole(args[0])
+        val out = mods.scripts.runConsole(ui.consolefrag.injectConsoleVariables() + args[0])
         player.sendMessage("[accent]$out")
         Log.debug(out)
     }
 
-    // Removed as the dependency was like 50MB. If i ever add this back, it will probably just download the jar when needed and then cache it between client builds so that each update isn't massive.
-//        val kts by lazy { ScriptEngineManager().getEngineByExtension("kts") }
-//        register("kts <code...>", Core.bundle.get("client.command.kts.description")) { args, player: Player ->
-//            player.sendMessage("[accent]${try{ kts.eval(args[0]) }catch(e: ScriptException){ e.message }}")
-//        }
+    var installingKt = false
+    // This command doesn't work unless the supporting jar file is on the class path
+    register("kt <code...>", Core.bundle.get("client.command.kt.description")) { args, player: Player ->
+        val version = 1 // The kotlin version needs bumping every so often to support new java versions. Easiest way is to redownload the file.
+        val dir = Fi(ScriptEngineHolder::class.java.protectionDomain.codeSource.location.toURI().path)
+        val file = dir.sibling("fooKotlinScriptSupport.jar")
+        val versionFile = dir.sibling("fooKotlinScriptSupport.version") // We can't just store a value in settings because some people sync settings across computers which can cause a crash if the kotlin script support is out of date. This kind of sucks but whatever
+
+        try { ScriptEngineHolder } catch (_: Throwable) { player.sendMessage("client.command.kt.unsupported".bundle()); return@register }
+
+        if (installingKt) player.sendMessage("client.command.kt.installing".bundle())
+        else if (!versionFile.exists() || versionFile.readString().toIntOrNull() != version || ScriptEngineHolder.kts == null) ui.showConfirm("client.command.kt.install".bundle()) {
+            Log.debug("Downloading kotlin scripting support")
+            installingKt = true
+            becontrol.downloadJar(
+                "https://github.com/mindustry-antigrief/kotlinScriptSupport/releases/latest/download/fooKotlinScriptSupport.jar",
+                file,
+                { versionFile.writeString(version.toString()); ui.showConfirm("client.command.kt.finished".bundle()) { restartGame() } },
+                { player.sendMessage("client.command.kt.error".bundle(Strings.neatError(it))) }
+            )
+        }
+        else player.sendMessage("[accent]${try { ScriptEngineHolder.kts!!.eval(args[0]) } catch (e: Throwable /* ScriptException */) { e.message }}")
+    }
 
     register("/js <code...>", Core.bundle.get("client.command.serverjs.description")) { args, player ->
         player.sendMessage("[accent]${mods.scripts.runConsole(args[0])}")
@@ -259,37 +263,19 @@ fun setupCommands() {
         }
     }
 
-    // Removed in Erekir
-//    register("cc [setting]", Core.bundle.get("client.command.cc.description")) { args, player ->
-//        if (args.size != 1 || !args[0].matches("(?i)^[ari].*".toRegex())) {
-//            player.sendMessage(Core.bundle.format("client.command.cc.invalid", player.team().data().command.localized()))
-//            return@register
-//        }
-//
-//        val cc = Units.findAllyTile(player.team(), player.x, player.y, Float.MAX_VALUE / 2) { it is CommandCenter.CommandBuild }
-//        if (cc != null) {
-//            Call.tileConfig(player, cc, when (args[0].lowercase()[0]) {
-//                'a' -> UnitCommand.attack
-//                'r' -> UnitCommand.rally
-//                else -> UnitCommand.idle
-//            })
-//            player.sendMessage(Core.bundle.format("client.command.cc.success", args[0]))
-//        } else player.sendMessage(Core.bundle.get("client.command.cc.notfound"))
-//    }
-
     register("networking", Core.bundle.get("client.command.networking.description")) { _, player ->
-        player.sendMessage(
+        ui.chatfrag.addMsg(
             if (pluginVersion != -1F) (Core.bundle.get("client.networking.plugin") as String) else
                 BlockCommunicationSystem.findProcessor()?.run { Core.bundle.format("client.networking.logicblock", tileX(), tileY()) } ?:
                 BlockCommunicationSystem.findMessage()?.run { Core.bundle.format("client.networking.messageblock", tileX(), tileY()) } ?:
                 Core.bundle.get("client.networking.buildplan")
-        )
+        ).findCoords()
     }
 
     register("fixpower [c]", Core.bundle.get("client.command.fixpower.description")) { args, player ->
         val start = Time.nanos()
         val diodeLinks = PowerDiode.connections(player.team()) // Must be run on the main thread
-        val grids = Groups.powerGraph.array.select { it.graph().all.first().team == player.team() }.associate { it.graph().id to it.graph().all.copy() }
+        val grids = Groups.powerGraph.array.select { it.graph().all.first().team == player.team() }.associate { it.graph().getID() to it.graph().all.copy() }
         val confirmed = args.any() && args[0] == "c" // Don't configure by default
         val inProgress = !configs.isEmpty()
         var n = 0
@@ -302,15 +288,15 @@ fun setupCommands() {
                 val nodeBlock = nodeBuild.block as PowerNode
                 var links = nodeBuild.power.links.size
                 nodeBlock.getPotentialLinks(nodeBuild.tile, player.team()) { link ->
-                    val min = min(grid, link.power.graph.id)
-                    val max = max(grid, link.power.graph.id)
+                    val min = min(grid, link.power.graph.getID())
+                    val max = max(grid, link.power.graph.getID())
                     if (diodeLinks.any { it[0] == min && it[1] == max }) return@getPotentialLinks // Don't connect across diodes
                     if (++links > nodeBlock.maxNodes) return@getPotentialLinks // Respect max links
                     val t = newLinks.get(grid) { IntSet.with(grid) }
-                    val l = newLinks.get(link.power.graph.id, IntSet())
-                    if (l.add(grid) && t.add(link.power.graph.id)) {
+                    val l = newLinks.get(link.power.graph.getID(), IntSet())
+                    if (l.add(grid) && t.add(link.power.graph.getID())) {
                         l.addAll(t)
-                        newLinks.put(link.power.graph.id, l)
+                        newLinks.put(link.power.graph.getID(), l)
                         configCache.add(Point2(link.tileX() - nodeBuild.tileX(), link.tileY() - nodeBuild.tileY()))
                         n++
                     }
@@ -376,7 +362,6 @@ fun setupCommands() {
             val current = Core.settings.getString("circleassistshape", "circle")
             player.sendMessage(Core.bundle.format("client.command.assistshape.lookup", current, options))
         } else {
-            // reuse OrbitShape.fromSetting aliases by temporarily writing candidate
             val raw = args[0].lowercase().replace("-", "").replace("_", "")
             val key = when (raw) {
                 "8", "eight", "fig8", "figureeight", "lemniscate" -> "figure8"
@@ -394,14 +379,13 @@ fun setupCommands() {
         }
     }
 
-    register("clearghosts [c]", Core.bundle.get("client.command.clearghosts.description")) { args, player -> 
+    register("clearghosts [c]", Core.bundle.get("client.command.clearghosts.description")) { args, player ->
         val confirmed = args.any() && args[0].startsWith("c") // Don't clear by default
         val all = confirmed && isDeveloper() && args[0] == "clear"
         val plans = mutableListOf<Int>()
 
         for (plan in player.team().data().plans) {
-            val block = content.block(plan.block.toInt())
-            if (!(all || Navigation.getTree().use { any(plan.x * tilesizeF, plan.y * tilesizeF, block.size * tilesizeF, block.size * tilesizeF) })) continue
+            if (!(all || Navigation.getTree().use { any(plan.x * tilesizeF, plan.y * tilesizeF, plan.block.size * tilesizeF, plan.block.size * tilesizeF) })) continue
 
             plans.add(Point2.pack(plan.x.toInt(), plan.y.toInt()))
         }
@@ -409,7 +393,7 @@ fun setupCommands() {
         if (confirmed) {
             plans.chunked(200) { configs.add { Call.deletePlans(player, it.toIntArray()) } }
             player.sendMessage("[accent]Removed ${plans.size} plans, ${player.team().data().plans.size - plans.size} remain")
-        } else player.sendMessage("[accent]Found ${plans.size} (out of ${player.team().data().plans.size}) block ghosts within turret range, run [coral]!clearghosts c[] to remove them")
+        } else player.sendMessage("[accent]Found ${plans.size} (out of ${player.team().data().plans.size}) block ghosts within turret range, run [coral]${clientCommandHandler.prefix}clearghosts c[] to remove them")
     }
 
     register("e <certname> <message...>", Core.bundle.get("client.command.e.description")) { args, _ ->
@@ -420,9 +404,9 @@ fun setupCommands() {
             comms.send(MessageTransmission(msg))
             ui.chatfrag.addMessage(
                 msg,
-                "[coral]${Main.keyStorage.cert()?.readableName ?: "you"} [white]-> ${Main.keyStorage.aliasOrName(cert)}",
+                Main.keyStorage.cert()?.readableName ?: "you",
                 encrypted,
-                "",
+                "[coral][[[white]${Main.keyStorage.cert()?.readableName ?: "you"} [accent]-> [white]${Main.keyStorage.aliasOrName(cert)}[coral]][white]: ",
                 msg
             )
             lastCertName = cert.readableName
@@ -431,28 +415,32 @@ fun setupCommands() {
 
     register("stoppathing <name/id...>", Core.bundle.get("client.command.stoppathing.description")) { args, _ ->
         val name = args.joinToString(" ")
-        val player = Groups.player.find { it.id == Strings.parseInt(name) } ?: Groups.player.minByOrNull { Strings.levenshtein(
-            Strings.stripColors(it.name), name) }!!
-        Main.send(CommandTransmission(CommandTransmission.Commands.STOP_PATH, Main.keyStorage.cert() ?: return@register, player))
-        // FINISHME: Force stop instead of prompt
-        // FINISHME: success message
+        val player = Groups.player.find { it.id == Strings.parseInt(name) } ?:
+            Groups.player.minByOrNull { biasedLevenshtein(Strings.stripColors(it.name), name, false, true) }!!
+        Main.send(CommandTransmission(CommandTransmission.Commands.STOP_PATH, Main.keyStorage.cert() ?: run {
+            player.sendMessage("Failed to send transmission: invalid certificate!")
+            return@register
+        }, player))
+        ui.chatfrag.addMsg("Stopped pathing of player ${player.name}[white].")
     }
 
-    register("c <message...>", Core.bundle.get("client.command.c.description")) { args, _ -> 
+    register("c <message...>", Core.bundle.get("client.command.c.description")) { args, _ ->
         Main.send(ClientMessageTransmission(args[0]).apply { addToChatfrag() })
     }
 
-    register("mapinfo [team]", Core.bundle.get("client.command.mapinfo.description")) { args, player -> 
+    register("mapinfo [team]", Core.bundle.get("client.command.mapinfo.description")) { args, player ->
         val team = if (args.isEmpty()) player.team() else findTeam(args[0])
         player.sendMessage(with(state) {
             """
             [accent]Name: ${map.name()}[accent] (by: ${map.author()}[accent])
+            Size: ${world.width()}x${world.height()}
             Team: ${team.name}
             Map Time: ${UI.formatTime(tick.toFloat())}
             Build Speed (Unit Factories): ${rules.buildSpeed(team)}x (${rules.unitBuildSpeed(team)}x)
             Build Cost (Refund): ${rules.buildCostMultiplier}x (${rules.deconstructRefundMultiplier}x)
             Block Health (Damage): ${rules.blockHealth(team)}x (${rules.blockDamage(team)}x)
             Unit Damage: ${rules.unitDamage(team)}x
+            Unit Health: ${rules.unitHealth(team)}x
             Core Capture: ${rules.coreCapture}
             Core Incinerates: ${rules.coreIncinerates}
             Core Modifies Unit Cap: ${rules.unitCapVariable}
@@ -468,13 +456,12 @@ fun setupCommands() {
             ?.retainAll { it.controller() is LogicAI }
             ?.groupBy { (it.controller() as LogicAI).controller }
             ?.forEach { (build, units) ->
-                val txt = "x${units.size} [accent](${build.tileX()}, ${build.tileY()})"
-                val msg = ui.chatfrag.addMessage(txt, null, null, "", txt)
+                val msg = ui.chatfrag.addMsg("x${units.size} [accent](${build.tileX()}, ${build.tileY()})")
                 NetClient.findCoords(msg)
             }
     }
 
-    register("unloaders <item> [enabledOnly] [setOnly]", Core.bundle.get("client.command.unloaders.description")) { args, player -> 
+    register("unloaders <item> [enabledOnly] [setOnly]", Core.bundle.get("client.command.unloaders.description")) { args, player ->
         val item = findItem(args[0])
         val enabledOnly = args.size < 2 || parseBool(args[1])
         val setOnly = args.size < 3 || parseBool(args[2])
@@ -525,21 +512,21 @@ fun setupCommands() {
         replaceMsg(args[0], args.size > 3 && args[3] == "t", args[1], args.size > 4 && args[4] == "t", args[2])
     }
 
-//    register("phasei <interval>", Core.bundle.get("client.command.phasei.description")) { args, player -> FINISHME: Needs to be reimplemented
-//        try{
-//            val interval = Integer.parseInt(args[0])
-//            val maxInterval = (Blocks.phaseConveyor as ItemBridge).range
-//            if(interval < 1 || interval > maxInterval){
-//                player.sendMessage("[scarlet]Interval must be within 1 and $maxInterval!")
-//                return@register
-//            }
-//            ItemBridge.phaseWeaveInterval = interval
-//            Core.settings.put("weaveEndInterval", interval)
-//            player.sendMessage("[accent]Successfully set interval to $interval.")
-//        } catch (e : Exception){
-//            player.sendMessage("[scarlet]Failed to parse integer!")
-//        }
-//    }
+    register("phasei <interval>", Core.bundle.get("client.command.phasei.description")) { args, player ->
+        try{
+            val interval = Integer.parseInt(args[0])
+            val maxInterval = (Blocks.phaseConveyor as ItemBridge).range
+            if(interval < 1 || interval > maxInterval){
+                player.sendMessage(Core.bundle.format("client.command.phasei.invalidargs", maxInterval))
+                return@register
+            }
+            Core.settings.put("phaseweaveinterval", interval)
+            Core.settings.remove("weaveEndInterval")
+            player.sendMessage(Core.bundle.format("client.command.phasei.success", interval))
+        } catch (e : Exception){
+            player.sendMessage(Core.bundle.format("client.command.phasei.err"))
+        }
+   }
 
     register("pathing", Core.bundle.get("client.command.pathing.description")) { _, player ->
         if (navigator is AStarNavigator) {
@@ -553,21 +540,22 @@ fun setupCommands() {
 
     register("pic [quality]", Core.bundle.get("client.command.pic.description")) { args, player ->
         if (args.isEmpty()) {
-            player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) "png" else ""))
+            player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) " (png)" else ""))
             return@register
         }
         try {
             val quality = args[0].toFloat()
             if (quality !in 0f .. 1f) {
-                player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) "png" else ""))
+                player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) " (png)" else ""))
                 return@register
             }
             jpegQuality = quality
             Core.settings.put("commpicquality", quality)
-            player.sendMessage(Core.bundle.format("client.command.pic.success", quality, if (quality == 0f) "png" else ""))
+            player.sendMessage(Core.bundle.format("client.command.pic.success", if (quality == 0f) "png" else quality))
         } catch (e: Exception) {
             Log.err(e)
-            if (e is NumberFormatException) player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) "png" else ""))
+            if (e is NumberFormatException)
+                player.sendMessage(Core.bundle.format("client.command.pic.invalidargs", jpegQuality, if (jpegQuality == 0f) " (png)" else ""))
             else player.sendMessage(Core.bundle.get("client.command.pic.error"))
         }
     }
@@ -581,7 +569,7 @@ fun setupCommands() {
                     return@register
                 }
                 try {
-                    ProcessorFinder.search(args[1].toRegex())
+                    ProcessorFinder.search((if (args[1] == "*") ".*" else args[1]).toRegex())
                 } catch(e:PatternSyntaxException){
                     player.sendMessage(Core.bundle.format("client.command.procfind.query.invalid", args[1]))
                 }
@@ -654,62 +642,62 @@ fun setupCommands() {
         if (args.isEmpty() || args[0] == "") player.sendMessage(Core.bundle.get("client.command.gamelosetext.clear"))
         else {
             Core.settings.put("gamelosetext", args[0])
-            player.sendMessage(Core.bundle.get("client.command.gamelosetext.success"))
+            player.sendMessage(Core.bundle.get("client.command.gamelosetext.success", args[0]))
         }
     }
 
-    register("ptext <option> [name] [text...]", Core.bundle.get("client.command.ptext.description")) { args, player ->
+    register("text <option> [name] [text...]", Core.bundle.get("client.command.text.description")) { args, player ->
         when (args[0]) {
             "edit", "e" -> {
                 if (args.size <= 1) {
-                    player.sendMessage(Core.bundle.get("client.command.ptext.edit.noselected"))
+                    player.sendMessage(Core.bundle.get("client.command.text.edit.noselected"))
                     return@register
                 }
                 if (args.size <= 2) {
-                    player.sendMessage(Core.bundle.format("client.command.ptext.edit.clear", args[1]))
-                    if (Core.settings.get("ptext-${args[1]}", "").toString().isNotEmpty()) Core.settings.remove("ptext-${args[1]}")
+                    player.sendMessage(Core.bundle.format("client.command.text.edit.clear", args[1]))
+                    if (Core.settings.get("text-${args[1]}", "").toString().isNotEmpty()) Core.settings.remove("text-${args[1]}")
                 }
                 else {
                     val text = args.drop(2).joinToString(" ")
-                    Core.settings.put("ptext-${args[1]}", text)
-                    player.sendMessage(Core.bundle.format("client.command.ptext.edit.success", args[1], text))
+                    Core.settings.put("text-${args[1]}", text)
+                    player.sendMessage(Core.bundle.format("client.command.text.edit.success", args[1], text))
                 }
             }
             "say", "s" -> {
                 if (args.size <= 1) {
-                    player.sendMessage(Core.bundle.get("client.command.ptext.say.noselected"))
+                    player.sendMessage(Core.bundle.get("client.command.text.say.noselected"))
                     return@register
                 }
-                val text = Core.settings.get("ptext-${args[1]}", "").toString()
-                if (text.isEmpty()) player.sendMessage(Core.bundle.format("client.command.ptext.notext", args[1]))
+                val text = Core.settings.get("text-${args[1]}", "").toString()
+                if (text.isEmpty()) player.sendMessage(Core.bundle.format("client.command.text.notext", args[1]))
                 else Call.sendChatMessage(text)
             }
-            "js", "j" -> {
+            "run", "r" -> {
                 if (args.size <= 1) {
-                    player.sendMessage(Core.bundle.get("client.command.ptext.run.noselected"))
+                    player.sendMessage(Core.bundle.get("client.command.text.run.noselected"))
                     return@register
                 }
-                val text = Core.settings.get("ptext-${args[1]}", "").toString()
-                if (text.isEmpty()) player.sendMessage(Core.bundle.format("client.command.ptext.notext", args[1]))
-                else player.sendMessage("[accent]${mods.scripts.runConsole(text)}")
+                val text = Core.settings.get("text-${args[1]}", "").toString()
+                if (text.isEmpty()) player.sendMessage(Core.bundle.format("client.command.text.notext", args[1]))
+                else ChatFragment.handleClientCommand(text)
             }
             "list", "l" -> {
                 var exists = false
                 val texts = Seq<String>()
                 for (setting in Core.settings.keys()) {
-                    if (setting.startsWith("ptext-")) {
+                    if (setting.startsWith("text-")) {
                         exists = true
                         texts.add(setting)
                     }
                 }
-                if (!exists) player.sendMessage(Core.bundle.get("client.command.ptext.notexts"))
+                if (!exists) player.sendMessage(Core.bundle.get("client.command.text.notexts"))
                 else {
-                    val sb = StringBuilder(Core.bundle.get("client.command.ptext.list"))
-                    texts.forEach { sb.append("\n${it.drop(6)} [gray]-[] ${Core.settings.getString(it)}") }
+                    val sb = StringBuilder(Core.bundle.get("client.command.text.list"))
+                    texts.forEach { sb.append("\n${it.drop(5)} [gray]-[] ${Core.settings.getString(it)}") }
                     player.sendMessage(sb.toString())
                 }
             }
-            else -> player.sendMessage(Core.bundle.get("client.command.ptext.invalidargs"))
+            else -> player.sendMessage(Core.bundle.get("client.command.text.invalidargs"))
         }
     }
 
@@ -748,14 +736,22 @@ fun setupCommands() {
         mutedPlayers.clear()
     }
 
-    register("ohno", "Runs the auto ohno procedure on fish servers") { _, player -> // FINISHME: This is great and all but it would be nice to run this automatically every minute or so
-        if (!Server.fish()) return@register
-        player.sendMessage("[accent]Running auto ohno") // FINISHME: Bundle
-        Server.ohnoTask?.cancel()
-        Server.ohnoTask = Server.ohno()
+    // FINISHME: Server specific commands would be nice.
+    register("ohno", "client.command.autoohno.description".bundle()) { _, player ->
+        if (!Fish()) return@register
+        player.sendMessage("client.command.autoohno.running".bundle())
+        Fish.ohno(true)
     }
-    
+
     // Special commands
+
+    register("seer", "client.command.seer.description".bundle()) { _, player ->
+        if (!Core.settings.getBool("seer-enabled")) {
+            player.sendMessage(Core.bundle.get("client.command.seer.disabled"))
+            return@register
+        }
+        SeerDialog.show()
+    }
 
     register("admin [option]", Core.bundle.get("client.command.admin.description")) { args, player ->
         val arg = if (args.isEmpty()) "" else args[0]
@@ -769,18 +765,18 @@ fun setupCommands() {
         }
     }
 
-    
+
     // Symbol replacements
 
-    registerReplace("%", "c", "cursor") {
+    registerReplace('%', "c", "cursor") {
         "(${control.input.rawTileX()}, ${control.input.rawTileY()})"
     }
 
-    registerReplace("%", "s", "shrug") {
+    registerReplace('%', "s", "shrug") {
         "¯\\_(ツ)_/¯"
     }
 
-    registerReplace("%", "h", "here") {
+    registerReplace('%', "h", "here") {
         "(${player.tileX()}, ${player.tileY()})"
     }
 
@@ -802,10 +798,9 @@ fun setupCommands() {
             val current = ui.join.lastHost ?: return@register
             if (current.group == null) current.group = ui.join.communityHosts.find { it == current } ?.group ?: return@register
             switchTo = ui.join.communityHosts.filterTo(arrayListOf<Any>()) { it.group == current.group && it != current && (it.version == Version.build || Version.build == -1) }.apply { add(current); add(u) }
-            val first = switchTo!!.removeFirst() as Host
+            val first = switchTo!!.removeAt(0) as Host
             NetClient.connect(first.address, first.port)
         }
-
 
         register("rollback <time> <buildrange>", """
             Retrieves blocks from tile logs and places them into buildplan.
@@ -857,7 +852,7 @@ fun setupCommands() {
         register("undo <player> [range]", "Undo Configs from a specific player (get rekt griefers)") { args, player ->
             val range: Float
             val id: Int
-            try {
+            try { // FINISHME: Strings.parseInt/Float
                 id = args[0].toInt()
                 range = if (args.size >= 2) args[1].toFloat() * tilesize else Float.MAX_VALUE
             }
@@ -870,8 +865,66 @@ fun setupCommands() {
             undoPlayer(world.tiles.filter { it.getBounds(Tmp.r2).overlaps(Tmp.r1) && it.within(player.x, player.y, range) }, id)
         }
 
-        register("seer", "Seer related commands") { _, _ -> // FINISHME
-            SeerDialog.show()
+        register("upload", "This is a terrible idea") { _, player -> // FINISHME: This is a super lazy implementation
+            val results = ConcurrentLinkedQueue<String>() // Results of the http requests
+            val pool = Threads.unboundedExecutor("Schematic Upload", 1)
+            val sb = StringBuilder()
+
+            fun uploadSchematics() { // FINISHME: We really need to handle failed uploads
+                val str = sb.substring(0, sb.length - 1) // Drop the trailing \n
+                Log.debug("Uploading schematic list of length ${str.length}")
+                pool.execute { Http.post("https://cancer-co.de/upload", "text=" + Strings.encode(str)).timeout(60_000).block { results.add(it.resultAsString) } }
+                sb.clear()
+            }
+
+            Threads.daemon { // Writing base64 is slow (plus we block to wait for requests)
+                schematics.all().each {
+                    val b = schematics.writeBase64(it)
+                    if (b.length + 1 > 8_000_000) { // Who in their right mind has a schematic that's over 8 million characters
+                        Core.app.post { player.sendMessage("[scarlet]You have an insanely large schematic (${it.name()}) which will not be uploaded.") }
+                        return@each
+                    }
+                    if (sb.length + b.length > 8_000_000) uploadSchematics()
+
+                    sb.append(b).append('\n')
+                }
+
+                if (sb.isNotEmpty()) uploadSchematics() // Upload any leftovers
+                Threads.await(pool) // Wait for all requests to finish before continuing
+
+                sb.append("[accent]Your schematics have been uploaded: ")
+                results.forEach {
+                    val json = Jval.read(it)
+                    sb.append(json.getString("url").substringAfterLast('/')).append(' ')
+                }
+                sb.setLength(sb.length - 1) // Remove extra appended space
+                val ids = sb.toString().substringAfter(": ")
+                Core.app.post { ui.chatfrag.addMsg(sb.toString()).addButton(0, sb.length) { Core.app.clipboardText = ids } }
+            }
+        }
+
+        register("view <name> <ids...>", "This is an equally terrible idea") { args, player -> // FINISHME: Why did I think this was a good idea?
+            val browser = ui.schematicBrowser
+            val dest = browser.loadedRepositories.get(args[0]) { Seq() }.clear()
+            val split = args[1].split(' ')
+
+            split.forEach { id ->
+                Http.get("https://cancer-co.de/raw/$id").timeout(60_000).submit { r ->  // FINISHME: Add handling for failed http requests
+                    val str = r.resultAsString
+                    if (str == "Paste not found!") { // FINISHME: Improve messaging for failed loads
+                        player.sendMessage("[scarlet]Failed to load https://cancer-co.de/raw/$id as it was not found.")
+                        return@submit
+                    }
+                    val out = Seq<Schematic>()
+                    for (s in str.split('\n')) out.add(Schematics.readBase64(s))
+
+                    Core.app.post { // Do this on the main thread
+                        player.sendMessage("[accent]Finished loading $id")
+                        dest.add(out)
+                        browser.rebuildResults()
+                    }
+                }
+            }
         }
     }
 }
@@ -908,14 +961,10 @@ fun replaceMsg(match: String, matchRegex: Boolean, from: String, fromRegex: Bool
     }
 }
 
-fun registerReplace(symbol: String = "%", vararg cmds: String, runner: Prov<String>) {
-    cmds.forEach { registerReplace(symbol, it, runner) }
-}
-fun registerReplace(symbol: String = "%", cmd: String, runner: Prov<String>) {
-    if(symbol.length != 1) throw IllegalArgumentException("Bad symbol in replace command")
+fun registerReplace(symbol: Char = '%', vararg cmds: String, runner: Prov<String>) = cmds.forEach { cmd ->
     val seq = containsCommandHandler.get(symbol) { Seq() }
     seq.add(Pair(cmd, runner))
-    seq.sort(Structs.comparingInt{ -it.first.length })
+    seq.sort(Structs.comparingInt { -it.first.length })
 }
 
 private fun connectTls(certname: String, onFinish: (Packets.CommunicationClient, X509Certificate) -> Unit) {

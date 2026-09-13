@@ -2,6 +2,7 @@ package mindustry.io.versions;
 
 import mindustry.game.*;
 import mindustry.game.Teams.*;
+import mindustry.io.*;
 
 import java.io.*;
 
@@ -14,14 +15,14 @@ public class Save3 extends LegacySaveVersion{
     }
 
     @Override
-    public void readEntities(DataInput stream) throws IOException{
+    public void readEntities(DataInput stream, SaveReadState state) throws IOException{
         int teamc = stream.readInt();
         for(int i = 0; i < teamc; i++){
             Team team = Team.get(stream.readInt());
             TeamData data = team.data();
             int blocks = stream.readInt();
             for(int j = 0; j < blocks; j++){
-                data.plans.addLast(new BlockPlan(stream.readShort(), stream.readShort(), stream.readShort(), content.block(stream.readShort()).id, stream.readInt()));
+                data.plans.addLast(new BlockPlan(stream.readShort(), stream.readShort(), stream.readShort(), content.block(stream.readShort()), stream.readInt()));
             }
         }
 

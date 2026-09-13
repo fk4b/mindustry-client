@@ -25,13 +25,17 @@ public class ConsumeItemFilter extends Consume{
     public void apply(Block block){
         block.hasItems = true;
         block.acceptsItems = true;
-        content.items().each(filter, item -> block.itemFilter[item.id] = true);
+        content.items().each(filter, item -> {
+            if(item.id < block.itemFilter.length){
+                block.itemFilter[item.id] = true;
+            }
+        });
     }
 
     @Override
     public void build(Building build, Table table){
         MultiReqImage image = new MultiReqImage();
-        content.items().each(i -> filter.get(i) && i.unlockedNow(), item -> image.add(new ReqImage(new ItemImage(item.uiIcon, 1),
+        content.items().each(i -> filter.get(i) && i.unlockedNow() && !i.hidden, item -> image.add(new ReqImage(StatValues.stack(item, 1),
             () -> build.items.has(item))));
 
         table.add(image).size(8 * 4);
@@ -66,6 +70,16 @@ public class ConsumeItemFilter extends Consume{
 
     @Override
     public void display(Stats stats){
-        stats.add(booster ? Stat.booster : Stat.input, stats.timePeriod < 0 ? StatValues.items(filter) : StatValues.items(stats.timePeriod, filter));
+        stats.add(booster ? Stat.booster : Stat.input, StatValues.items(stats.timePeriod, filter));
+    }
+
+    @Override
+    public float efficiencyMultiplier(Building build){
+        var item = getConsumed(build);
+        return item == null ? 0f : itemEfficiencyMultiplier(item);
+    }
+
+    public float itemEfficiencyMultiplier(Item item){
+        return 1f;
     }
 }

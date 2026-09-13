@@ -5,7 +5,9 @@ import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.util.*;
+import mindustry.entities.units.*;
 import mindustry.game.*;
+import mindustry.graphics.*;
 import mindustry.logic.*;
 import mindustry.type.*;
 import mindustry.world.*;
@@ -41,6 +43,38 @@ public class Pump extends LiquidBlock{
         super.drawPlace(x, y, rotation, valid);
 
         Tile tile = world.tile(x, y);
+
+        if(valid && tile != null){
+            float amount = 0f;
+            Liquid liquidDrop = null;
+
+            for(Tile other : tile.getLinkedTilesAs(this, tempTiles)){
+                if(canPump(other)){
+                    if(liquidDrop != null && other.floor().liquidDrop != liquidDrop){
+                        liquidDrop = null;
+                        break;
+                    }
+                    liquidDrop = other.floor().liquidDrop;
+                    amount += other.floor().liquidMultiplier;
+                }
+            }
+
+            if(liquidDrop != null){
+                float width = drawPlaceText(Core.bundle.formatFloat("bar.pumpspeed", amount * pumpAmount * 60f, 1), x, y, valid);
+                float dx = x * tilesize + offset - width/2f - 4f, dy = y * tilesize + offset + size * tilesize / 2f + 5, s = iconSmall / 4f;
+                float ratio = (float)liquidDrop.fullIcon.width / liquidDrop.fullIcon.height;
+                Draw.mixcol(Color.darkGray, 1f);
+                Draw.rect(liquidDrop.fullIcon, dx, dy - 1, s * ratio, s);
+                Draw.reset();
+                Draw.rect(liquidDrop.fullIcon, dx, dy, s * ratio, s);
+            }
+        }
+    }
+
+    @Override
+    public void drawPlanConfigTop(BuildPlan plan, Eachable<BuildPlan> list){
+        if(!plan.worldContext) return;
+        Tile tile = plan.tile();
         if(tile == null) return;
 
         float amount = 0f;
@@ -48,23 +82,18 @@ public class Pump extends LiquidBlock{
 
         for(Tile other : tile.getLinkedTilesAs(this, tempTiles)){
             if(canPump(other)){
-                if(liquidDrop != null && other.floor().liquidDrop != liquidDrop){
+                var floor = other.floor();
+                if(liquidDrop != null && floor.liquidDrop != liquidDrop){
                     liquidDrop = null;
                     break;
                 }
-                liquidDrop = other.floor().liquidDrop;
-                amount += other.floor().liquidMultiplier;
+                if(liquidDrop == null) liquidDrop = floor.liquidDrop;
+                amount += floor.liquidMultiplier;
             }
         }
 
         if(liquidDrop != null){
-            float width = drawPlaceText(Core.bundle.formatFloat("bar.pumpspeed", amount * pumpAmount * 60f, 0), x, y, valid);
-            float dx = x * tilesize + offset - width/2f - 4f, dy = y * tilesize + offset + size * tilesize / 2f + 5, s = iconSmall / 4f;
-            float ratio = (float)liquidDrop.fullIcon.width / liquidDrop.fullIcon.height;
-            Draw.mixcol(Color.darkGray, 1f);
-            Draw.rect(liquidDrop.fullIcon, dx, dy - 1, s * ratio, s);
-            Draw.reset();
-            Draw.rect(liquidDrop.fullIcon, dx, dy, s * ratio, s);
+            Drawf.planEfficiency(this, tile.x, tile.y, liquidDrop.color, String.format("%.1f", amount * pumpAmount * 60f));
         }
     }
 
@@ -166,12 +195,12 @@ public class Pump extends LiquidBlock{
                     consume();
                     consTimer %= 1f;
                 }
-                
+
                 warmup = Mathf.approachDelta(warmup, maxPump > 0.001f ? 1f : 0f, warmupSpeed);
             }else{
                 warmup = Mathf.approachDelta(warmup, 0f, warmupSpeed);
             }
-            
+
             totalProgress += warmup * Time.delta;
 
             if(liquidDrop != null){
@@ -183,7 +212,7 @@ public class Pump extends LiquidBlock{
         public float warmup(){
             return warmup;
         }
-        
+
         @Override
         public float progress(){
             return Mathf.clamp(consTimer / consumeTime);

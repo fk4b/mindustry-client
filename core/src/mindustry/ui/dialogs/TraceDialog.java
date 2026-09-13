@@ -26,13 +26,11 @@ public class TraceDialog extends BaseDialog{
         buttons.clear();
         addCloseButton();
 
-        buttons.button("JS Ban (Requires /js)", () -> {
-            Call.sendChatMessage("/js Vars.netServer.admins.banPlayerID(" + info.uuid + ")");
-            Call.sendChatMessage("/js Vars.netServer.admins.banPlayerIP(" + info.ip + ")");
-        }).width(420);
-        if(!offline){
-            buttons.button("Ban (Won't work if they leave before pressed)", () -> Call.adminRequest(player, Packets.AdminAction.ban, null)).width(420);
-        }
+        buttons.button("JS Ban (Requires /js)", () -> ui.showConfirm("@confirm", Core.bundle.format("confirmban", player.name()), () ->
+            Call.sendChatMessage("/js Vars.netServer.admins.banPlayerID(" + info.uuid + "); Vars.netServer.admins.banPlayerIP(" + info.ip + ")")
+        )).width(420);
+        if(!offline) buttons.button("Ban (Won't work if they leave before pressed)", () -> ui.showConfirm("@confirm", Core.bundle.format("confirmban", player.name()), () -> Call.adminRequest(player, Packets.AdminAction.ban, null))).width(420);
+        // FINISHME: Would be cool to be able to queue a ban so that they are immediately banned if they rejoin
 
         Table table = new Table(Tex.clear);
         table.margin(14);
@@ -49,10 +47,10 @@ public class TraceDialog extends BaseDialog{
             c.add(Core.bundle.format("trace.playername", player.name)).row();
             c.button(Icon.copySmall, style, () -> copy(info.ip)).size(s).padRight(4f);
             c.add(Core.bundle.format("trace.ip", info.ip)).row();
+            c.button(Icon.copySmall, style, () -> copy(info.locale)).size(s).padRight(4f);
+            c.add(Core.bundle.format("trace.language", info.locale)).row();
             c.button(Icon.copySmall, style, () -> copy(info.uuid)).size(s).padRight(4f);
             c.add(Core.bundle.format("trace.id", info.uuid)).row();
-            c.button(Icon.copySmall, style, () -> copy(player.locale)).size(s).padRight(4f);
-            c.add(Core.bundle.format("trace.language", player.locale)).row();
         }).row();
 
         table.add(Core.bundle.format("trace.modclient", info.modded)).row();

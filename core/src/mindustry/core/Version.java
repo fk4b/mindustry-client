@@ -12,12 +12,18 @@ public class Version{
     public static String type = "unknown";
     /** Build modifier, e.g. 'alpha' or 'release' */
     public static String modifier = "unknown";
+    /** Git commit hash (short) */
+    public static String commitHash = "unknown";
+    /** Date that this version was built. */
+    public static String buildDate = "unknown";
     /** Number specifying the major version, e.g. '4' */
     public static int number;
     /** Build number, e.g. '43'. set to '-1' for custom builds. */
     public static int build = 0;
     /** Revision number. Used for hotfixes. Does not affect server compatibility. */
     public static int revision = 0;
+    /** Whether the Steam version of the game is requested. This is different from Vars.steam (Steam initialization can fail) */
+    public static boolean isSteam = false;
     /** Whether version loading is enabled. */
     public static boolean enabled = true;
     /** Foo's update url used for... updating */
@@ -26,12 +32,8 @@ public class Version{
     public static String assetUrl = "", assetRef = "";
     /** Foo's version string */
     public static String clientVersion = "v1.0.0, Jan. 1, 1970";
-    /** The installer mod checks for the existence of this boolean */
+    /** Allows for mods to detect the presence of the client */
     @SuppressWarnings("unused") private static boolean foos;
-
-    public static String path(){
-        return Version.class.getProtectionDomain().getCodeSource().getLocation().getPath().replace('\\', '/');
-    }
 
     public static void init(){
         if(!enabled) return;
@@ -48,7 +50,12 @@ public class Version{
         type = map.get("type");
         number = Integer.parseInt(map.get("number", "4"));
         modifier = map.get("modifier");
-        if(path().contains("/steamapps/common/Mindustry/")) modifier += " steam";
+        commitHash = map.get("commitHash", "unknown");
+        buildDate = map.get("buildDate", "unknown");
+        var proton = (OS.hasEnv("STEAM_COMPAT_DATA_PATH") || OS.hasEnv("STEAM_COMPAT_CLIENT_INSTALL_PATH")) && "1127400".equals(OS.env("SteamAppId")); // Proton is not run under the normal steam dir so we have to detect it separately. This is not a perfect fix as people could theoretically be running non-steam copies under proton, but it's better than not having steam for proton at all.
+        var path = Version.class.getProtectionDomain().getCodeSource().getLocation().getPath().replace('\\', '/');
+        if(path.contains("/steamapps/common/Mindustry/") || proton) modifier += " steam";
+        isSteam = modifier.contains("steam");
         if(map.get("build").contains(".")){
             String[] split = map.get("build").split("\\.");
             try{
@@ -90,6 +97,6 @@ public class Version{
         if(build == -1){
             return "custom build";
         }
-        return (type.equals("official") ? modifier : type) + " build " + build + (revision == 0 ? "" : "." + revision) + "\n(Foo's Client Version: " + (clientVersion.equals("v0.0.0") ? "Dev" : clientVersion) + ")";
+        return (type.equals("official") ? modifier : type) + " build " + build + (revision == 0 ? "" : "." + revision) + "\n(Foo's Client Version: " + (clientVersion.equals("v0.0.0") ? "Dev" : clientVersion) + ")" + (commitHash.equals("unknown") ? "" : " (" + commitHash + ")");
     }
 }

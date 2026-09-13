@@ -1,31 +1,31 @@
 ![Logo](foo.png)
 
 [![Release Update](../../workflows/Release%20Update/badge.svg)](https://mindustry-antigrief.github.io/mindustry-client)
-[![Tests (Unstable)](../../workflows/Java%20Tests/badge.svg?branch=v7)](https://mindustry-antigrief.github.io/mindustry-client-v7-builds)
+[![Tests (Unstable)](../../workflows/Java%20Tests/badge.svg?branch=v8)](https://mindustry-antigrief.github.io/mindustry-client-v8-builds)
 [![Discord](https://img.shields.io/discord/741710208501547161.svg?logo=discord&logoColor=white&logoWidth=20&labelColor=7289DA&label=Discord&color=17cf48)](https://discord.gg/yp9ZW7j)
 
 # Installer
 Install `mindustry-antigrief/client-installer` through the mod browser in the vanilla game and allow the game to restart, upon restarting you will be prompted with an install popup, choose a version and it will install itself.
 
 ## [Changelog](./core/assets/changelog)
-## [Development/Unstable Builds](../../../mindustry-client-v7-builds)
+## [Development/Unstable Builds](../../../mindustry-client-v8-builds)
 ## Steam
 ### Windows
 There are 3 methods to install the client on steam for windows.
 #### Automatic Installer
-Refer to [the installer section](https://github.com/mindustry-antigrief/mindustry-client/tree/v7#installer)
+Refer to [the installer section](https://github.com/mindustry-antigrief/mindustry-client/tree/v8#installer)
 #### Single Command Installer
-Run this command in a CMD window [**as admin**](https://www.howtogeek.com/howto/windows-vista/run-a-command-as-administrator-from-the-windows-vista-run-box/) (replace the path if needed): `cd /d "C:\Program Files (x86)\Steam\steamapps\common\Mindustry" && del Mindustry.exe && mklink Mindustry.exe C:\Windows\System32\cmd.exe && curl -L -o jre\client.jar https://github.com/mindustry-antigrief/mindustry-client-v7-builds/releases/latest/download/desktop.jar && echo Done!` then [set the game's launch options](https://support.steampowered.com/kb_article.php?ref=1040-JWMT-2947) to `/c java -jar "%cd%\jre\client.jar"`
+Run this command in a CMD window [**as admin**](https://www.howtogeek.com/howto/windows-vista/run-a-command-as-administrator-from-the-windows-vista-run-box/) (replace the path if needed): `cd /d "C:\Program Files (x86)\Steam\steamapps\common\Mindustry" && del Mindustry.exe && mklink Mindustry.exe C:\Windows\System32\cmd.exe && curl -L -o jre\client.jar https://github.com/mindustry-antigrief/mindustry-client-v8-builds/releases/latest/download/desktop.jar && echo Done!` then [set the game's launch options](https://support.steampowered.com/kb_article.php?ref=1040-JWMT-2947) to `/c java -jar "%cd%\jre\client.jar"`
 #### Semi Automated Install
-1. [Download](../../../mindustry-client-v7-builds/releases/latest/download/desktop.jar) the `desktop.jar` file from the latest release.
-2. [Download](https://github.com/mindustry-antigrief/mindustry-client/blob/v7/steam_appid.txt) the `steam_appid.txt` file and place it in the same folder as the jar.
+1. [Download](../../../mindustry-client-v8-builds/releases/latest/download/desktop.jar) the `desktop.jar` file from the latest release.
+2. [Download](https://github.com/mindustry-antigrief/mindustry-client/blob/v8/steam_appid.txt) the `steam_appid.txt` file and place it in the same folder as the jar.
 3. Place the `desktop.jar` and `steam_appid.txt` in the same folder.
 4. Ensure steam is running and you are logged in, double click the jar and it should then open the client on steam.
 #### Manual Install
-*Removed due to this no longer working correctly in v7, may rewrite later.*
+*Removed due to this no longer working correctly in v7+, may rewrite later.*
 
 ### Mac OS
-1. [Download](../../../mindustry-client-v7-builds/releases/latest/download/desktop.jar) the `desktop.jar` file from the latest release.
+1. [Download](../../../mindustry-client-v8-builds/releases/latest/download/desktop.jar) the `desktop.jar` file from the latest release.
 1. Open the game install folder, right click the `Mindustry.app` file and click `Show Package Contents`.
 1. Navigate to the `Resources` folder `Contents > Resources`.
 1. Replace the `desktop.jar` with the one you just downloaded.
@@ -37,14 +37,16 @@ Run this command in a CMD window [**as admin**](https://www.howtogeek.com/howto/
 
 ## Contributing
 
-See [CONTRIBUTING](CONTRIBUTING.md).
+See [CONTRIBUTING](CONTRIBUTING.md) for general code style and PR guidelines.
+
+If you are a first-time contributor looking for features to implement or bugs to fix, see the issues tagged with 'candidate' [in the Mindustry-Suggestions repostiory](https://github.com/Anuken/Mindustry-Suggestions/issues?q=is%3Aissue%20state%3Aopen%20label%3Acandidate).
 
 ## Building
 
-Unstable builds are generated automatically for every commit. You can see them [here](https://github.com/mindustry-antigrief/mindustry-client-v7-builds/releases).
+Unstable builds are generated automatically for every commit. You can see them [here](https://github.com/mindustry-antigrief/mindustry-client-v8-builds/releases).
 
 If you'd rather compile on your own, follow these instructions.
-First, make sure you have [JDK 16-17](https://adoptium.net/archive.html?variant=openjdk17&jvmVariant=hotspot) installed. **Other JDK versions will not work.** Open a terminal in the Mindustry directory and run the following commands:
+First, make sure you have [JDK 17](https://adoptium.net/temurin/releases/?os=any&arch=any&version=17) installed. **Other JDK versions will not work.** Open a terminal in the Mindustry directory and run the following commands:
 
 ### Windows
 
@@ -78,6 +80,16 @@ To debug the application on a connected device/emulator, run `gradlew android:in
 #### Permission Denied
 
 If the terminal returns `Permission denied` or `Command not found` on Mac/Linux, run `chmod +x ./gradlew` before running `./gradlew`. *This is a one-time procedure.*
+
+#### Where is the `mindustry.gen` package?
+
+As the name implies, `mindustry.gen` is generated *at build time* based on other code. You will not find source code for this package in the repository, and it should not be edited by hand.
+
+The following is a non-exhaustive list of the "source" of generated code in `mindustry.gen`:
+
+- `Call`, `*Packet` classes: Generated from methods marked with `@Remote`.
+- All entity classes (`Unit`, `EffectState`, `Posc`, etc): Generated from component classes in the `mindustry.entities.comp` package, and combined using definitions in `mindustry.content.UnitTypes`.
+- `Sounds`, `Musics`, `Tex`, `Icon`, etc: Generated based on files in the respective asset folders.
 
 ---
 

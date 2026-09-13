@@ -22,7 +22,7 @@ import static mindustry.Vars.*;
 
 public class UnitCargoLoader extends Block{
     public UnitType unitType = UnitTypes.manifold;
-    public float buildTime = 60f * 8f;
+    public float unitBuildTime = 60f * 8f;
 
     public float polyStroke = 1.8f, polyRadius = 8f;
     public int polySides = 6;
@@ -36,7 +36,7 @@ public class UnitCargoLoader extends Block{
         update = true;
         hasItems = true;
         itemCapacity = 200;
-        ambientSound = Sounds.respawning;
+        ambientSound = Sounds.loopUnitBuilding;
     }
 
     @Override
@@ -54,10 +54,10 @@ public class UnitCargoLoader extends Block{
             Core.bundle.format("bar.unitcap",
                 Fonts.getUnicodeStr(unitType.name),
                 e.team.data().countType(unitType),
-                Units.getStringCap(e.team)
+                unitType.useUnitCap ? Units.getStringCap(e.team) : "∞"
             ),
             () -> Pal.power,
-            () -> (float)e.team.data().countType(unitType) / Units.getCap(e.team)
+            () -> unitType.useUnitCap ? (float)e.team.data().countType(unitType) / Units.getCap(e.team) : 1f
         ));
     }
 
@@ -106,7 +106,7 @@ public class UnitCargoLoader extends Block{
             readyness = Mathf.approachDelta(readyness, unit != null ? 1f : 0f, 1f / 60f);
 
             if(unit == null && Units.canCreate(team, unitType)){
-                buildProgress += edelta() / buildTime;
+                buildProgress += edelta() / unitBuildTime;
                 totalProgress += edelta();
 
                 if(buildProgress >= 1f){
@@ -140,11 +140,6 @@ public class UnitCargoLoader extends Block{
         @Override
         public boolean shouldConsume(){
             return unit == null;
-        }
-
-        @Override
-        public boolean shouldActiveSound(){
-            return shouldConsume() && warmup > 0.01f;
         }
 
         @Override

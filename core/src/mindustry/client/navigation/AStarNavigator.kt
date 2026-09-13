@@ -13,7 +13,7 @@ import kotlin.math.*
 // and modified
 
 object AStarNavigator : Navigator() {
-    private val pool = Pools.get(PositionWaypoint::class.java) { PositionWaypoint() }
+    private val pool = Pools.get(PositionWaypoint::class.java, ::PositionWaypoint)
     private var grid: Array<Cell> = emptyArray()
     private var gridSize = Point2()
     private var open = BinaryHeap<Cell>(65_536, false)
@@ -107,11 +107,11 @@ object AStarNavigator : Navigator() {
         blocked: Int2P
     ): Array<PositionWaypoint> {
 
-        tileWidth = ceil(width / tilesize).toInt() + 1
-        tileHeight = ceil(height / tilesize).toInt() + 1
+        tileWidth = ceil(width / tilesize).toInt()
+        tileHeight = ceil(height / tilesize).toInt()
 
-        start.clamp(0f, 0f, width, height)
-        end.clamp(0f, 0f, width, height)
+        start.clamp(0f, 0f, width, height - 1f)
+        end.clamp(0f, 0f, width, height - 1f)
 
         //Reset
         startX = World.toTile(start.x).coerceIn(0, tileWidth - 1)
@@ -127,8 +127,8 @@ object AStarNavigator : Navigator() {
         open.clear()
 
         // Reset all cells
-        for (x in 0 until tileWidth) {
-            for (y in 0 until tileHeight) {
+        for (x in 0 ..< tileWidth) {
+            for (y in 0 ..< tileHeight) {
                 val cell = cell(x, y)
                 cell.g = 0f
                 cell.cameFrom = null

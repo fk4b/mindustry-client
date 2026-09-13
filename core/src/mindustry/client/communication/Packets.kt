@@ -1,6 +1,7 @@
 package mindustry.client.communication
 
 import arc.util.*
+import mindustry.client.*
 import mindustry.client.communication.syncing.Syncer.*
 import mindustry.client.utils.*
 import java.nio.*
@@ -90,7 +91,7 @@ object Packets {
         fun bytes() = Header(
             sequenceCount,
             sequenceNumber,
-            Instant.now().plus(5, ChronoUnit.SECONDS), transmissionId, transmissionType
+            Main.ntp.instant().plus(5, ChronoUnit.SECONDS), transmissionId, transmissionType
         ).toBytes() + content
 
         override fun equals(other: Any?): Boolean {
@@ -150,16 +151,16 @@ object Packets {
         /** Updates sending.  Call once per tick. */
         fun update() {
             if (lastSent.check(0, communicationSystem.RATE)) {
-                val toSend = outgoing.peek() ?: return // Return if there's nothing to send
+                val toSend = outgoing.peek() ?: return // Return if there's nothing to send\
 
                 // Gets the next packet in this transmission, if there are no more packets move to the next transmission
-                val packet = toSend.packets.poll() ?: run { outgoing.remove(toSend); toSend.onFinish?.invoke(); return }
+                val packet = toSend.packets.poll() ?: run { outgoing.remove(toSend); toSend.onFinish?.run(); return }
 
                 lastSent.reset(0, 0f) // Sending a packet, reset the timer fully
-                try { communicationSystem.send(packet.bytes()) } catch (e: Exception) { outgoing.remove(toSend); toSend.onError?.invoke() }
+                try { communicationSystem.send(packet.bytes()) } catch (e: Exception) { outgoing.remove(toSend); toSend.onError?.invoke(); Log.debug("Error sending transmission") } // FINISHME: Add better debug logs
             }
             for (inc in incoming) {
-                if (inc.value.expirationTime.isBefore(Instant.now())) {
+                if (inc.value.expirationTime.isBefore(Main.ntp.instant())) {
                     Log.debug("Removing stale incoming message")
                     incoming.remove(inc.key)
                 }
@@ -186,19 +187,19 @@ object Packets {
                     return
                 }
 
-                if (header.expirationTime.isBefore(Instant.now())) { // Too old
+                if (header.expirationTime.isBefore(Main.ntp.instant())) { // Too old
                     incoming.remove(header.transmissionId)
                     return
                 }
 
                 val entry = incoming[header.transmissionId] ?: run {
                     if (incoming.size > 50) { Log.debug("Too many incoming transmissions"); return@run null }  // too many incoming connections
-                    incoming[header.transmissionId] = IncomingTransmission(MutableList(header.sequenceCount) { null }, Instant.now().plusSeconds(15))  // Create new incoming connection entry
+                    incoming[header.transmissionId] = IncomingTransmission(MutableList(header.sequenceCount) { null }, Main.ntp.instant().plusSeconds(15))  // Create new incoming connection entry
                     return@run incoming[header.transmissionId]
                 } ?: return
 
                 entry.segments[header.sequenceNumber] = content
-                entry.expirationTime = Instant.now().plusSeconds(15)
+                entry.expirationTime = Main.ntp.instant().plusSeconds(15)
 
                 if (!entry.segments.contains(null)) {
                     val array = entry.segments.reduceRight { a, b -> a!! + b!! }!!  // Collapse the list of packet contents to the full byte array
@@ -213,7 +214,7 @@ object Packets {
             } catch (e: Exception) { Log.err(e) }
         }
 
-        private data class OutgoingTransmission(val packets: Queue<Packet>, val onFinish: (() -> Unit)?, val onError: (() -> Unit)?)
+        private data class OutgoingTransmission(val packets: Queue<Packet>, val onFinish: Runnable?, val onError: (() -> Unit)?)
 
         /**
          * Splits the transmission into packets and queues them for sending.
@@ -221,7 +222,7 @@ object Packets {
          * @param onFinish A lambda that will be run once it is sent, null by default.
          * @param onError A lambda that will be run when no suitable message block is found.
          */
-        fun send(transmission: Transmission, onFinish: (() -> Unit)? = null, onError: (() -> Unit)? = null) {
+        fun send(transmission: Transmission, onFinish: Runnable? = null, onError: (() -> Unit)? = null) {
             val type = registeredTransmissionTypes.indexOfFirst { it.type == transmission::class }
 
             if (transmission.secureOnly && !communicationSystem.secure) throw IllegalArgumentException("Communications system must be secure to send secure-only transmissions!")

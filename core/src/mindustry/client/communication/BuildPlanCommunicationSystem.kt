@@ -43,7 +43,13 @@ object BuildPlanCommunicationSystem : CommunicationSystem() {
         Timer.schedule({
             val start = Time.millis()
             for (p in Groups.player) {
-                val plan = p.unit()?.plans?.find { it.block == Blocks.microProcessor && (it.config as? String)?.run { re.containsMatchIn(this) } == true }
+                val plan = p.unit()?.plans?.find {
+                    it != null &&
+                        isNetworking(it) &&
+                        (it.config as? String)?.run {
+                            re.containsMatchIn(this)
+                        } == true
+                }
                 if (plan == null || plan.config !is String) continue
                 val hash = plan.config.hashCode()
                 if (lastGotten[p.id] == hash) continue
@@ -75,7 +81,7 @@ object BuildPlanCommunicationSystem : CommunicationSystem() {
         Vars.player.unit().updateBuilding = false
         Vars.player.unit().addBuild(plan, false)
         Timer.schedule({
-            Vars.player.unit().plans.remove(plan)
+            Vars.player.unit()?.plans?.remove(plan)
             Vars.control.input.isBuilding = toggle
             ClientVars.isBuildingLock = false
         }, 0.25f)

@@ -14,6 +14,7 @@ import arc.scene.ui.TextButton.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import mindustry.*;
 import mindustry.client.ui.*;
 import mindustry.core.*;
 import mindustry.game.EventType.*;
@@ -29,6 +30,7 @@ public class MenuFragment{
     private Button currentMenu;
     public MenuRenderer renderer;
     private Seq<MenuButton> customButtons = new Seq<>();
+    public Seq<MenuButton> desktopButtons = null;
 
     public void build(Group parent){
         renderer = new MenuRenderer();
@@ -62,7 +64,7 @@ public class MenuFragment{
 
         parent.fill(c -> c.bottom().right().button(Icon.discord, new ImageButtonStyle(){{ // FINISHME: This is cursed af
             up = discordBanner;
-        }}, ui.discord::show).marginTop(9f).marginLeft(10f).tooltip("@discord").size(84, 45).name("discord"));
+        }}, ui.discord::show).visible(() -> !ui.consolefrag.shown()).marginTop(9f).marginLeft(10f).tooltip("@discord").size(84, 45).name("discord"));
 
         parent.fill(c ->
             c.bottom().left().image(
@@ -73,6 +75,25 @@ public class MenuFragment{
 
         //info icon
         if(mobile){
+            //left/right gutter areas
+            parent.fill((x, y, w, h) -> {
+                x = 0f;
+                y = 0f;
+                w = Core.graphics.getWidth();
+                h = Core.graphics.getHeight();
+                if(Core.scene.marginLeft > 0){
+                    paneRight.draw(x, y, Core.scene.marginLeft, h);
+                }
+
+                if(Core.scene.marginRight > 0){
+                    paneLeft.draw(x + w - Core.scene.marginRight, y, Core.scene.marginRight, h);
+                }
+
+                if(Core.scene.marginBottom > 0){
+                    Tex.paneTop.draw(Core.scene.marginLeft, 0, Core.graphics.getWidth() - Core.scene.marginRight - Core.scene.marginLeft, Core.scene.marginBottom);
+                }
+            });
+
             parent.fill(c -> c.bottom().left().button("", new TextButtonStyle(){{
                 font = Fonts.def;
                 fontColor = Color.white;
@@ -80,38 +101,62 @@ public class MenuFragment{
             }}, ui.about::show).size(84, 45).name("info"));
         }else{
             parent.fill(c -> {
-                c.bottom().right().button("Switch to v6", Icon.download, () -> {
+                // Uninstall foo's button
+                c.bottom().right().button("@client.uninstall", Icon.trash, () ->
+                    ui.showConfirm("@client.uninstall.title", Core.bundle.get("client.uninstall.body") + (steam ? Core.bundle.get("client.uninstall.body.append.steam") : ""), () -> {
+                        var installerMod = Vars.mods.getMod("fooinstaller");
+                        if(installerMod != null) Vars.mods.setEnabled(installerMod, false);
+                        if(steam){
+                            platform.checkIntegrity();
+                        }else{
+                            ui.loadfrag.show();
+                            becontrol.checkUpdate(result -> {
+                                ui.loadfrag.hide();
+                                if(!result){
+                                    ui.showInfo("@be.noupdates");
+                                }else{
+                                    becontrol.showUpdateDialog();
+                                }
+                            }, "anuken/mindustry");
+                        }
+                    })
+                ).size(200, 60).padRight(10);
+
+                // Switch to lower major version (v7)
+                c.bottom().right().button("@client.version.swap.v7", Icon.download, () -> {
                     ui.loadfrag.show();
                     becontrol.checkUpdate(result -> {
                         ui.loadfrag.hide();
                         if(!result){
                             ui.showInfo("@be.noupdates");
-                        } else {
+                        }else{
                             becontrol.showUpdateDialog();
                         }
-                    }, "mindustry-antigrief/mindustry-client-v6-builds");
+                    }, "mindustry-antigrief/mindustry-client-v7-builds");
                 }).size(200, 60).padRight(10);
 
+                // "Switch to (un)stable" button
                 c.button("", Icon.refresh, () -> {
-                    Core.settings.put("updateurl", (Core.settings.getString("updateurl") + "-v7-builds").replaceFirst("((-v6|-v7)?-builds) {2}", ""));
+                    Core.settings.put("updateurl", (Core.settings.getString("updateurl") + "-v8-builds").replaceFirst("((-v[6-8])?-builds) {2}", ""));
                     ui.loadfrag.show();
                     becontrol.checkUpdate(result -> {
                         ui.loadfrag.hide();
                         if(!result){
                             ui.showInfo("@be.noupdates");
-                        } else {
+                        }else{
                             becontrol.showUpdateDialog();
                         }
                     });
-                }).size(200, 60).padRight(10).update(t -> t.getLabel().setText(Core.settings.getString("updateurl").endsWith("-builds") ? "@client.switchstable" : "@client.switchunstable")).disabled(true); // FINISHME: Re-enable when v7 releases
+                }).size(200, 60).padRight(10).update(t -> t.getLabel().setText(Core.settings.getString("updateurl").endsWith("-builds") ? "@client.version.swap.stable" : "@client.version.swap.unstable")).disabled(true); // FINISHME: Re-enable when v7 releases
 
+                // "Check for updates" button
                 c.bottom().right().button("@be.check", Icon.refresh, () -> {
                     ui.loadfrag.show();
                     becontrol.checkUpdate(result -> {
                         ui.loadfrag.hide();
                         if(!result){
                             ui.showInfo("@be.noupdates");
-                        } else {
+                        }else{
                             becontrol.showUpdateDialog();
                         }
                     });
@@ -119,11 +164,9 @@ public class MenuFragment{
             });
         }
 
-                // FIX CURSED MENU SCREEN
-       String versionText = ((Version.build == -1) ? "[#fc8140aa]" : "[#ffffffba]") + Version.combined() + Strings.format("\n[gray]Don't press H[]\nCursedness Level: @", CursednessLevel.fromInteger(Core.settings.getInt("cursednesslevel")).name());
-//        String versionText = (Version.build == -1 ? "[#fc8140aa]" : "[#ffffffba]") + Version.combined() + "\n[gray]Don't press H";
-        // String versionText = ((Version.build == -1) ? "[#fc8140aa]" : "[#ffffffba]") + Version.combined() + "\n[gray]Don't press H[]\nClient Fork by Zxtej, BalaM314, SBytes. Cursedness Level: @";
         parent.fill((x, y, w, h) -> {
+            String versionText = ((Version.build == -1) ? "[#fc8140aa]" : "[#ffffffba]") + Version.combined() + Strings.format("\n[gray]Don't press H[]\nCursedness Level: @", CursednessLevel.fromInteger(Core.settings.getInt("cursednesslevel")).name());
+
             TextureRegion logo = Core.atlas.find("logo");
             float width = Core.graphics.getWidth(), height = Core.graphics.getHeight() - Core.scene.marginTop;
             float logoscl = Scl.scl(1) * logo.scale;
@@ -219,40 +262,45 @@ public class MenuFragment{
             t.defaults().width(width).height(70f);
             t.name = "buttons";
 
-            buttons(t,
-                new MenuButton("@play", Icon.play,
-                    new MenuButton("@campaign", Icon.play, () -> checkPlay(ui.planet::show)),
-                    new MenuButton("@joingame", Icon.add, () -> checkPlay(ui.join::show)),
-                    new MenuButton("@client.claj.join", Icon.link, () -> checkPlay(ui.clajJoin::show)), // FINISHME: Bundle and stop creating new dialog every time
-                    new MenuButton("@customgame", Icon.terrain, () -> checkPlay(ui.custom::show)),
-                    new MenuButton("@loadgame", Icon.download, () -> checkPlay(ui.load::show))
-                ),
-                new MenuButton("@client", Icon.wrench,
-                    new MenuButton("Discord", Icon.discord, () -> { // Link to client discord
-                        if (!Core.app.openURI(clientDiscord)) {
-                            ui.showErrorMessage("@linkfail");
-                            Core.app.setClipboardText(clientDiscord);
-                        }
-                    }),
-                    new MenuButton("Github", Icon.github, () -> { // Link to client github
-                        if (!Core.app.openURI("https://github.com/blahblahbloopster/mindustry-client-v6")) {
-                            ui.showErrorMessage("@linkfail");
-                            Core.app.setClipboardText("https://github.com/blahblahbloopster/mindustry-client-v6");
-                        }
-                    }),
-                    new MenuButton("@client.changelog", Icon.edit, ChangelogDialog.INSTANCE::show),
-                    new MenuButton("@client.features", Icon.list, FeaturesDialog.INSTANCE::show),
-                    new MenuButton("@client.keyshare", Icon.lock, () -> new TLSKeyDialog().show())
-                ), // End of client section
-                new MenuButton("@database.button", Icon.menu,
-                    new MenuButton("@schematics", Icon.paste, ui.schematics::show),
-                    new MenuButton("@database", Icon.book, ui.database::show),
-                    new MenuButton("@about.button", Icon.info, ui.about::show)
-                ),
-                new MenuButton("@editor", Icon.terrain, () -> checkPlay(ui.maps::show)), steam ? new MenuButton("@workshop", Icon.steam, platform::openWorkshop) : null,
-                new MenuButton("@mods", Icon.book, ui.mods::show),
-                new MenuButton("@settings", Icon.settings, ui.settings::show)
-            );
+            if(desktopButtons == null){
+                desktopButtons = Seq.with(
+                    new MenuButton("@play", Icon.play,
+                        new MenuButton("@campaign", Icon.play, () -> checkPlay(ui.planet::show)),
+                        new MenuButton("@joingame", Icon.add, () -> checkPlay(ui.join::show)),
+                        new MenuButton("@client.claj.join", Icon.link, () -> checkPlay(ui.clajJoin::show)), // FINISHME: Bundle and stop creating new dialog every time
+                        new MenuButton("@customgame", Icon.terrain, () -> checkPlay(ui.custom::show)),
+                        new MenuButton("@loadgame", Icon.download, () -> checkPlay(ui.load::show))
+                    ),
+                    new MenuButton("@client.name", Icon.wrench,
+                        new MenuButton("Discord", Icon.discord, () -> { // Link to client discord
+                            if (!Core.app.openURI(clientDiscord)) {
+                                ui.showErrorMessage("@linkfail");
+                                Core.app.setClipboardText(clientDiscord);
+                            }
+                        }),
+                        new MenuButton("Github", Icon.github, () -> { // Link to client github
+                            if (!Core.app.openURI("https://github.com/mindustry-antigrief/mindustry-client")) {
+                                ui.showErrorMessage("@linkfail");
+                                Core.app.setClipboardText("https://github.com/mindustry-antigrief/mindustry-client");
+                            }
+                        }),
+                        new MenuButton("@client.changelog", Icon.edit, ChangelogDialog.INSTANCE::show),
+                        new MenuButton("@client.features", Icon.list, FeaturesDialog.INSTANCE::show),
+                        new MenuButton("@client.certs.manage.title", Icon.lock, () -> new TLSKeyDialog().show())
+                    ), // End of client section
+                    new MenuButton("@database.button", Icon.menu,
+                        new MenuButton("@schematics", Icon.paste, ui.schematics::show),
+                        new MenuButton("@client.schematic.browser", Icon.host, SchematicBrowserDialog::showBrowser),
+                        new MenuButton("@database", Icon.book, ui.database::show),
+                        new MenuButton("@about.button", Icon.info, ui.about::show)
+                    ),
+                    new MenuButton("@editor", Icon.terrain, () -> checkPlay(ui.maps::show)), steam ? new MenuButton("@workshop", Icon.steam, platform::openWorkshop) : null,
+                    new MenuButton("@mods", Icon.book, ui.mods::show),
+                    new MenuButton("@settings", Icon.settings, ui.settings::show)
+                );
+            }
+
+            buttons(t, desktopButtons.toArray(MenuButton.class));
             buttons(t, customButtons.toArray(MenuButton.class));
             buttons(t, new MenuButton("@quit", Icon.exit, Core.app::exit));
         }).width(width).growY();
@@ -300,14 +348,14 @@ public class MenuFragment{
                     currentMenu = null;
                     fadeOutMenu();
                 }else{
-                    if(b.submenu != null){
+                    if(b.submenu != null && b.submenu.any()){
                         currentMenu = out[0];
                         submenu.clearChildren();
                         fadeInMenu();
                         //correctly offset the button
                         submenu.add().height((Core.graphics.getHeight() - Core.scene.marginTop - Core.scene.marginBottom - out[0].getY(Align.topLeft)) / Scl.scl(1f));
                         submenu.row();
-                        buttons(submenu, b.submenu);
+                        buttons(submenu, b.submenu.toArray());
                     }else{
                         currentMenu = null;
                         fadeOutMenu();
@@ -346,7 +394,7 @@ public class MenuFragment{
         /** Runnable ran when the button is clicked. Ignored on desktop if {@link #submenu} is not null. */
         public final Runnable runnable;
         /** Submenu shown when this button is clicked. Used instead of {@link #runnable} on desktop. */
-        public final @Nullable MenuButton[] submenu;
+        public final @Nullable Seq<MenuButton> submenu;
 
         /** Constructs a simple menu button, which behaves the same way on desktop and mobile. */
         public MenuButton(String text, Drawable icon, Runnable runnable){
@@ -361,7 +409,7 @@ public class MenuFragment{
             this.icon = icon;
             this.text = text;
             this.runnable = runnable;
-            this.submenu = submenu;
+            this.submenu = submenu != null ? Seq.with(submenu) : null;
         }
 
         /** Comstructs a desktop-only button; used internally. */
@@ -369,7 +417,7 @@ public class MenuFragment{
             this.icon = icon;
             this.text = text;
             this.runnable = () -> {};
-            this.submenu = submenu;
+            this.submenu = submenu != null ? Seq.with(submenu) : null;
         }
     }
 }

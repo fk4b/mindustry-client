@@ -2,17 +2,18 @@ package mindustry.client.antigrief
 
 import arc.*
 import arc.struct.*
+import arc.util.*
 import mindustry.Vars.*
 import mindustry.client.ClientVars.*
 import mindustry.client.navigation.*
 import mindustry.content.*
 import mindustry.entities.units.*
 import mindustry.world.*
-import java.time.Instant
+import java.time.*
 import kotlin.math.*
 
 fun rollbackTiles(tiles: Iterable<Tile>, timeInstant: Instant){
-    val time =  if (timeInstant > TileRecords.joinTime) timeInstant else TileRecords.joinTime
+    val time =  if (timeInstant > TileRecords.joinTime) timeInstant else TileRecords.joinTime // FINISHME: No longer true with networked tiles
     clientThread.post {
         val plans = Seq<BuildPlan>()
         val toBreak = IntSet()
@@ -43,7 +44,7 @@ fun rollbackTiles(tiles: Iterable<Tile>, timeInstant: Instant){
             if (numPlans == 0 && numConfigs == 0) {
                 Core.app.post { player.sendMessage(Core.bundle.get("client.norebuildsfound")) }
             } else {
-                player.sendMessage("[accent]Queued [white]${player.unit().plans.size - numPlans}[] builds and [white]${configs.size - numConfigs}[] configs.")
+                player.sendMessage("[accent]Queued [white]${numPlans}[] builds and [white]${numConfigs}[] configs.")
             }
             plans.clear()
         }
@@ -82,8 +83,8 @@ fun rebuildBroken(tiles: Iterable<Tile>, timeStart: Instant, timeEnd: Instant, r
             return@post
         }
         // The following is so inefficient lol what
-        // FINSIHME: Do not plan over existing buildings
-        clientThread.sortingInstance.sort(states, Comparator.comparing { it.time }) // Sort by time to deal with tile overlaps
+        // FINISHME: Do not plan over existing buildings
+        states.sort(Structs.comparing { it.time }) // Sort by time to deal with tile overlaps
         val minX = max(floor((player.x - range) / tilesize).toInt(), 0)
         val minY = max(floor((player.y - range) / tilesize).toInt(), 0)
         val takenTiles = GridBits(min(ceil((player.x + range) / tilesize).toInt() - minX, world.width()) + 1, min(ceil((player.y + range) / tilesize).toInt() - minY, world.height()) + 1)
@@ -162,8 +163,9 @@ fun undoPlayer(tiles: Iterable<Tile>, id: Int){
         Core.app.post {
             val numConfigs = configs.size
             val numPlans = player.unit().plans.size
+            player.sendMessage("[accent]Found [white]${plans.size}[] potential plans to undo actions by $playerName[accent].")
             control.input.flushPlans(plans, false, true, false) // Overplace
-            player.sendMessage("[accent] Queued [white]${plans.size - numPlans}[] builds and [white]${configs.size - numConfigs}[] configs to undo actions by $playerName")
+            player.sendMessage("[accent]Queued as [white]${player.unit().plans.size - numPlans}[] builds and [white]${configs.size - numConfigs}[] configs.")
             plans.clear()
         }
     }

@@ -68,8 +68,7 @@
  * {p}fixpower [c] - connect power networks (doesn't connect dioded or plast walled networks)
  * {p}fixcode - Now gives you 2 options. "c" to only remove the attem part and "r" (subjectively better) to completely yeet everything and replace it with anti attem text.
  * {p}distance [multiplier] - set the assist distance multiplier (1.5 by default)
- * {p}circleassist [multiplier] - set the circle assist speed (positive = counter-clockwise, negative = clockwise; 0 disables)
- * {p}assistshape [circle/square/star] - set orbit shape when assisting (circle, square, or star)
+ * {p}circleassist [multiplier] - set the circle assist speed (0.05 by default)
  * {p}clearghosts [c] - remove block ghosts in range of enemy turrets
  * {p}mapinfo [team] - shows useful information about the map (and map rules)
  * {p}binds <type> - Shows the positions of all blocks binding a type of unit.

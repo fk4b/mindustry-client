@@ -7,6 +7,7 @@ import mindustry.world.blocks.power.PowerGenerator.*;
 import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.production.*;
 import org.junit.jupiter.api.*;
+import test.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,8 +30,14 @@ public class DirectConsumerTests extends PowerTestFixture{
         testUnitFactory(30, 30, 0.08f, 0.08f, 1.0f);
     }
 
+    @BeforeAll
+    static void init(){
+        ApplicationTests.launchApplication(false);
+    }
+
+    static int fakes = 0;
     void testUnitFactory(int siliconAmount, int leadAmount, float producedPower, float requestedPower, float expectedSatisfaction){
-        Tile ct = createFakeTile(0, 0, new GenericCrafter("fakefactory"){{
+        Tile ct = createFakeTile(0, 0, new GenericCrafter("fakefactory" + (fakes ++)){{
             hasPower = true;
             hasItems = true;
             consumePower(requestedPower);

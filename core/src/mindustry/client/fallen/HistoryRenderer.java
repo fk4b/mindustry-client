@@ -40,7 +40,7 @@ public class HistoryRenderer {
         Events.run(EventType.Trigger.update, () -> {
             if (!state.isGame() || scene.getKeyboardFocus() != null) return;
 
-            if (Core.input.keyTap(Binding.block_show_plans)) {
+            if (Core.input.keyTap(Binding.blockShowPlans)) {
                 if (PlayerBlockListFragment.name_for_plans != null) {
                     PlayerBlockListFragment.name_for_plans = null;
                 } else {
@@ -48,7 +48,7 @@ public class HistoryRenderer {
                 }
             }
 
-            if (Core.input.keyTap(Binding.death_show_plans)) {
+            if (Core.input.keyTap(Binding.deathShowPlans)) {
                 if (Core.input.shift()) {
                     showControlDeaths = !showControlDeaths;
                 } else {

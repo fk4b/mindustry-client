@@ -37,6 +37,8 @@ public class DuctRouter extends Block{
         underBullets = true;
         priority = TargetPriority.transport;
         envEnabled = Env.space | Env.terrestrial | Env.underwater;
+        drawCached = true;
+        drawDynamic = false;
 
         config(Item.class, (DuctRouterBuild tile, Item item) -> tile.sortItem = item);
         configClear((DuctRouterBuild tile) -> tile.sortItem = null);
@@ -90,6 +92,12 @@ public class DuctRouter extends Block{
         }
 
         @Override
+        public void drawSelect(){
+            super.drawSelect();
+            drawItemSelection(sortItem);
+        }
+
+        @Override
         public void updateTile(){
             progress += edelta() / speed * 2f;
 
@@ -117,6 +125,16 @@ public class DuctRouter extends Block{
             ItemSelection.buildTable(DuctRouter.this, table, content.items(), () -> sortItem, this::configure);
         }
 
+        @Override
+        public void configured(Unit player, Object value){
+            super.configured(player, value);
+
+            if(!headless){
+                recache();
+                renderer.minimap.update(tile);
+            }
+        }
+
         @Nullable
         public Building target(){
             if(current == null) return null;
@@ -141,7 +159,7 @@ public class DuctRouter extends Block{
         @Override
         public boolean acceptItem(Building source, Item item){
             return current == null && items.total() == 0 &&
-                (Edges.getFacingEdge(source.tile(), tile).relativeTo(tile) == rotation);
+                (Edges.getFacingEdge(source.tile, tile).relativeTo(tile) == rotation);
         }
 
         @Override

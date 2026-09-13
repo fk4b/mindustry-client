@@ -21,7 +21,6 @@ public class FileTree implements FileHandleResolver{
     private ObjectMap<String, Fi> files = new ObjectMap<>();
     private ObjectMap<String, Sound> loadedSounds = new ObjectMap<>();
     private ObjectMap<String, Music> loadedMusic = new ObjectMap<>();
-    public static Seq<Music> clientLoadedMusic = new Seq<>();
 
     public void addFile(String path, Fi f){
         files.put(path.replace('\\', '/'), f);
@@ -64,9 +63,11 @@ public class FileTree implements FileHandleResolver{
 
         return loadedSounds.get(soundName, () -> {
             String name = "sounds/" + soundName;
-            String path = Vars.tree.get(name + ".ogg").exists() ? name + ".ogg" : name + ".mp3";
+            String path = getAudioPath(name);
 
             var sound = new Sound();
+
+            if(path == null) return sound;
             var desc = Core.assets.load(path, Sound.class, new SoundParameter(sound));
             desc.errored = Throwable::printStackTrace;
 
@@ -83,9 +84,11 @@ public class FileTree implements FileHandleResolver{
 
         return loadedMusic.get(musicName, () -> {
             String name = "music/" + musicName;
-            String path = Vars.tree.get(name + ".ogg").exists() ? name + ".ogg" : name + ".mp3";
+            String path = getAudioPath(name);
 
             var music = new Music();
+
+            if(path == null) return music;
             var desc = Core.assets.load(path, Music.class, new MusicParameter(music));
             desc.errored = Throwable::printStackTrace;
 
@@ -94,7 +97,7 @@ public class FileTree implements FileHandleResolver{
     }
 
 
-    private boolean checkedOutdated, outdated, notified;
+    private boolean checkedOutdated, outdated, notified, logDownloadDisabledMusic, logDownloadDisabledSound;
     private boolean outdated(){
         if(!checkedOutdated){
             checkedOutdated = true;
@@ -106,12 +109,12 @@ public class FileTree implements FileHandleResolver{
     }
 
     public void loadAudio(DownloadableAudio audio, String path, int length){
+        if(audio == null) return; // Some mods will overwrite sounds/musics with nulls, likely bugs
+
         var fi = get(path);
         var clazz = audio.getClass().getSimpleName(); // Used for error messages and settings
         if(audio instanceof Sound sound && fi.parent().name().equals("ui")){
             sound.setBus(Vars.control.sound.uiBus);
-        }else if(audio instanceof Music music){
-            clientLoadedMusic.add(music);
         }
 
         if(fi.exists()){ // Local copy. Assumed to be up-to-date
@@ -123,13 +126,21 @@ public class FileTree implements FileHandleResolver{
         var cached = Core.settings.getDataDirectory().child("cache").child(audio instanceof Sound ? path : fi.nameWithoutExtension() + "__" + length + "." + fi.extension()); // See Music#load
 
         if(!outdated() && cached.exists() && cached.length() == length){ // Cached up-to-date copy
-            var err = audio.loadDirectly(cached);
-            if(err != null) throw err;
-            Log.debug("Loaded @ @ from cache", clazz, cached.nameWithoutExtension());
+            audio.load(cached, true);
+            Log.debug("Loaded @ @ from cache", clazz, fi.nameWithoutExtension());
             return;
         }
 
-        if(!Core.settings.getBool("download" + clazz.toLowerCase())) return; // Automatic downloading of music and sound can be disabled
+        if(!Core.settings.getBool("download" + clazz.toLowerCase())) { // Automatic downloading of music and sound can be disabled
+            if (audio instanceof Sound && !logDownloadDisabledSound) { // This is kind of horrible, but I don't really care
+                logDownloadDisabledSound = true;
+                Log.debug("Sound downloading is disabled");
+            } else if (audio instanceof Music && !logDownloadDisabledMusic) {
+                logDownloadDisabledMusic = true;
+                Log.debug("Music downloading is disabled");
+            }
+            return;
+        }
 
         ConsT<Http.HttpResponse, Exception> writeDownloadedAudio = res -> { // This creates garbage, but it's convenient and shouldn't matter as this method is called few times
             if(!cached.exists() || cached.length() != res.getContentLength()){ // Only download if the existing file isn't the same size
@@ -139,8 +150,7 @@ public class FileTree implements FileHandleResolver{
                 write.close();
                 Log.debug("Finished downloading @ @", clazz, fi.name());
             }
-            var err = audio.loadDirectly(cached);
-            if(err != null) throw err;
+            audio.load(cached, true);
             Log.debug("Loaded @ @ from cache after downloading", clazz, fi.name());
         };
 //        FINISHME: Making a get request to the line below would be beneficial as we could compare hashes but that would require a backup for exceeding rate limits (would also be done by directory as it would save many requests)
@@ -152,10 +162,7 @@ public class FileTree implements FileHandleResolver{
                     if(!notified) Vars.ui.showErrorMessage("@client.audiofail"); // Display at most one dialog
                     notified = true;
                 });
-                if(cached.exists()){ // Use outdated cached audio if it exists, it's better than silence
-                    var err = audio.loadDirectly(cached);
-                    if(err != null) throw err;
-                }
+                if(cached.exists()) audio.load(cached, true);// Use outdated cached audio if it exists, it's better than silence
                 return;
             }
             Log.debug("@ downloading failed for @ retrying", clazz, fi.name());
@@ -165,5 +172,14 @@ public class FileTree implements FileHandleResolver{
         });
         Log.debug("Downloading @ @", clazz, fi.name());
         req.submit(writeDownloadedAudio);
+    }
+
+    public static @Nullable String getAudioPath(String name){
+        Fi ogg = Vars.tree.get(name + ".ogg"), mp3 = Vars.tree.get(name + ".mp3");
+        if(ogg.exists()) return name + ".ogg";
+        if(mp3.exists()) return name + ".mp3";
+
+        Log.warn("Audio file not found: @ (.mp3 or .ogg)", name);
+        return null;
     }
 }

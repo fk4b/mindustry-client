@@ -1,7 +1,6 @@
 package mindustry.maps;
 
 import arc.*;
-import arc.assets.*;
 import arc.assets.loaders.*;
 import arc.files.*;
 import arc.func.*;
@@ -12,12 +11,10 @@ import arc.util.*;
 import arc.util.io.*;
 import arc.util.serialization.*;
 import mindustry.*;
+import mindustry.client.*;
 import mindustry.content.*;
-import mindustry.core.*;
-import mindustry.game.EventType.*;
 import mindustry.game.*;
 import mindustry.io.*;
-import mindustry.maps.MapPreviewLoader.*;
 import mindustry.maps.filters.*;
 import mindustry.service.*;
 import mindustry.world.*;
@@ -33,13 +30,15 @@ public class Maps{
     NoiseFilter::new, ScatterFilter::new, TerrainFilter::new, DistortFilter::new,
     RiverNoiseFilter::new, OreFilter::new, OreMedianFilter::new, MedianFilter::new,
     BlendFilter::new, MirrorFilter::new, ClearFilter::new, CoreSpawnFilter::new,
-    EnemySpawnFilter::new, SpawnPathFilter::new
+    EnemySpawnFilter::new, SpawnPathFilter::new, LogicFilter::new
     };
 
     /** List of all built-in maps. Filenames only. */
     private static String[] defaultMapNames = {"maze", "fortress", "labyrinth", "islands", "tendrils", "caldera", "wasteland", "shattered", "fork", "triad", "mudFlats", "moltenLake", "archipelago", "debrisField", "domain", "veins", "glacier", "passage"};
     /** Maps tagged as PvP */
     private static String[] pvpMaps = {"veins", "glacier", "passage"};
+    /** If true, the defaultMapNames are prefixed with default/ */
+    private static boolean useDefaultFolder = true;
 
     /** All maps stored in an ordered array. */
     private Seq<Map> maps = new Seq<>();
@@ -47,8 +46,6 @@ public class Maps{
 
     private @Nullable MapProvider shuffler;
     private @Nullable Map nextMapOverride;
-
-    private ObjectSet<Map> previewList = new ObjectSet<>();
 
     public ShuffleMode getShuffleMode(){
         return shuffleMode;
@@ -92,20 +89,19 @@ public class Maps{
 
     /** Returns a list of only default maps. */
     public Seq<Map> defaultMaps(){
-        return maps.select(m -> !m.custom);
+        return maps.select(m -> !m.custom && m.mod == null);
+    }
+
+    /** Returns a list of only modded maps. */
+    public Seq<Map> moddedMaps(){
+        return maps.select(m -> m.mod != null);
     }
 
     public Map byName(String name){
         return maps.find(m -> m.name().equals(name));
     }
 
-    public Maps(){
-        Events.on(ClientLoadEvent.class, event -> maps.sort());
-
-        if(Core.assets != null){
-            ((CustomLoader)Core.assets.getLoader(ContentLoader.class)).loaded = this::createAllPreviews;
-        }
-    }
+    public Maps(){}
 
     /**
      * Loads a map from the map folder and returns it. Should only be used for zone maps.
@@ -126,7 +122,7 @@ public class Maps{
         //defaults; must work
         try{
             for(String name : defaultMapNames){
-                Fi file = Core.files.internal("maps/" + name + "." + mapExtension);
+                Fi file = Core.files.internal((useDefaultFolder ? "maps/default/" : "maps/") + name + "." + mapExtension);
                 loadMap(file, false);
             }
         }catch(IOException e){
@@ -134,7 +130,7 @@ public class Maps{
         }
 
         //custom
-        for(Fi file : customMapDirectory.list()){
+        customMapDirectory.walk(file -> {
             try{
                 if(file.extension().equalsIgnoreCase(mapExtension)){
                     loadMap(file, true);
@@ -143,7 +139,7 @@ public class Maps{
                 Log.err("Failed to load custom map file '@'!", file);
                 Log.err(e);
             }
-        }
+        });
 
         //workshop
         for(Fi file : platform.getWorkshopContent(Map.class)){
@@ -182,11 +178,15 @@ public class Maps{
         load();
     }
 
+    public Map saveMap(ObjectMap<String, String> baseTags){
+        return saveMap(baseTags, true);
+    }
+
     /**
      * Save a custom map to the directory. This updates all values and stored data necessary.
      * The tags are copied to prevent mutation later.
      */
-    public Map saveMap(ObjectMap<String, String> baseTags){
+    public Map saveMap(ObjectMap<String, String> baseTags, boolean embedAssets){
 
         try{
             StringMap tags = new StringMap(baseTags);
@@ -212,7 +212,7 @@ public class Maps{
             //create map, write it, etc etc etc
             Map map = new Map(file, world.width(), world.height(), tags, true);
             fogControl.resetFog();
-            MapIO.writeMap(file, map);
+            MapIO.writeMap(file, map, embedAssets);
 
             if(!headless){
                 //reset attributes
@@ -238,10 +238,18 @@ public class Maps{
                 }
 
                 Pixmap pix = MapIO.generatePreview(world.tiles);
-                mainExecutor.submit(() -> map.previewFile().writePng(pix));
-                writeCache(map);
 
                 map.texture = new Texture(pix);
+                mainExecutor.submit(() -> {
+                    try{
+                        map.previewFile().writePng(pix);
+                        writeCache(map);
+                    }catch(Exception e){
+                        throw new RuntimeException(e);
+                    }finally{
+                        pix.dispose();
+                    }
+                });
             }
             maps.add(map);
             maps.sort();
@@ -253,8 +261,8 @@ public class Maps{
         }
     }
 
-    /** Import a map, then save it. This updates all values and stored data necessary. */
-    public void importMap(Fi file) throws IOException{
+    /** Imports a map, then saves it. This updates all values and stored data necessary. */
+    public Map importMap(Fi file) throws IOException{
         Fi dest = findFile(file.name());
         file.copyTo(dest);
 
@@ -274,6 +282,8 @@ public class Maps{
         if(error[0] != null){
             throw new IOException(error[0]);
         }
+
+        return map;
     }
 
     /** Attempts to run the following code;
@@ -366,36 +376,99 @@ public class Maps{
         return str == null ? null : str.equals("[]") ? new Seq<>() : Seq.with(JsonIO.json.fromJson(SpawnGroup[].class, str));
     }
 
-    public void loadPreviews(){
+    public void loadPreviewsAsync(){ // This is run *off* the main thread!
+        var loader = new MapPreviewLoader();
         for(Map map : maps){
-            //try to load preview
             if(map.previewFile().exists()){
-                //this may fail, but calls queueNewPreview
-                Core.assets.load(new AssetDescriptor<>(map.previewFile().path() + "." + mapExtension, Texture.class, new MapPreviewParameter(map))).loaded = t -> map.texture = t;
-
+                var fileName = (map.previewFile().path() + "." + mapExtension).replaceAll("\\\\", "/");
+                loader.loadAsync(Core.assets, fileName, loader.resolve(fileName), new MapPreviewLoader.MapPreviewParameter(map));
                 try{
                     readCache(map);
                 }catch(Exception e){
                     e.printStackTrace();
                     queueNewPreview(map);
                 }
+
+                var info = new TextureLoader.TextureLoaderInfo();
+                info.filename = loader.info.filename;
+                info.data = loader.info.data;
+                info.texture = loader.info.texture;
+                previewLoaderTask.addUnit(new MapPreviewData(map, info));
             }else{
                 queueNewPreview(map);
             }
         }
+        Core.app.post(() -> maps.sort());
     }
 
+    private static class MapPreviewData {
+        final Map map;
+        final TextureLoader.TextureLoaderInfo info;
+
+        MapPreviewData(Map map, TextureLoader.TextureLoaderInfo info) {
+            this.map = map;
+            this.info = info;
+        }
+    }
+
+    private final BackgroundTask<MapPreviewData> previewLoaderTask = new BackgroundTask<>() {
+        private MapPreviewLoader loader;
+
+        @Override
+        public boolean shouldProcess() {
+            return state.isMenu();
+        }
+
+        @Override
+        public synchronized void submit() {
+            super.submit();
+            loader = new MapPreviewLoader();
+        }
+
+        @Override
+        public synchronized void done() {
+            super.done();
+            loader = null; // No remaining previews (or we somehow outpaced the threads posting to the queue which is unlikely and not a problem either way), null out the loader to reclaim memory
+        }
+
+        @Override
+        public boolean processStep() {
+            // Load map preview texture
+            var data = units.removeFirst();
+            var noExt = data.info.filename.substring(0, data.info.filename.length() - 5); // Drop 5 to remove the .msav extension
+            loader.info = data.info;
+            var s = Time.nanos();
+            data.map.texture = loader.loadSync(Core.assets, data.info.filename, Core.files.local(noExt), null);
+            Log.debug("Lazy loaded map preview for @ in @ms", noExt, Time.millisSinceNanos(s));
+
+            return units.isEmpty();
+        }
+    };
+
+    private final BackgroundTask<Map> previewCreationTask = new BackgroundTask<>(100, new Queue<>(1)) {
+        @Override
+        public boolean shouldProcess() {
+            return state.isMenu();
+        }
+
+        @Override
+        public boolean processStep() {
+            // Create map preview file
+            var map = units.removeFirst();
+            var s = Time.nanos();
+            createNewPreview(map, e -> map.texture = Core.assets.get("sprites/error.png"));
+            Log.debug("Created preview for '@' in @ms", map.name(), Time.millisSinceNanos(s));
+            return units.isEmpty();
+        }
+    };
+
+    @SuppressWarnings("unused") // Kept in case some mod uses it for whatever reason, vanilla compatibility sure is a pain sometimes
     private void createAllPreviews(){
-        Core.app.post(() -> {
-            for(Map map : previewList){
-                createNewPreview(map, e -> Core.app.post(() -> map.texture = Core.assets.get("sprites/error.png")));
-            }
-            previewList.clear();
-        });
+        Core.app.post(previewCreationTask::block);
     }
 
-    public void queueNewPreview(Map map){
-        Core.app.post(() -> previewList.add(map));
+    public void queueNewPreview(Map map){ // Vanilla api kept for compatibility
+        previewCreationTask.addUnit(map);
     }
 
     private void createNewPreview(Map map, Cons<Exception> failed){

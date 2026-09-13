@@ -17,7 +17,6 @@ public class Lod{
     public static float alpha2 = 1f;
 
     public static void update(){
-        // disable: temporary override (e.g. screenshots); lodfade setting: user toggle in Graphics
         if(disable || !settings.getBool("lodfade", true)){
             l1 = l2 = true;
             alpha2 = alpha1 = 1f;

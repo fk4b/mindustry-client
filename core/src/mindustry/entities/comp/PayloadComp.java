@@ -1,6 +1,7 @@
 package mindustry.entities.comp;
 
 import arc.*;
+import arc.audio.*;
 import arc.math.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
@@ -10,11 +11,12 @@ import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.entities.*;
-import mindustry.game.*;
 import mindustry.game.EventType.*;
+import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.type.*;
 import mindustry.world.*;
+import mindustry.world.blocks.defense.turrets.ItemTurret;
 import mindustry.world.blocks.payloads.*;
 import mindustry.world.blocks.power.*;
 
@@ -51,13 +53,23 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         }
 
         for(Payload pay : payloads){
-            //apparently BasedUser doesn't want this and several plugins use it
-            //if(pay instanceof BuildPayload build){
-            //    build.build.team = team;
-            //}
             pay.set(x, y, rotation);
             pay.update(self(), null);
         }
+        //remove dead payloads after they explode
+        payloads.removeAll(Payload::isDead);
+    }
+
+    @Override
+    public void remove(){
+        for(Payload pay : payloads){
+            pay.remove();
+        }
+        payloads.clear();
+    }
+
+    public void destroy(){
+        if(Vars.state.rules.unitPayloadsExplode) payloads.each(Payload::destroyed);
     }
 
     float payloadUsed(){
@@ -65,7 +77,7 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
     }
 
     boolean canPickup(Unit unit){
-        return type.pickupUnits && payloadUsed() + unit.hitSize * unit.hitSize <= type.payloadCapacity + 0.001f && unit.team == team() && unit.isAI();
+        return type.pickupUnits && payloadUsed() + unit.hitSize * unit.hitSize <= type.payloadCapacity + 0.001f && unit.team == team() && unit.isAI() && unit.type.allowedInPayloads;
     }
 
     boolean canPickup(Building build){
@@ -85,12 +97,15 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
     }
 
     void pickup(Unit unit){
+        if(unit.isAdded()) unit.team.data().updateCount(unit.type, 1);
+
         unit.remove();
         addPayload(new UnitPayload(unit));
         Fx.unitPickup.at(unit);
         if(Vars.net.client()){
             Vars.netClient.clearRemovedEntity(unit.id);
         }
+        Sounds.payloadPickup.at(self(), Mathf.random(0.9f, 1.1f));
         Events.fire(new PickupEvent(self(), unit));
     }
 
@@ -101,6 +116,7 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         tile.afterPickedUp();
         addPayload(new BuildPayload(tile));
         Fx.unitPickup.at(tile);
+        Sounds.payloadPickup.at(self());
         Events.fire(new PickupEvent(self(), tile));
     }
 
@@ -125,9 +141,10 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         }
 
         //drop off payload on an acceptor if possible
-        if(on != null && on.build != null && on.build.acceptPayload(on.build, payload)){
+        if(on != null && on.build != null && on.build.team == team && on.build.acceptPayload(on.build, payload)){
             Fx.unitDrop.at(on.build);
             on.build.handlePayload(on.build, payload);
+            playPayloadDropSound(payload);
             return true;
         }
 
@@ -139,11 +156,35 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         return false;
     }
 
+    boolean canDropPayload(){
+        if(payloads.isEmpty()) return false;
+
+        Payload payload = payloads.peek();
+        Tile on = tileOn();
+
+        if(on != null && on.build != null && on.build.team == team && on.build.acceptPayload(on.build, payload)) return true;
+
+        if(payload instanceof BuildPayload b){
+            Building tile = b.build;
+            int tx = World.toTile(x - tile.block.offset), ty = World.toTile(y - tile.block.offset);
+            on = Vars.world.tile(tx, ty);
+            return on != null && Build.validPlace(tile.block, tile.team, tx, ty, tile.rotation, false);
+        }else if(payload instanceof UnitPayload p){
+            var u = p.unit;
+            return !(!u.canPass(World.toTile(x + Tmp.v1.x), World.toTile(y + Tmp.v1.y)) || Units.count(x, y, u.physicSize(), o -> o.isGrounded() && o.hitSize > 14f) > 1);
+        }
+        return false;
+    }
+
     boolean dropUnit(UnitPayload payload){
         Unit u = payload.unit;
 
+        //add random offset to prevent unit stacking
+        Tmp.v1.rnd(Mathf.random(2f));
+
         //can't drop ground units
-        if(!u.canPass(tileX(), tileY()) || Units.count(x, y, u.physicSize(), o -> o.isGrounded()) > 1){
+        //allow stacking for small units for now - otherwise, unit transfer would get annoying
+        if(!u.canPass(World.toTile(x + Tmp.v1.x), World.toTile(y + Tmp.v1.y)) || Units.count(x, y, u.physicSize(), o -> o.isGrounded() && o.hitSize > 14f) > 1){
             return false;
         }
 
@@ -152,8 +193,7 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         //clients do not drop payloads
         if(Vars.net.client()) return true;
 
-        u.set(this);
-        u.trns(Tmp.v1.rnd(Mathf.random(2f)));
+        u.set(x + Tmp.v1.x, y + Tmp.v1.y);
         u.rotation(rotation);
         //reset the ID to a new value to make sure it's synced
         u.id = EntityGroup.nextId();
@@ -162,6 +202,7 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
         u.add();
         u.unloaded();
         Events.fire(new PayloadDropEvent(self(), u));
+        playPayloadDropSound(payload);
 
         return true;
     }
@@ -187,10 +228,19 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
 
             Fx.unitDrop.at(tile);
             on.block().placeEffect.at(on.drawx(), on.drawy(), on.block().size);
+            on.block().placeSound.at(tile);
             return true;
         }
 
         return false;
+    }
+
+    void playPayloadDropSound(Payload payload){
+        Sound dropSound =
+            payload.size() <= 12f ? Sounds.payloadDrop1 :
+            payload.size() <= 20f ? Sounds.payloadDrop2 :
+            Sounds.payloadDrop3;
+        dropSound.at(self(), Mathf.random(0.9f, 1.1f));
     }
 
     void contentInfo(Table table, float itemSize, float width){
@@ -203,8 +253,24 @@ abstract class PayloadComp implements Posc, Rotc, Hitboxc, Unitc{
             pad = (width - (itemSize) * items) / items;
         }
 
+        boolean useRows = payloads.size > 1;
         for(Payload p : payloads){
-            table.image(p.icon()).size(itemSize).padRight(pad);
+            table.table(t -> {
+                t.image(p.icon()).size(itemSize);
+                if(p instanceof BuildPayload b){
+                    if(b.build.liquids != null && b.build.liquids.currentAmount() > 0){
+                        if(useRows) t.row();
+                        t.image(b.build.liquids.current().fullIcon).size(itemSize);
+                    }
+                    if(b.build.items != null && b.build.items.any()){
+                        if(useRows) t.row();
+                        t.image(b.build.items.first().fullIcon).size(itemSize);
+                    } else if(b.build instanceof ItemTurret.ItemTurretBuild tu && tu.hasAmmo() && tu.ammo.peek() instanceof ItemTurret.ItemEntry e){
+                        if(useRows) t.row();
+                        t.image(e.item.fullIcon).size(itemSize);
+                    }
+                }
+            }).top().padRight(pad);
         }
     }
 }

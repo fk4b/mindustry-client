@@ -10,7 +10,6 @@ import mindustry.world.*;
 
 public class StackRouter extends DuctRouter{
     public float baseEfficiency = 0f;
-    public static boolean sus = false;
 
     public @Load(value = "@-glow", fallback = "arrow-glow") TextureRegion glowRegion;
     public float glowAlpha = 1f;
@@ -19,6 +18,7 @@ public class StackRouter extends DuctRouter{
     public StackRouter(String name){
         super(name);
         itemCapacity = 10;
+        drawDynamic = true;
     }
 
     public class StackRouterBuild extends DuctRouterBuild{
@@ -62,12 +62,20 @@ public class StackRouter extends DuctRouter{
             if((current == null || items.get(current) == 0) && items.total() > 0){
                 current = items.first();
             }
+
+            if(items.empty()){
+                unloading = false;
+                current = null;
+            }
+        }
+
+        @Override
+        public void drawCached(){
+            super.draw();
         }
 
         @Override
         public void draw(){
-            super.draw();
-
             if(glowRegion.found() && power != null && power.status > 0){
                 Draw.z(Layer.blockAdditive);
                 Draw.color(glowColor, glowAlpha * power.status);
@@ -81,7 +89,7 @@ public class StackRouter extends DuctRouter{
         @Override
         public boolean acceptItem(Building source, Item item){
             return !unloading && (current == null || item == current) && items.total() < itemCapacity &&
-                (Edges.getFacingEdge(source.tile(), tile).relativeTo(tile) == rotation);
+                (Edges.getFacingEdge(source.tile, tile).relativeTo(tile) == rotation);
         }
     }
 }

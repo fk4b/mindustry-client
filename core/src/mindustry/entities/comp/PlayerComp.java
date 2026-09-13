@@ -4,6 +4,7 @@ import arc.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
+import arc.math.geom.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
@@ -21,14 +22,17 @@ import mindustry.game.EventType.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.input.InputHandler.*;
 import mindustry.net.Administration.*;
 import mindustry.net.*;
 import mindustry.net.Packets.*;
 import mindustry.type.*;
 import mindustry.ui.*;
+import mindustry.world.*;
 import mindustry.world.blocks.storage.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
 
+import static arc.Core.*;
 import static mindustry.Vars.*;
 
 @EntityDef(value = {Playerc.class}, serialize = false)
@@ -36,35 +40,85 @@ import static mindustry.Vars.*;
 abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Drawc{
     static final float deathDelay = 60f;
     static final Queue<BuildPlan> persistPlans = new Queue<>(1);
+    static @Nullable Unit persistPlansFrom = null;
+    static final float pingDuration = 20f * 60f;
 
     @Import float x, y;
 
-    @ReadOnly Unit unit = Nulls.unit;
+    @ReadOnly @Nullable Unit unit;
     transient @Nullable NetConnection con;
     @ReadOnly Team team = Team.sharded;
     @SyncLocal boolean typing, shooting, boosting;
+    @SyncLocal @Nullable Block selectedBlock;
+    @SyncLocal int selectedRotation;
     @SyncLocal float mouseX, mouseY;
     /** command the unit had before it was controlled. */
     @Nullable @NoSync UnitCommand lastCommand;
     boolean admin;
     String name = "frog";
     Color color = new Color();
+
     transient String locale = "en";
     transient float deathTimer;
     transient @Nullable Unit unitOnDeath;
     transient String lastText = "";
     transient float textFadeTime;
+    transient Ratekeeper itemDepositRate = new Ratekeeper();
+    transient float pingX, pingY, pingTime;
+    transient @Nullable String pingText;
 
-    transient private Unit lastReadUnit = Nulls.unit;
+    transient private @Nullable Unit lastReadUnit;
     transient private int wrongReadUnits;
     transient @Nullable Unit justSwitchFrom, justSwitchTo;
     transient boolean fooUser;
     transient boolean assisting;
     transient @Nullable TraceInfo trace;
     transient @Nullable String serverID;
+    transient boolean hasLoadedMap;
+
+    transient int lastPreviewPlanGroup = -1, lastPreviewPlanGroupServer = -1;
+    transient long lastPreviewPlanTimestamp;
+    transient boolean receivingNewPlanGroup;
+    transient Seq<BuildPlan> previewPlansCurrent = new Seq<>(BuildPlan.class);
+    transient Seq<BuildPlan> previewPlansAssembling = new Seq<>(BuildPlan.class);
+    transient @Nullable QuadTree<BuildPlan> previewPlanTree;
+    transient @Nullable QueryEachable planEachable;
+    transient boolean previewPlansDirty;
+
+    public Seq<BuildPlan> getPreviewPlans(){
+        long timeToCommit = 100; //ms needed after first plan is received to "commit" the plans.
+        if(Time.timeSinceMillis(lastPreviewPlanTimestamp) >= timeToCommit && receivingNewPlanGroup){
+            receivingNewPlanGroup = false;
+            previewPlansDirty = true;
+            previewPlansCurrent.set(previewPlansAssembling);
+            previewPlansAssembling.clear();
+        }
+
+        return previewPlansCurrent;
+    }
+
+    public void handlePreviewPlans(int groupId, Seq<BuildPlan> plans){
+        if(groupId > lastPreviewPlanGroup){ //new group received, prepare to add plans for this group
+            previewPlansAssembling.clear();
+            lastPreviewPlanGroup = groupId;
+            receivingNewPlanGroup = true;
+            lastPreviewPlanTimestamp = Time.millis();
+        }else if(groupId < lastPreviewPlanGroup){ //packet is outdated, likely sent out of order
+            return;
+        }else if(!receivingNewPlanGroup){ //the window has closed, no more plans will be received
+            return;
+        }
+
+        if(plans == null) return;
+
+        int added = Math.min(plans.size, maxPlayerPreviewPlans - previewPlansAssembling.size);
+        if(added > 0){
+            previewPlansAssembling.addAll(plans, 0, added);
+        }
+    }
 
     public boolean isBuilder(){
-        return unit.canBuild();
+        return unit != null && unit.canBuild();
     }
 
     public @Nullable CoreBuild closestCore(){
@@ -75,21 +129,43 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         return team.core();
     }
 
-    /** @return largest/closest core, with largest cores getting priority */
+    /** @return largest/closest core, with the largest cores getting priority */
     @Nullable
     public CoreBuild bestCore(){
-        return team.cores().min(Structs.comps(Structs.comparingInt(c -> -c.block.size), Structs.comparingFloat(c -> c.dst(x, y))));
+        var cores = team.cores();
+        //if someone screws up the map and adds an invalid core, prioritize the core that's supported
+        //if there's only one core, there are no other options
+        if(!isLocal()){
+            return cores.min(b -> cores.size == 1 || ((CoreBlock)b.block).unitType.supportsEnv(state.rules.env), Structs.comps(Structs.comparingInt(c -> -c.block.size), Structs.comparingFloat(c -> c.dst2(x, y))));
+        } else {
+            return cores.min(
+                b -> cores.size == 1 || ((CoreBlock)b.block).unitType.supportsEnv(state.rules.env),
+                Structs.comps(
+                    Structs.comparingBool(c -> c.block != CoreBlock.preferredCoreType),
+                    Structs.comps(Structs.comparingInt(c -> -c.block.size), Structs.comparingFloat(c -> c.dst2(x, y)))
+                )
+            );
+        }
     }
 
     public TextureRegion icon(){
         //display default icon for dead players
-        if(dead()) return core() == null ? UnitTypes.alpha.uiIcon : ((CoreBlock)bestCore().block).unitType.uiIcon;
+        if(dead()){
+            if(core() == null){
+                return UnitTypes.alpha.uiIcon;
+            }
+            var bestCore = (CoreBuild)bestCore();
+            if(bestCore == null){
+                return UnitTypes.alpha.uiIcon;
+            }
+            return ((CoreBlock)bestCore.block).unitType.uiIcon;
+        }
 
         return unit.icon();
     }
 
     public boolean displayAmmo(){
-        return unit instanceof BlockUnitc || state.rules.unitAmmo;
+        return unit instanceof BlockUnitc;
     }
 
     public void reset(){
@@ -97,9 +173,18 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         admin = typing = false;
         textFadeTime = 0f;
         x = y = 0f;
+        lastPreviewPlanTimestamp = 0;
+        lastPreviewPlanGroup = -1;
+        lastPreviewPlanGroupServer = -1;
+        previewPlanTree = null;
+        planEachable = null;
+        previewPlansCurrent.clear();
+        previewPlansAssembling.clear();
+        receivingNewPlanGroup = false;
+        previewPlansDirty = false;
         if(!dead()){
             unit.resetController();
-            unit = Nulls.unit;
+            unit = null;
         }
     }
 
@@ -115,7 +200,7 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
     @Replace
     public float clipSize(){
-        return unit.isNull() ? 20 : unit.type.hitSize * 2f;
+        return Float.MAX_VALUE;
     }
 
     @Override
@@ -124,7 +209,7 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         //when the player recs a unit that they JUST transitioned away from, use the new unit instead
         //reason: we know the server is lying here, essentially skip the unit snapshot because we know the client's information is more recent
         if(isLocal() && unit == justSwitchFrom && justSwitchFrom != null && justSwitchTo != null){
-            Log.debug("@ rubberbanded: @ at @", plainName(), wrongReadUnits, Time.millis());
+            Log.debug("@ rubberbanded: @ at @", plainName(), wrongReadUnits, graphics.getFrameId());
             unit = justSwitchTo;
             //if several snapshots have passed and this unit is still incorrect, something's wrong
             if(++wrongReadUnits >= 2){
@@ -132,7 +217,9 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
                 wrongReadUnits = 0;
             }
         }else{
-            if(justSwitchFrom != null || justSwitchTo != null || wrongReadUnits != 0) Log.debug("@ didn't rubberband at @", plainName(), Time.millis());
+            if(justSwitchFrom != null || justSwitchTo != null || wrongReadUnits != 0 && isLocal()) { // FINISHME: When local, check if we are the unitPicker unit we just swapped to and handle that as needed
+                Log.debug("@ didn't rubberband at @", plainName(), graphics.getFrameId());
+            }
             justSwitchFrom = null;
             justSwitchTo = null;
             wrongReadUnits = 0;
@@ -143,17 +230,18 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
         unit = lastReadUnit;
         unit(set);
         lastReadUnit = unit;
-
-        unit.aim(mouseX, mouseY);
-        //this is only necessary when the thing being controlled isn't synced
-        unit.controlWeapons(shooting, shooting);
-        //extra precaution, necessary for non-synced things
-        unit.controller(this);
+        if(unit != null){
+            unit.aim(mouseX, mouseY);
+            //this is only necessary when the thing being controlled isn't synced
+            unit.controlWeapons(shooting, shooting);
+            //extra precaution, necessary for non-synced things
+            unit.controller(this);
+        }
     }
 
     @Override
     public void update(){
-        if(!unit.isValid()){
+        if(unit != null && !unit.isValid()){
             clearUnit();
         }
 
@@ -166,7 +254,8 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
             //update some basic state to sync things
             if(unit.type.canBoost){
-                unit.elevation = Mathf.approachDelta(unit.elevation, unit.onSolid() || boosting || (unit.isFlying() && !unit.canLand()) ? 1f : 0f, unit.type.riseSpeed);
+                boolean shouldBoost = unit.onSolid() || boosting || (unit.isFlying() && !unit.canLand());
+                unit.elevation = Mathf.approachDelta(unit.elevation, shouldBoost ? 1f : 0f, shouldBoost ? unit.type.riseSpeed : unit.type.descentSpeed);
             }
         }else if((core = bestCore()) != null){
             //have a small delay before death to prevent the camera from jumping around too quickly
@@ -195,47 +284,53 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
     @Override
     public void remove(){
         //clear unit upon removal
-        if(!unit.isNull()){
+        if(unit != null){
             clearUnit();
         }
+
+        // null these out to prevent long-lived player objects (for example, Moderation.leaves) from holding onto units with logic controllers that will hold all of their neighbors
+        lastReadUnit = justSwitchTo = justSwitchFrom = null;
     }
 
     public void team(Team team){
         this.team = team;
-        unit.team(team);
+        if(unit != null){
+            unit.team(team);
+        }
     }
 
     public void clearUnit(){
-        unit(Nulls.unit);
+        unit(null);
     }
 
-    public Unit unit(){
+    public @Nullable Unit unit(){
         return unit;
     }
 
-    public void unit(Unit unit){
+    public void unit(@Nullable Unit unit){
         //refuse to switch when the unit was just transitioned from
         if(isLocal() && unit == justSwitchFrom && justSwitchFrom != null && justSwitchTo != null){
+            Log.info("@ just attempted to switch back @ at @", plainName(), wrongReadUnits, graphics.getFrameId());
             return;
         }
 
-        if(unit == null) throw new IllegalArgumentException("Unit cannot be null. Use clearUnit() instead.");
         if(this.unit == unit) return;
         var oldUnit = this.unit; // Unit we are swapping from
 
         //save last command this unit had
-        if(unit.controller() instanceof CommandAI ai){
+        if(unit != null && unit.controller() instanceof CommandAI ai){
             lastCommand = ai.command;
         }
 
-        if(this.unit != Nulls.unit){
+        if(this.unit != null){
             //un-control the old unit
             this.unit.resetController();
-            if(!headless && isLocal()) { // Plan persistence is client side only FINISHME: Move this to some other class
+            if(!headless && isLocal() && persistPlansFrom != this.unit) { // Plan persistence is client side only FINISHME: Move this to some other class
                 if(Navigation.currentlyFollowing instanceof BuildPath bp) bp.clearQueues();
                 persistPlans.clear(); // Don't want to stack multiple sets of plans...
                 persistPlans.ensureCapacity(this.unit.plans.size);
                 this.unit.plans.each(persistPlans::add);
+                persistPlansFrom = this.unit;
             }
             //restore last command issued before it was controlled
             if(lastCommand != null && this.unit.controller() instanceof CommandAI ai){
@@ -243,17 +338,19 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
             }
         }
         this.unit = unit;
-        if(unit != Nulls.unit){
+        if(unit != null){
             unit.team(team);
             unit.controller(this);
 
-            //this player just became remote, snap the interpolation, so it doesn't go wild
-            if(unit.isRemote()){
+            //this player just became remote, snap the interpolation so it doesn't go wild
+            if(unit.isRemote() && !net.client()){
                 unit.snapInterpolation();
             }
 
             if(!headless && isLocal() && !persistPlans.isEmpty()){ // Persist plans through unit swaps
                 if(!ClientVars.syncing && Time.timeSinceMillis(ClientVars.lastJoinTime) < 3000) persistPlans.clear(); // I can't find a more reliable way to not persist through map changes
+                control.input.playerPlanTree.clear();
+                player.unit().plans.each(control.input.playerPlanTree::insert);
                 persistPlans.each(unit::addBuild);
                 persistPlans.clear();
                 persistPlans.shrink(); // Don't want an array hanging around in memory, replace it with a 0 element array
@@ -262,10 +359,11 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
         Events.fire(new UnitChangeEvent(self(), unit)); // Kept for vanilla compatibility
         Events.fire(new UnitChangeEventClient(self(), unit, oldUnit)); // Client needs the old unit.
+        if(!hasLoadedMap && unit != null && oldUnit == null) hasLoadedMap = true;
     }
 
     boolean dead(){
-        return unit.isNull() || !unit.isValid();
+        return unit == null || !unit.isValid();
     }
 
     String ip(){
@@ -298,10 +396,53 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
 
     @Override
     public void draw(){
-        if(unit != null && unit.inFogTo(Vars.player.team())) return;
+        drawPing();
+        drawName();
+    }
+
+    public boolean isPinging(){
+        return pingTime > 0f;
+    }
+
+    void drawPing(){
+        if(pingTime <= 0f || !renderer.showPings || name == null || (!state.rules.showOtherTeamPings && team != Vars.player.team())) return;
+
+        float alpha = Math.min(Interp.pow5Out.apply(Mathf.clamp(Mathf.map(pingTime, 1f / 20f, 0f, 1f, 0f))), Interp.pow5Out.apply(Mathf.map(pingTime, 1f, 0.98f, 0f, 1f)));
+
+        Tmp.c1.set(color).a(alpha);
+
+        pingTime -= Time.delta / pingDuration;
+
+        float s = Scl.scl(4) / renderer.getDisplayScale();
+
+        Draw.z(Layer.playerName);
+        float z = Drawf.text();
+        float hover = Mathf.absin(5f, 1f);
+        float scaling = 1f + Mathf.clamp(Interp.pow5In.apply(Mathf.map(pingTime, 1f, 0.96f, 1f, 0f))) * 3f;
+
+        Drawf.square(pingX, pingY, 2f * scaling * s, 45f, Tmp.c1, Tmp.c3.set(Color.darkGray).mul(color).a(Tmp.c1.a), s);
+        Drawf.fillPoly(pingX, pingY + 9f * s + hover * s, 3, 3f * s, -90f, Tmp.c1, Tmp.c3, s);
+
+        if(pingText != null){
+            Drawf.text(name, pingX, pingY + (20f + hover)*s, Tmp.c1, 0.7f * s);
+            Drawf.text(pingText, pingX, pingY + (16f + hover)*s, Tmp.c2.set(1f, 1f, 1f, Tmp.c1.a), s);
+        }else{
+            Drawf.text(name, pingX, pingY + (16f + hover)*s, Tmp.c1, s);
+        }
+
+        Draw.reset();
+        Draw.z(z);
+    }
+
+    void drawName(){
+        //check clipping for name
+        if(unit == null || name == null) return;
+
+        float clip = unit.type.hitSize * 2f;
+        if(!Core.camera.bounds(Tmp.r1).overlaps(x - clip/2f, y - clip/2f, clip, clip)) return;
 
         // Null/empty names and bad color markup must never crash the client.
-        if(name == null || name.isEmpty()) return;
+        if(name == null || name.isEmpty() || unit.inFogTo(Vars.player.team())) return;
 
         Draw.z(Layer.playerName);
         float z = Drawf.text();
@@ -317,7 +458,7 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
             font.getData().setScale(0.25f / Scl.scl(1f));
             layout.setText(font, name);
 
-            if(!isLocal() && UnitType.alpha > 0){
+            if(!isLocal() && UnitType.currentAlpha > 0){
                 Draw.color(0f, 0f, 0f, 0.3f);
                 Fill.rect(unit.x, unit.y + nameHeight - layout.height / 2, layout.width + 2, layout.height + 3);
                 Draw.color();
@@ -339,7 +480,7 @@ abstract class PlayerComp implements UnitController, Entityc, Syncc, Timerc, Dra
                 }
             }
 
-            if(Core.settings.getBool("playerchat") && ((textFadeTime > 0 && lastText != null) || typing) && UnitType.alpha > 0){
+            if(Core.settings.getBool("playerchat") && ((textFadeTime > 0 && lastText != null) || typing) && UnitType.currentAlpha > 0){
                 String text = textFadeTime <= 0 || lastText == null ? "[lightgray]" + Strings.animated(Time.time, 4, 15f, ".") : lastText;
                 float width = 100f;
                 float visualFadeTime = 1f - Mathf.curve(1f - textFadeTime, 0.9f);

@@ -50,7 +50,7 @@ public class BlockInventoryFragment{
 
     public void showFor(Building t){
         if(this.build == t){
-            if(t.getPayload() instanceof BuildPayload pay && pay.build.block().hasItems && pay.build.items.total() > 0){
+            if(t.getPayload() instanceof BuildPayload pay && pay.build.block.hasItems && pay.build.items.total() > 0){
                 t = pay.build;
             }else{
                 hide();
@@ -58,6 +58,7 @@ public class BlockInventoryFragment{
             }
         }
         this.build = t;
+        Call.requestBlockSnapshot(t.pos());
         if(build == null || !build.block.isAccessible() || build.items == null || build.items.total() == 0){
             return;
         }
@@ -159,7 +160,7 @@ public class BlockInventoryFragment{
 
                 container.add(i);
 
-                Boolp canPick = () -> player.unit().acceptsItem(item) && !state.isPaused() && player.within(build, itemTransferRange);
+                Boolp canPick = () -> !player.dead() && player.unit().acceptsItem(item) && !state.isPaused() && player.within(build, itemTransferRange);
 
                 HandCursorListener l = new HandCursorListener();
                 l.enabled = canPick;
@@ -232,10 +233,7 @@ public class BlockInventoryFragment{
     private void updateTablePosition(){
         Vec2 v = input.mouseScreen(build.x + build.block.size * tilesize / 2f, build.y + build.block.size * tilesize / 2f);
         table.pack();
-
-        //Position the table diagonally when the building is an item bridge so that connecting to another bridge one
-        //tile away is possible without the overlay preventing the click.
-        table.setPosition(v.x, v.y, build.block instanceof ItemBridge ? Align.bottomLeft : Align.topLeft);
+        table.setPosition(v.x - Core.scene.marginLeft, v.y - Core.scene.marginBottom, build.block.diagonalConfigInventory ? Align.bottomLeft : Align.topLeft);
     }
 
     private Element itemImage(TextureRegion region, Prov<CharSequence> text){

@@ -26,6 +26,7 @@ public class Door extends Wall{
     public Effect openfx = Fx.dooropen;
     public Effect closefx = Fx.doorclose;
     public Sound doorSound = Sounds.door;
+    public boolean chainEffect = false;
     public @Load("@-open") TextureRegion openRegion;
 
     public Door(String name){
@@ -35,18 +36,24 @@ public class Door extends Wall{
         consumesTap = true;
 
         config(Boolean.class, (DoorBuild base, Boolean open) -> {
-            doorSound.at(base);
-            base.effect();
+            if(!world.isGenerating()){
+                doorSound.at(base);
+                base.effect();
+            }
 
-            for(DoorBuild entity : base.chained){
+            doorQueue.clear();
+            doorQueue.add(base);
+
+            for(DoorBuild entity : base.chained.isEmpty() ? doorQueue : base.chained){
                 //skip doors with things in them
                 if((Units.anyEntities(entity.tile) && !open) || entity.open == open){
                     continue;
                 }
 
-                entity.effect();
+                if(chainEffect) entity.effect();
                 entity.open = open;
-                pathfinder.updateTile(entity.tile());
+                entity.recache();
+                if(!world.isGenerating()) pathfinder.updateTile(entity.tile);
             }
         });
     }

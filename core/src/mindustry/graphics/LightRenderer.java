@@ -32,6 +32,8 @@ public class LightRenderer{
     public void add(float x, float y, float radius, Color color, float opacity){
         if(!enabled() || radius <= 0f) return;
 
+        //TODO: clipping.
+
         float res = Color.toFloatBits(color.r, color.g, color.b, opacity);
 
         if(circles.size <= circleIndex) circles.add(new CircleLight());
@@ -70,7 +72,7 @@ public class LightRenderer{
             float rot = Mathf.angleExact(x2 - x, y2 - y);
             TextureRegion ledge = Core.atlas.find("circle-end"), lmid = Core.atlas.find("circle-mid");
 
-            float color = Draw.getColor().toFloatBits();
+            float color = Draw.getColorPacked();
             float u = lmid.u;
             float v = lmid.v2;
             float u2 = lmid.u2;

@@ -14,6 +14,7 @@ public class DrawFlame extends DrawBlock{
     public TextureRegion top;
     public float lightRadius = 60f, lightAlpha = 0.65f, lightSinScl = 10f, lightSinMag = 5;
     public float flameRadius = 3f, flameRadiusIn = 1.9f, flameRadiusScl = 5f, flameRadiusMag = 2f, flameRadiusInMag = 1f;
+    public float flameX = 0, flameY = 0;
 
     public DrawFlame(){
     }
@@ -24,8 +25,9 @@ public class DrawFlame extends DrawBlock{
 
     @Override
     public void load(Block block){
+        block.emitLight = true;
         top = Core.atlas.find(block.name + "-top");
-        block.clipSize = Math.max(block.clipSize, (lightRadius + lightSinMag) * 2f * block.size);
+        block.lightClipSize = Math.max(block.lightClipSize, (lightRadius + lightSinMag) * 2f * block.size);
     }
 
     @Override
@@ -43,9 +45,9 @@ public class DrawFlame extends DrawBlock{
             Draw.alpha(((1f - g) + Mathf.absin(Time.time, 8f, g) + Mathf.random(r) - r) * build.warmup());
 
             Draw.tint(flameColor);
-            Fill.circle(build.x, build.y, flameRadius + Mathf.absin(Time.time, flameRadiusScl, flameRadiusMag) + cr);
+            Fill.circle(build.x + flameX, build.y + flameY, flameRadius + Mathf.absin(Time.time, flameRadiusScl, flameRadiusMag) + cr);
             Draw.color(1f, 1f, 1f, build.warmup());
-            Fill.circle(build.x, build.y, flameRadiusIn + Mathf.absin(Time.time, flameRadiusScl, flameRadiusInMag) + cr);
+            Fill.circle(build.x + flameX, build.y + flameY, flameRadiusIn + Mathf.absin(Time.time, flameRadiusScl, flameRadiusInMag) + cr);
 
             Draw.color();
         }
@@ -53,6 +55,6 @@ public class DrawFlame extends DrawBlock{
 
     @Override
     public void drawLight(Building build){
-        Drawf.light(build.x, build.y, (lightRadius + Mathf.absin(lightSinScl, lightSinMag)) * build.warmup() * build.block.size, flameColor, lightAlpha);
+        Drawf.light(build.x + flameX, build.y + flameY, (lightRadius + Mathf.absin(lightSinScl, lightSinMag)) * build.warmup() * build.block.size, flameColor, lightAlpha);
     }
 }

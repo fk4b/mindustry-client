@@ -8,7 +8,6 @@ import mindustry.content.*;
 import mindustry.entities.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
-import mindustry.type.*;
 
 public class ContinuousLaserBulletType extends ContinuousBulletType{
     public float fadeTime = 16f;
@@ -38,11 +37,11 @@ public class ContinuousLaserBulletType extends ContinuousBulletType{
         incendSpread = 5;
         incendChance = 0.4f;
         lightColor = Color.orange;
+        lightOpacity = 0.7f;
     }
 
     @Override
     public void draw(Bullet b){
-        if (UnitType.alpha == 0) return;
         float fout = Mathf.clamp(b.time > b.lifetime - fadeTime ? 1f - (b.time - (lifetime - fadeTime)) / fadeTime : 1f);
         float realLength = Damage.findLength(b, length * fout, laserAbsorb, pierceCap);
         float rot = b.rotation();
@@ -56,19 +55,19 @@ public class ContinuousLaserBulletType extends ContinuousBulletType{
             float ellipseLenScl = Mathf.lerp(1 - i / (float)(colors.length), 1f, pointyScaling);
 
             Lines.stroke(stroke);
-            Lines.lineAngle(b.x, b.y, rot, realLength - frontLength, false);
+            Lines.lineAngle(b.x, b.y, rot, Math.max(0, realLength - frontLength), false);
 
             //back ellipse
             Drawf.flameFront(b.x, b.y, divisions, rot + 180f, backLength, stroke / 2f);
 
             //front ellipse
-            Tmp.v1.trnsExact(rot, realLength - frontLength);
+            Tmp.v1.trnsExact(rot, Math.max(0, realLength - frontLength));
             Drawf.flameFront(b.x + Tmp.v1.x, b.y + Tmp.v1.y, divisions, rot, frontLength * ellipseLenScl, stroke / 2f);
         }
 
         Tmp.v1.trns(b.rotation(), realLength * 1.1f);
 
-        Drawf.light(b.x, b.y, b.x + Tmp.v1.x, b.y + Tmp.v1.y, lightStroke, lightColor, 0.7f);
+        Drawf.light(b.x, b.y, b.x + Tmp.v1.x, b.y + Tmp.v1.y, lightStroke, lightColor, lightOpacity);
         Draw.reset();
     }
 

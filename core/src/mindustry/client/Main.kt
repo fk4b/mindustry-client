@@ -34,34 +34,30 @@ object Main : ApplicationListener {
     val tlsPeers = CopyOnWriteArrayList<Pair<Packets.CommunicationClient, TlsCommunicationSystem>>()
     lateinit var keyStorage: KeyStorage
     lateinit var signatures: Signatures
-    lateinit var ntp: NTP
+    val ntp = NTP()
     private var planSendTime = 0L
     private var isSendingPlans = false
 
     /** Run on client load. */
     override fun init() {
+        val start = Time.nanos()
         if (Core.app.isDesktop) {
-            ntp = NTP()
-            communicationSystem = SwitchableCommunicationSystem(BlockCommunicationSystem, PluginCommunicationSystem)
+            communicationSystem = SwitchableCommunicationSystem(BlockCommunicationSystem, PluginCommunicationSystem) // FINISHME: Profile this, it takes ~40ms which it really shouldn't
             communicationSystem.init()
 
             keyStorage = KeyStorage(Core.settings.dataDirectory.file())
             signatures = Signatures(keyStorage, ntp.clock)
 
-            TileRecords.initialize()
+            TileRecords.init()
         } else {
             keyStorage = KeyStorage(Files.createTempDirectory("keystorage").toFile())
             communicationSystem = SwitchableCommunicationSystem(DummyCommunicationSystem(mutableListOf()))
             communicationSystem.init()
         }
 
-        Core.settings.getBoolOnce("displaydef") {
-            Core.settings.put("displayasuser", true)
-        }
-
         communicationClient = Packets.CommunicationClient(communicationSystem)
 
-        Navigation.navigator = AStarNavigatorOptimised
+        Navigation.navigator = AStarNavigatorOptimised // Man this class is heavy, it takes ~10ms to load
 
         Events.on(EventType.WorldLoadEvent::class.java) {
             if (!Vars.net.client()) { // This is so scuffed but shh
@@ -86,7 +82,6 @@ object Main : ApplicationListener {
             if (!Strings.canParsePositiveFloat(version)) return@addPacketHandler
 
             ClientVars.pluginVersion = Strings.parseFloat(version)
-            if (ClientVars.pluginVersion == 1F) setPluginNetworking(true) // In version one we didnt have fooTransmissionEnabled FINISHME: Remove this on v7 release
         }
 
         /** @since v2 Toggles the state of plugin networking */
@@ -151,9 +146,9 @@ object Main : ApplicationListener {
                 }
 
                 is ImageTransmission -> {
+                    Log.debug("Received image transmission")
                     val msg = findMessage(transmission.message) ?: return@addListener
-                    msg.attachments.add(Texture(transmission.image))
-                    msg.attachments.shrink()
+                    msg.attachments.add(Texture(transmission.image)).shrink()
                     transmission.image.dispose()
                 }
 
@@ -162,6 +157,8 @@ object Main : ApplicationListener {
                 }
             }
         }
+
+        Log.debug("Main in @ms", Time.millisSinceNanos(start))
     }
 
     private fun findMessage(id: Short): ChatFragment.ChatMessage? {
@@ -190,8 +187,10 @@ object Main : ApplicationListener {
         return when (output.first) {
             Signatures.VerifyResult.VALID -> {
                 msg.sender = output.second?.run { keyStorage.aliasOrName(this) }.plus(if (Core.settings.getBool("showclientmsgsendername")) " (${msg.sender}[white])" else "")
-                msg.backgroundColor = ClientVars.verified
-                msg.prefix = "${Iconc.ok} ${msg.prefix} "
+                msg.backgroundColor = if(keyStorage.builtInCerts.contains(output.second)) ClientVars.developerMsgBackground else ClientVars.verified
+                msg.prefix = "${Iconc.ok} ${msg.prefix}"
+                msg.findCoords()
+                msg.findLinks()
                 msg.format()
                 true
             }
@@ -207,7 +206,7 @@ object Main : ApplicationListener {
 
     fun sign(content: String): String {
         if (content.startsWith("/") && !(content.startsWith("/t ") || content.startsWith("/a ")) ||
-            ((content == "y" || content == "n") && Server.darkdustry())) return content
+            ((content == "y" || content == "n") && Darkdustry())) return content
 
         val msgId = Random.nextBits(16).toShort()
         val contentWithId = content + InvisibleCharCoder.encode(msgId.toBytes())
@@ -224,11 +223,11 @@ object Main : ApplicationListener {
     override fun update() {
         communicationClient.update()
 
-        if (Core.scene.keyboardFocus == null && Core.input?.keyTap(Binding.send_build_queue) == true) {
+        if (Core.scene.keyboardFocus == null && Core.input?.keyTap(Binding.sendBuildQueue) == true) {
             ClientVars.dispatchingBuildPlans = !ClientVars.dispatchingBuildPlans
         }
 
-        if (ClientVars.dispatchingBuildPlans) {
+        if (ClientVars.dispatchingBuildPlans && Vars.player.unit() != null) {
             if (!Vars.net.client()) Vars.player.unit().plans.each { if (BuildPlanCommunicationSystem.isNetworking(it)) return@each; addBuildPlan(it) } // Player plans -> block ghosts in single player
             if (!isSendingPlans && !communicationClient.inUse && Groups.player.size() > 1 && buildPlanInterval.get(max(5 * 60f, planSendTime / 16.666f + 3 * 60))) sendBuildPlans()
         }
@@ -274,7 +273,7 @@ object Main : ApplicationListener {
         }
     }
 
-    fun send(transmission: Transmission, onFinish: (() -> Unit)? = null) {
+    fun send(transmission: Transmission, onFinish: Runnable? = null) {
         communicationClient.send(transmission, onFinish)
     }
 
@@ -283,6 +282,7 @@ object Main : ApplicationListener {
     fun floatEmbed(): Vec2 {
         val show = Core.settings.getBool("displayasuser")
         return when {
+            Vars.player.dead() -> Tmp.v1.set(0F, 0F)
             Server.current.ghost -> Tmp.v1.set(Vars.player.unit().aimX, Vars.player.unit().aimY)
             Navigation.currentlyFollowing is AssistPath && show ->
                 Tmp.v1.set(
@@ -305,7 +305,8 @@ object Main : ApplicationListener {
 
     private fun sendBuildPlans(num: Int = 500) {
         var count = 0
-        val toSend = Vars.player.unit().plans.toList().takeLastWhile { !BuildPlanCommunicationSystem.isNetworking(it) && count++ < num }.toTypedArray()
+        val unit = Vars.player.unit() ?: return
+        val toSend = unit.plans.toList().takeLastWhile { !BuildPlanCommunicationSystem.isNetworking(it) && count++ < num }.toTypedArray()
         if (toSend.isEmpty()) return
         isSendingPlans = true
         val start = Time.millis()
@@ -329,7 +330,7 @@ object Main : ApplicationListener {
                 break
             }
         }
-        data.plans.addFirst(BlockPlan(plan.x, plan.y, plan.rotation.toShort(), plan.block.id, plan.config))
+        data.plans.addFirst(BlockPlan(plan.x, plan.y, plan.rotation.toShort(), plan.block, plan.config))
     }
 
     private fun registerTlsListeners(commsClient: Packets.CommunicationClient, system: TlsCommunicationSystem) {
@@ -338,13 +339,11 @@ object Main : ApplicationListener {
                 is MessageTransmission -> {
                     ClientVars.lastCertName = system.peer.expectedCert.readableName
                     Vars.ui.chatfrag.addMessage(transmission.content,
-                        "[white]" + keyStorage.aliasOrName(system.peer.expectedCert) + "[accent] -> [coral]" + (keyStorage.cert()?.readableName
-                            ?: "you"),
+                        keyStorage.aliasOrName(system.peer.expectedCert),
                         ClientVars.encrypted,
-                        "",
+                        "[green]${Iconc.ok} [coral][[[white]${keyStorage.aliasOrName(system.peer.expectedCert)}[accent] -> [white]${keyStorage.cert()?.readableName ?: "you"}[coral]]:[white] ",
                         transmission.content
-                    )
-                        .run{ prefix = "${Iconc.ok} $prefix " }
+                    ).run { prefix = "${Iconc.ok} $prefix " }
                 }
 
                 is CommandTransmission -> {

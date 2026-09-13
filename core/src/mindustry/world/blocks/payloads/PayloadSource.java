@@ -5,6 +5,7 @@ import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.math.geom.*;
 import arc.scene.ui.layout.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
 import mindustry.*;
@@ -12,10 +13,10 @@ import mindustry.ctype.*;
 import mindustry.entities.units.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
+import mindustry.io.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.*;
-import mindustry.world.blocks.storage.*;
 
 import static mindustry.Vars.*;
 
@@ -37,6 +38,7 @@ public class PayloadSource extends PayloadBlock{
         noUpdateDisabled = true;
         clearOnDoubleTap = true;
         regionRotated1 = 1;
+        acceptsUnitPayloads = false;
         commandable = true;
 
         config(Block.class, (PayloadSourceBuild build, Block block) -> {
@@ -66,6 +68,12 @@ public class PayloadSource extends PayloadBlock{
     }
 
     @Override
+    public void getPlanConfigs(Seq<UnlockableContent> options){
+        options.add(content.blocks().select(this::canProduce));
+        options.add(content.units().select(this::canProduce));
+    }
+
+    @Override
     public TextureRegion[] icons(){
         return new TextureRegion[]{region, outRegion, topRegion};
     }
@@ -78,11 +86,11 @@ public class PayloadSource extends PayloadBlock{
     }
 
     public boolean canProduce(Block b){
-        return b.isVisible() && b.size < size && !(b instanceof CoreBlock) && !state.rules.isBanned(b) && b.environmentBuildable();
+        return !b.removed && b.isVisible() && b.size < size && b.allowedInPayloads && !state.rules.isBanned(b) && b.environmentBuildable();
     }
 
     public boolean canProduce(UnitType t){
-        return !t.isHidden() && !t.isBanned() && t.supportsEnv(state.rules.env);
+        return !t.removed && !t.isHidden() && !t.isBanned() && t.supportsEnv(state.rules.env);
     }
 
     public class PayloadSourceBuild extends PayloadBlockBuild<Payload>{
@@ -157,10 +165,16 @@ public class PayloadSource extends PayloadBlock{
         }
 
         @Override
+        public byte version(){
+            return 1;
+        }
+
+        @Override
         public void write(Writes write){
             super.write(write);
             write.s(unit == null ? -1 : unit.id);
             write.s(configBlock == null ? -1 : configBlock.id);
+            TypeIO.writeVecNullable(write, commandPos);
         }
 
         @Override
@@ -168,6 +182,9 @@ public class PayloadSource extends PayloadBlock{
             super.read(read, revision);
             unit = Vars.content.unit(read.s());
             configBlock = Vars.content.block(read.s());
+            if(revision >= 1){
+                commandPos = TypeIO.readVecNullable(read);
+            }
         }
     }
 }

@@ -13,6 +13,8 @@ import mindustry.game.Teams.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.io.*;
+import mindustry.logic.*;
+import mindustry.mod.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.ConstructBlock.*;
@@ -30,7 +32,8 @@ public class BuildTurret extends BaseTurret{
     public @Load("@-glow") TextureRegion glowRegion;
     public float buildSpeed = 1f;
     public float buildBeamOffset = 5f;
-    //created in init()
+    //created in init() - do not assign or edit this manually, edit buildSpeed and other fields instead
+    @NoPatch
     public @Nullable UnitType unitType;
     public float elevation = -1f;
     public Color heatColor = Pal.accent.cpy().a(0.9f);
@@ -66,6 +69,15 @@ public class BuildTurret extends BaseTurret{
     }
 
     @Override
+    public void afterPatch(){
+        super.afterPatch();
+        unitType.rotateSpeed = rotateSpeed;
+        unitType.buildBeamOffset = buildBeamOffset;
+        unitType.buildRange = range;
+        unitType.buildSpeed = buildSpeed;
+    }
+
+    @Override
     public void setStats(){
         super.setStats();
 
@@ -77,7 +89,7 @@ public class BuildTurret extends BaseTurret{
         return new TextureRegion[]{baseRegion, region};
     }
 
-    public class BuildTurretBuild extends BaseTurretBuild implements ControlBlock{
+    public class BuildTurretBuild extends BaseTurretBuild implements ControlBlock, RotBlock{
         public BlockUnitc unit = (BlockUnitc)unitType.create(team);
         public @Nullable Unit following;
         public @Nullable BlockPlan lastPlan;
@@ -90,6 +102,11 @@ public class BuildTurret extends BaseTurret{
         @Override
         public boolean canControl(){
             return true;
+        }
+
+        @Override
+        public float buildRotation(){
+            return unit.rotation();
         }
 
         @Override
@@ -141,10 +158,10 @@ public class BuildTurret extends BaseTurret{
                     for(int i = 0; i < blocks.size; i++){
                         var block = blocks.get(i);
                         if(within(block.x * tilesize, block.y * tilesize, range)){
-                            var btype = content.block(block.block);
+                            var btype = block.block;
 
                             if(Build.validPlace(btype, unit.team(), block.x, block.y, block.rotation) && (state.rules.infiniteResources || team.rules().infiniteResources || team.items().has(btype.requirements, state.rules.buildCostMultiplier))){
-                                unit.addBuild(new BuildPlan(block.x, block.y, block.rotation, content.block(block.block), block.config));
+                                unit.addBuild(new BuildPlan(block.x, block.y, block.rotation, block.block, block.config));
                                 //shift build plan to tail so next unit builds something else
                                 blocks.addLast(blocks.removeIndex(i));
                                 lastPlan = block;
@@ -215,7 +232,6 @@ public class BuildTurret extends BaseTurret{
 
         @Override
         public void draw(){
-            super.draw();
 
             Draw.rect(baseRegion, x, y);
             Draw.color();
@@ -259,6 +275,22 @@ public class BuildTurret extends BaseTurret{
                     unit.plans().add(req);
                 }
             }
+        }
+
+        @Override
+        public double sense(LAccess sensor){
+            return switch(sensor){
+                case buildX, buildY -> unit.sense(sensor);
+                default -> super.sense(sensor);
+            };
+        }
+
+        @Override
+        public Object senseObject(LAccess sensor){
+            return switch(sensor){
+                case building, breaking -> unit.senseObject(sensor);
+                default -> super.senseObject(sensor);
+            };
         }
     }
 }

@@ -12,6 +12,7 @@ import mindustry.graphics.*;
 import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.world.blocks.payloads.PayloadUnloader.*;
+import mindustry.world.blocks.sandbox.*;
 
 import static mindustry.Vars.*;
 
@@ -76,7 +77,7 @@ public class PayloadLoader extends PayloadBlock{
     public void init(){
         if(loadPowerDynamic){
             basePowerUse = consPower != null ? consPower.usage : 0f;
-            consumePowerDynamic((PayloadLoaderBuild loader) -> loader.hasBattery() && !loader.exporting ? maxPowerConsumption + basePowerUse : basePowerUse);
+            consumePowerDynamic(basePowerUse, (PayloadLoaderBuild loader) -> loader.shouldConsume() ? (loader.hasBattery() && !loader.exporting ? maxPowerConsumption + basePowerUse : basePowerUse) : 0f);
         }
 
         super.init();
@@ -93,7 +94,7 @@ public class PayloadLoader extends PayloadBlock{
                 //item container
                 (build.build.block.hasItems && build.block().unloadable && build.block().itemCapacity >= 10 && build.block().size <= maxBlockSize) ||
                 //liquid container
-                (build.build.block().hasLiquids && build.block().liquidCapacity >= 10f) ||
+                (build.build.block.hasLiquids && build.block().liquidCapacity >= 10f) ||
                 //battery
                 (build.build.block.consPower != null && build.build.block.consPower.buffered)
             );
@@ -152,7 +153,9 @@ public class PayloadLoader extends PayloadBlock{
 
                 //load up items
                 if(payload.block().hasItems && items.any()){
+                    boolean acceptedAny = true;
                     if(efficiency > 0.01f && timer(timerLoad, loadTime / efficiency)){
+                        acceptedAny = false;
                         //load up items a set amount of times
                         for(int j = 0; j < itemsLoaded && items.any(); j++){
 
@@ -162,6 +165,7 @@ public class PayloadLoader extends PayloadBlock{
                                     if(payload.build.acceptItem(payload.build, item)){
                                         payload.build.handleItem(payload.build, item);
                                         items.remove(item, 1);
+                                        acceptedAny = true;
                                         break;
                                     }else if(payload.block().separateItemCapacity || payload.block().consumesItem(item)){
                                         exporting = true;
@@ -170,6 +174,9 @@ public class PayloadLoader extends PayloadBlock{
                                 }
                             }
                         }
+                    }
+                    if(!acceptedAny){
+                        exporting = true;
                     }
                 }
 
@@ -180,8 +187,12 @@ public class PayloadLoader extends PayloadBlock{
                     float flow = Math.min(Math.min(liquidsLoaded * edelta(), payload.block().liquidCapacity - payload.build.liquids.get(liq)), total);
                     //TODO potential crash here
                     if(payload.build.acceptLiquid(payload.build, liq)){
-                        payload.build.liquids.add(liq, flow);
+                        if(!(payload.block() instanceof LiquidVoid)){
+                            payload.build.liquids.add(liq, flow);
+                        }
                         liquids.remove(liq, flow);
+                    }else{
+                        exporting = true;
                     }
                 }
 
@@ -217,7 +228,7 @@ public class PayloadLoader extends PayloadBlock{
             return payload != null && (
                 exporting ||
                 (payload.block().hasLiquids && liquids.currentAmount() >= 0.1f && payload.build.liquids.currentAmount() >= payload.block().liquidCapacity - 0.001f) ||
-                (payload.block().hasItems && items.any() && payload.block().separateItemCapacity && content.items().contains(i -> payload.build.items.get(i) >= payload.block().itemCapacity)) ||
+                (payload.block().hasItems && items.any() && payload.block().separateItemCapacity && content.items().contains(i -> (payload.build.items.get(i) >= payload.block().itemCapacity) && items.has(i))) ||
                 (hasBattery() && payload.build.power.status >= 0.999999999f));
         }
 

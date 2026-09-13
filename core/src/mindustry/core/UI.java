@@ -31,15 +31,16 @@ import mindustry.game.EventType.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.logic.*;
+import mindustry.mod.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
 import mindustry.ui.fragments.*;
-import mindustry.world.blocks.storage.*;
 
 import static arc.scene.actions.Actions.*;
 import static mindustry.Vars.*;
 
 public class UI implements ApplicationListener, Loadable{
+    private static final StringBuilder buffer = new StringBuilder();
     public static String billions, millions, thousands;
 
     public static PixmapPacker packer;
@@ -52,6 +53,7 @@ public class UI implements ApplicationListener, Loadable{
     public PlayerListFragment listfrag;
     public LoadingFragment loadfrag;
     public HintsFragment hints;
+    public PerformanceFragment perffrag;
 
     // FD / fallen client UI
     public PanelFragment panelfragment;
@@ -66,7 +68,6 @@ public class UI implements ApplicationListener, Loadable{
     public ProductionAnalyzerFrag prodAnalyzer;
     public LogicSearchFrag logicSearchFrag;
     public QuickSchemFrag quickSchemFrag;
-    public PerformanceFragment perffrag;
 
     public WidgetGroup menuGroup, hudGroup;
 
@@ -97,20 +98,29 @@ public class UI implements ApplicationListener, Loadable{
     public LogicDialog logic;
     public FullTextDialog fullText;
     public CampaignCompleteDialog campaignComplete;
+    public CampaignRulesDialog campaignRules;
 
-    public IntMap<Dialog> followUpMenus;
-
-    public Cursor drillCursor, unloadCursor, targetCursor;
+    public Cursor drillCursor, unloadCursor, targetCursor, repairCursor;
 
     private @Nullable Element lastAnnouncement;
 
     // Client related
+    public SchematicBrowserDialog schematicBrowser;
     public UnitPicker unitPicker;
     public ClajManagerDialog clajManager;
     public ClajJoinDialog clajJoin;
 
+    /** Maps popups to ids so that they can be removed or updated by id. */
+    private final ObjectMap<String, Table> popups = new ObjectMap<>();
+    /** Maps labels to ids so that they can be removed or updated by id. */
+    private final IntMap<WorldLabel> labels = new IntMap<>();
 
     public UI(){
+        Events.on(ResetEvent.class, e -> {
+            labels.clear();
+            popups.clear();
+        });
+
         Fonts.loadFonts();
     }
 
@@ -124,8 +134,6 @@ public class UI implements ApplicationListener, Loadable{
 
     @Override
     public void loadSync(){
-        loadColors();
-
         Fonts.outline.getData().markupEnabled = true;
         Fonts.def.getData().markupEnabled = true;
         Fonts.def.setOwnsTexture(false);
@@ -134,11 +142,7 @@ public class UI implements ApplicationListener, Loadable{
         Core.scene = new Scene();
         Core.input.addProcessor(Core.scene);
 
-        int[] insets = Core.graphics.getSafeInsets();
-        Core.scene.marginLeft = insets[0];
-        Core.scene.marginRight = insets[1];
-        Core.scene.marginTop = insets[2];
-        Core.scene.marginBottom = insets[3];
+        updateMargins();
 
         Tex.load();
         Icon.load();
@@ -150,46 +154,72 @@ public class UI implements ApplicationListener, Loadable{
         Dialog.setHideAction(() -> sequence(fadeOut(0.1f)));
 
         Tooltips.getInstance().animations = false;
-        Tooltips.getInstance().textProvider = text -> new Tooltip(t -> t.background(Styles.black6).margin(4f).add(text));
+        Tooltips.getInstance().textProvider = text -> new Tooltip(t -> t.background(Styles.black8).margin(4f).add(text));
+        if(mobile){
+            Tooltips.getInstance().offsetY += Scl.scl(60f);
+        }
 
         Core.settings.setErrorHandler(e -> {
             Log.err(e);
             Core.app.post(() -> showErrorMessage("Failed to access local storage.\nSettings will not be saved."));
         });
 
-        ClickListener.clicked = () -> Sounds.press.play();
+        ClickListener.clicked = () -> Sounds.uiButton.play();
 
         drillCursor = Core.graphics.newCursor("drill", Fonts.cursorScale());
         unloadCursor = Core.graphics.newCursor("unload", Fonts.cursorScale());
         targetCursor = Core.graphics.newCursor("target", Fonts.cursorScale());
+        repairCursor = Core.graphics.newCursor("repair", Fonts.cursorScale());
     }
 
     @Override
     public Seq<AssetDescriptor> getDependencies(){
-        return Seq.with(new AssetDescriptor<>(Control.class), new AssetDescriptor<>("outline", Font.class), new AssetDescriptor<>("default", Font.class));
+        return Seq.with(new AssetDescriptor<>(Control.class), new AssetDescriptor<>("outline", Font.class), new AssetDescriptor<>("default", Font.class), new AssetDescriptor<>(Mods.class));
     }
 
     @Override
     public void update(){
         if(disableUI || Core.scene == null) return;
 
+        PerfCounter.ui.begin();
+
         Events.fire(Trigger.uiDrawBegin);
+
+        updatePopup();
 
         Core.scene.act();
         Core.scene.draw();
 
         if((Core.input.keyTap(KeyCode.mouseLeft) || Core.input.keyTap(KeyCode.mouseRight)) && Core.scene.hasField()){ // Client adds right click listener
-            Element e = Core.scene.hit(Core.input.mouseX(), Core.input.mouseY(), true);
+            Element e = Core.scene.getHoverElement();
             if(!(e instanceof TextField)){
                 Core.scene.setKeyboardFocus(null);
             }
         }
 
+        /* Software cursor. It actually almost works well surprisingly enough
+        var lastCursor = graphics.lastCursor;
+        Log.info("Current cursor: @", lastCursor == Cursor.SystemCursor.arrow ? "arrow" : lastCursor == Cursor.SystemCursor.hand ? "hand" : lastCursor == emptyCursor ? "empty" : "other");
+        if(lastCursor == emptyCursor){ // Software cursor. We show the hardware cursor for an extra frame as otherwise it disappears for a frame. It creates a jarring effect, but I don't know if we can do anything to fix it
+            if(lastNonEmptyCursor != null) graphics.cursor(lastNonEmptyCursor);
+            lastNonEmptyCursor = null;
+            Draw.reset();
+            Draw.proj(camera);
+            Draw.sort(false);
+            softCursor.scale = 4 / renderer.camerascale;
+            Draw.rect(softCursor, input.mouseWorldX(), input.mouseWorldY());
+            Draw.flush();
+        }else{
+            lastNonEmptyCursor = lastCursor;
+        } */
+
         Events.fire(Trigger.uiDrawEnd);
+
+        PerfCounter.ui.end();
     }
 
     @Override
-    public void init(){
+    public void init(){ // FINISHME: This takes quite some time, what can we do to optimize it?
         billions = Core.bundle.get("unit.billions");
         millions = Core.bundle.get("unit.millions");
         thousands = Core.bundle.get("unit.thousands");
@@ -205,6 +235,7 @@ public class UI implements ApplicationListener, Loadable{
         listfrag = new PlayerListFragment();
         loadfrag = new LoadingFragment();
         consolefrag = new ConsoleFragment();
+        perffrag = new PerformanceFragment();
         panelfragment = new PanelFragment();
         listblockfrag = new PlayerBlockListFragment();
         historyFrag = new HistoryFragment();
@@ -217,7 +248,6 @@ public class UI implements ApplicationListener, Loadable{
         prodAnalyzer = new ProductionAnalyzerFrag();
         logicSearchFrag = new LogicSearchFrag();
         quickSchemFrag = new QuickSchemFrag();
-        perffrag = new PerformanceFragment();
 
         picker = new ColorPicker();
         effects = new EffectsDialog();
@@ -243,10 +273,11 @@ public class UI implements ApplicationListener, Loadable{
         research = new ResearchDialog();
         mods = new ModsDialog();
         schematics = new SchematicsDialog();
+        schematicBrowser = new SchematicBrowserDialog();
         logic = new LogicDialog();
         fullText = new FullTextDialog();
         campaignComplete = new CampaignCompleteDialog();
-        followUpMenus = new IntMap<>();
+        campaignRules = new CampaignRulesDialog();
 
         // Client related
         unitPicker = new UnitPicker();
@@ -283,23 +314,35 @@ public class UI implements ApplicationListener, Loadable{
         logicSearchFrag.build(hudGroup);
         favFrag.build(hudGroup);
         quickSchemFrag.build(hudGroup);
-
-        // Mining AI + other FD inits
         PanelFragment.startInit();
-
         perffrag.build(group);
         new FadeInFragment().build(group);
+    }
+
+    /** Updates scene margins based on safe insets and custom edge padding setting. */
+    public void updateMargins(){
+        int[] insets = Core.graphics.getSafeInsets();
+        int customPadding = (int)Scl.scl(Core.settings.getInt("uiEdgePadding", 0));
+
+        Core.scene.marginLeft = insets[0];
+        Core.scene.marginRight = insets[1];
+        Core.scene.marginTop = insets[2];
+        Core.scene.marginBottom = insets[3];
+
+        if(Core.graphics.getHeight() > Core.graphics.getWidth()){
+            Core.scene.marginTop += customPadding;
+            Core.scene.marginBottom += customPadding;
+        }else{
+            Core.scene.marginLeft += customPadding;
+            Core.scene.marginRight += customPadding;
+        }
     }
 
     @Override
     public void resize(int width, int height){
         if(Core.scene == null) return;
 
-        int[] insets = Core.graphics.getSafeInsets();
-        Core.scene.marginLeft = insets[0];
-        Core.scene.marginRight = insets[1];
-        Core.scene.marginTop = insets[2];
-        Core.scene.marginBottom = insets[3];
+        updateMargins();
 
         Core.scene.resize(width, height);
         Events.fire(new ResizeEvent());
@@ -327,8 +370,15 @@ public class UI implements ApplicationListener, Loadable{
         });
     }
 
-    public void showTextInput(String titleText, String text, int textLength, String def, boolean numbers, Cons<String> confirmed, Runnable closed){
+
+    public void showTextInput(String titleText, String text, int textLength, String def, boolean numbers, Cons<String> confirmed, Runnable closed) {
+        showTextInput(titleText, text, textLength, def, numbers, false, confirmed, closed);
+    }
+
+    public void showTextInput(String titleText, String text, int textLength, String def, boolean numbers, boolean allowEmpty, Cons<String> confirmed, Runnable closed){
         if(mobile){
+            var description = (text.startsWith("@") ? Core.bundle.get(text.substring(1)) : text);
+            var empty = allowEmpty;
             Core.input.getTextInput(new TextInput(){{
                 this.title = (titleText.startsWith("@") ? Core.bundle.get(titleText.substring(1)) : titleText);
                 this.text = def;
@@ -336,13 +386,16 @@ public class UI implements ApplicationListener, Loadable{
                 this.maxLength = textLength;
                 this.accepted = confirmed;
                 this.canceled = closed;
-                this.allowEmpty = false;
+                this.allowEmpty = empty;
+                this.message = description;
             }});
         }else{
             new Dialog(titleText){{
-                cont.margin(30).add(text).padRight(6f);
+                cont.image().width(400f).pad(2).height(4f).color(Pal.accent);
+                cont.row();
+                cont.add(text).row();
                 TextFieldFilter filter = numbers ? TextFieldFilter.digitsOnly : (f, c) -> true;
-                TextField field = cont.field(def, t -> {}).size(330f, 50f).get();
+                TextField field = cont.field(def, t -> {}).size(400f, 50f).get();
                 field.setMaxLength(textLength);
                 field.setFilter(filter);
                 buttons.defaults().size(120, 54).pad(4);
@@ -353,11 +406,11 @@ public class UI implements ApplicationListener, Loadable{
                 buttons.button("@ok", () -> {
                     confirmed.get(field.getText());
                     hide();
-                }).disabled(b -> field.getText().isEmpty());
+                }).disabled(b -> !allowEmpty && field.getText().isEmpty());
 
                 keyDown(KeyCode.enter, () -> {
                     String text = field.getText();
-                    if(!text.isEmpty()){
+                    if(allowEmpty || !text.isEmpty()){
                         confirmed.get(text);
                         hide();
                     }
@@ -434,36 +487,68 @@ public class UI implements ApplicationListener, Loadable{
     }
 
     /** Shows a label at some position on the screen. Does not fade. */
-    public void showInfoPopup(String info, float duration, int align, int top, int left, int bottom, int right){
+    public void showInfoPopup(@Nullable String info, @Nullable String id, float duration, int align, int top, int left, int bottom, int right){
+        if(info == null){ // null info allows deletion of old popups provided they have ids
+            var table = popups.remove(id);
+            if(table != null) table.remove();
+            return;
+        }
         Table table = new Table();
+        if(id != null){
+            Table old = popups.put(id, table);
+            if(old != null) old.remove();
+        }
         table.setFillParent(true);
         table.touchable = Touchable.disabled;
         table.update(() -> {
-            if(state.isMenu()) table.remove();
+            if(state.isMenu()){
+                table.remove();
+                if(id != null) popups.remove(id);
+            }
         });
-        table.actions(Actions.delay(duration), Actions.remove());
+        table.actions(Actions.delay(duration), Actions.remove(), Actions.run(() -> { if(id != null) popups.remove(id); }));
         table.align(align).table(Styles.black3, t -> t.margin(4).add(info).style(Styles.outlineLabel)).pad(top, left, bottom, right);
+
         Core.scene.add(table);
+        table.pack();
+        table.act(0f);
+        lastMinY = -1; // Force recalculation next frame
+    }
+
+    private float lastMinY = -1;
+    /** Prevents popups from overlapping with block placement ui. Terrible but works */
+    void updatePopup(){
+        if (popups.isEmpty()) return; // Don't bother running this code if there's no popups. FINISHME: Would be good to only run if there's items near the bottom right
+        float[] minY = {Vars.ui.hudfrag.blockfrag.toggler.getChildren().get(0).getTop() + 4}; // Min y
+        if(minY[0] == lastMinY) return;
+        lastMinY = minY[0];
+        var sorted = popups.values().toSeq().sort(t -> t.getChildren().get(0).y); // Horrifically unoptimized.
+        var minX = ui.hudfrag.blockfrag.toggler.getChildren().get(0).x; // Anything right of this can be boosted.
+        sorted.each(t -> t.getChildren().get(0).getRight() > minX, t -> { // Adjust all popups that intersect ui
+            var newY = Math.max(t.getChildren().get(0).y, minY[0]);
+            if (newY == t.getChildren().get(0).y) t.invalidate(); // Allow moving stuff back down. This is horrible and unoptimized but it works.I
+            t.getChildren().get(0).y = newY;
+            minY[0] = newY;
+        });
     }
 
     /** Shows a label in the world. This label is behind everything. Does not fade. */
-    public void showLabel(String info, float duration, float worldx, float worldy){
-        if (Server.cn.b() && info.startsWith("Core #") && Vars.world.buildWorld(worldx, worldy) instanceof CoreBlock.CoreBuild) Navigation.navigator.map.put(Strings.parseInt(info.replace("Core #", "")), new Vec2(worldx, worldy));
-        var table = new Table(Styles.black3).margin(4);
-        table.touchable = Touchable.disabled;
-        table.update(() -> {
-            if(state.isMenu()) table.remove();
-            Vec2 v = Core.camera.project(worldx, worldy);
-            table.setPosition(v.x, v.y, Align.center);
-        });
-        table.actions(Actions.delay(duration), Actions.remove());
-        table.add(info).style(Styles.outlineLabel);
-        table.pack();
-        table.act(0f);
-        //make sure it's at the back
-        Core.scene.root.addChildAt(0, table);
+    public void showLabel(@Nullable String info, int id, float duration, float worldx, float worldy, int flags){
+        if(info == null){ // null info allows deletion of old labels provided they have ids
+            var label = labels.remove(id);
+            if(label != null) label.remove();
+            return;
+        }
 
-        table.getChildren().first().act(0f);
+        var label = id == -1 ? WorldLabel.create() : labels.get(id, WorldLabel::create); // todo: pool?
+        label.id = Integer.MIN_VALUE; //arbitrary value that won't be synced to, it's fine if IDs conflict
+        label.x = worldx;
+        label.y = worldy;
+        label.text = info;
+        label.flags = (byte)flags; // flag | flag2 at call site turns it into an int so the flags param here has to be int or casting has to be done at every call site
+        label.duration = duration == Float.MAX_VALUE ? -1 : duration; // prefer -1 to Float.MAX_VALUE so that the update() function isn't called every tick
+        if(id != -1 && label.duration >= 0 && label.expired == null) label.expired = () -> labels.remove(id); // only set once to prevent extra garbage for updated labels
+        label.add();
     }
 
     public void showInfo(String info){
@@ -637,11 +722,17 @@ public class UI implements ApplicationListener, Loadable{
 
     /** Display text in the middle of the screen, then fade out. */
     public void announce(String text, float duration){
-        if (Vars.state.map.name().equals("[red]Raid on the latum biolabs") && text.startsWith("[red]Biolab")) return; // This is genuinely the single worst thing I have ever seen in this game
         Table t = new Table(Styles.black3);
         t.touchable = Touchable.disabled;
         t.margin(8f).add(text).style(Styles.outlineLabel).labelAlign(Align.center);
-        t.update(() -> t.setPosition(Core.graphics.getWidth()/2f, Core.graphics.getHeight()/2f, Align.center));
+        t.update(() -> {
+            t.setPosition(Core.graphics.getWidth()/2f, Core.graphics.getHeight()/2f, Align.center);
+            t.toFront();
+
+            if(state.isMenu() || !ui.hudfrag.shown){
+                t.remove();
+            }
+        });
         t.actions(Actions.fadeOut(duration, Interp.pow4In), Actions.remove());
         t.pack();
         t.act(0.1f);
@@ -661,88 +752,37 @@ public class UI implements ApplicationListener, Loadable{
         dialog.show();
     }
 
-    // TODO REPLACE INTEGER WITH arc.fun.IntCons(int, T) or something like that.
-    public Dialog newMenuDialog(String title, String message, String[][] options, Cons2<Integer, Dialog> buttonListener){
-        return new Dialog(title){{
-            setFillParent(true);
-            removeChild(titleTable);
-            cont.add(titleTable).width(400f);
-
-            cont.row();
-            cont.image().width(400f).pad(2).colspan(2).height(4f).color(Pal.accent).bottom();
-            cont.row();
-            cont.pane(table -> {
-                table.add(message).width(400f).wrap().get().setAlignment(Align.center);
-                table.row();
-
-                int option = 0;
-                for(var optionsRow : options){
-                    if(optionsRow.length == 0) continue;
-                    Table buttonRow = table.row().table().get().row();
-                    int fullWidth = 400 - (optionsRow.length - 1) * 8; // adjust to count padding as well
-                    int width = fullWidth / optionsRow.length;
-                    int lastWidth = fullWidth - width * (optionsRow.length - 1); // take the rest of space for uneven table
-
-                    for(int i = 0; i < optionsRow.length; i++){
-                        if(optionsRow[i] == null) continue;
-
-                        String optionName = optionsRow[i];
-                        int finalOption = option;
-                        buttonRow.button(optionName, () -> buttonListener.get(finalOption, this))
-                                .size(i == optionsRow.length - 1 ? lastWidth : width, 50).pad(4);
-                        option++;
-                    }
-                }
-            }).growX();
-        }};
+    public void toggleSchematicMenu() {
+        if (ui.schematicBrowser.isShown()) ui.schematicBrowser.hide();
+        if (ui.schematics.isShown()) ui.schematics.hide();
+        else ui.schematics.show();
     }
 
-    /** Shows a menu that fires a callback when an option is selected. If nothing is selected, -1 is returned. */
-    public void showMenu(String title, String message, String[][] options, Intc callback){
-        Dialog dialog = newMenuDialog(title, message, options, (option, myself) -> {
-            callback.get(option);
-            myself.hide();
-        });
-        dialog.closeOnBack(() -> callback.get(-1));
-        dialog.show();
-    }
-
-    /** Shows a menu that hides when another followUp-menu is shown or when nothing is selected.
-     * @see UI#showMenu(String, String, String[][], Intc) */
-    public void showFollowUpMenu(int menuId, String title, String message, String[][] options, Intc callback) {
-        Dialog dialog = newMenuDialog(title, message, options, (option, myself) -> callback.get(option));
-        dialog.closeOnBack(() -> {
-            followUpMenus.remove(menuId);
-            callback.get(-1);
-        });
-
-        Dialog oldDialog = followUpMenus.remove(menuId);
-        if(oldDialog != null){
-            dialog.show(Core.scene, null);
-            oldDialog.hide(null);
-        }else{
-            dialog.show();
-        }
-        followUpMenus.put(menuId, dialog);
-    }
-
-    public void hideFollowUpMenu(int menuId) {
-        if(!followUpMenus.containsKey(menuId)) return;
-        followUpMenus.remove(menuId).hide();
+    public void toggleSchematicBrowser() {
+        if (ui.schematics.isShown()) ui.schematics.hide();
+        if (ui.schematicBrowser.isShown()) ui.schematicBrowser.hide();
+        else ui.schematicBrowser.show();
     }
 
     public static String formatAmount(long number){
+        return formatAmount(number, false);
+    }
+
+    public static String formatAmount(long number, boolean extraDP){
         //prevent things like bars displaying erroneous representations of casted infinities
         if(number == Long.MAX_VALUE) return "∞";
         if(number == Long.MIN_VALUE) return "-∞";
 
         long mag = Math.abs(number);
         String sign = number < 0 ? "-" : "";
+
+        if(Core.settings.getBool("alwaysfullnumbers", false)) return number + "";
+
         if(mag >= 1_000_000_000){
             return sign + Strings.fixed(mag / 1_000_000_000f, 1) + "[gray]" + billions + "[]";
         }else if(mag >= 1_000_000){
             return sign + Strings.fixed(mag / 1_000_000f, 1) + "[gray]" + millions + "[]";
-        }else if(mag >= 10_000){
+        }else if(mag >= (extraDP ? 100_000 : 10_000)){
             return number / 1000 + "[gray]" + thousands + "[]";
         }else if(mag >= 1000){
             return sign + Strings.fixed(mag / 1000f, 1) + "[gray]" + thousands + "[]";
@@ -751,10 +791,49 @@ public class UI implements ApplicationListener, Loadable{
         }
     }
 
+    /**
+     * Finds all :name: in a string and replaces them with the icon, if such exists.
+     * Based on TextFormatter::simpleFormat
+     */
+    public static String formatIcons(String s){
+        if(!s.contains(":")) return s;
+
+        buffer.setLength(0);
+        boolean changed = false;
+
+        boolean checkIcon = false;
+        String[] tokens = s.split(":");
+        for(String token : tokens){
+            if(checkIcon){
+                if(Iconc.codes.containsKey(token)){
+                    buffer.append((char)Iconc.codes.get(token));
+                    changed = true;
+                    checkIcon = false;
+                }else if(Fonts.hasUnicodeStr(token)){
+                    buffer.append(Fonts.getUnicodeStr(token));
+                    changed = true;
+                    checkIcon = false;
+                }else{
+                    buffer.append(":").append(token);
+                }
+            }else{
+                buffer.append(token);
+                checkIcon = true;
+            }
+        }
+
+        return changed ? buffer.toString() : s;
+    }
+
+    /** Formats time with hours:minutes:seconds. */
     public static String formatTime(float ticks){
-        int s = (int)(ticks / Time.toSeconds) % 60; // Round seconds so they don't display weird
-        int m = (int)(ticks / Time.toMinutes) % 60;
+        int s = (int)(ticks / Time.toSeconds); // Round seconds so they don't display weird
+        int m = (int)(ticks / Time.toMinutes);
         int h = (int)(ticks / Time.toHours);
+        if(h == Integer.MAX_VALUE) return "∞";
+        // if m == int max, it will underflow to positive. Now use this mask to set m to 0
+        m = (m & ((-2 - m) >> 31)) % 60;
+        s = (s & ((-2 - s) >> 31)) % 60;
         String out = (h == 0 ? "" : h + "h") + (m == 0 ? "" : m + "m") + (s == 0 ? "" : s + "s");
         return out.isEmpty() ? "0s" : out;
     }

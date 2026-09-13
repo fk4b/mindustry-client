@@ -7,13 +7,13 @@ import arc.math.*;
 import arc.math.geom.*;
 import arc.struct.*;
 import mindustry.content.*;
-import mindustry.editor.DrawOperation.*;
 import mindustry.entities.units.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.io.*;
 import mindustry.maps.*;
 import mindustry.world.*;
+import mindustry.world.blocks.environment.*;
 
 import static mindustry.Vars.*;
 
@@ -21,7 +21,7 @@ public class MapEditor{
     public static final float[] brushSizes = {1, 1.5f, 2, 3, 4, 5, 6, 9, 15, 20, 30, 50, 100};
 
     public StringMap tags = new StringMap();
-    public MapRenderer renderer = new MapRenderer();
+    public EditorRenderer renderer = new EditorRenderer();
 
     private final Context context = new Context();
     private OperationStack stack = new OperationStack();
@@ -29,9 +29,11 @@ public class MapEditor{
     private boolean loading;
 
     public float brushSize = 1;
+    public int brushSizeIndex = 0;
     public int rotation;
     public Block drawBlock = Blocks.stone;
     public Team drawTeam = Team.sharded;
+    public boolean showTerrain = true, showFloor = true, showBuildings = true;
 
     public boolean isLoading(){
         return loading;
@@ -55,7 +57,7 @@ public class MapEditor{
             tags.put("steamid", map.file.parent().name());
         }
         load(() -> MapIO.loadMap(map, context));
-        renderer.resize(width(), height());
+        if(!headless) renderer.resize(width(), height());
         loading = false;
     }
 
@@ -64,7 +66,7 @@ public class MapEditor{
 
         createTiles(pixmap.width, pixmap.height);
         load(() -> MapIO.readImage(pixmap, tiles()));
-        renderer.resize(width(), height());
+        if(!headless) renderer.resize(width(), height());
     }
 
     public void updateRenderer(){
@@ -74,7 +76,7 @@ public class MapEditor{
         for(int i = 0; i < tiles.width * tiles.height; i++){
             Tile tile = tiles.geti(i);
             var build = tile.build;
-            if(build != null){
+            if(build != null && tile.isCenter()){
                 builds.add(build);
             }
             tiles.seti(i, new EditorTile(tile.x, tile.y, tile.floorID(), tile.overlayID(), build == null ? tile.blockID() : 0));
@@ -111,6 +113,7 @@ public class MapEditor{
     private void reset(){
         clearOp();
         brushSize = 1;
+        brushSizeIndex = 0;
         drawBlock = Blocks.stone;
         tags = new StringMap();
     }
@@ -149,27 +152,62 @@ public class MapEditor{
             y = Mathf.clamp(y, (drawBlock.size - 1) / 2, height() - drawBlock.size / 2 - 1);
             if(!hasOverlap(x, y)){
                 tile(x, y).setBlock(drawBlock, drawTeam, rotation);
+                addTileOp(TileOp.get((short)x, (short)y, DrawOperation.opTeam, (byte)drawTeam.id));
             }
         }else{
             boolean isFloor = drawBlock.isFloor() && drawBlock != Blocks.air;
 
             Cons<Tile> drawer = tile -> {
                 if(!tester.get(tile)) return;
+                boolean changed = false;
+
+                boolean didDataOp = false;
+                int oldData1 = 0, oldData2 = 0;
+
+                if(drawBlock.saveData || tile.shouldSaveData()){
+                    addTileOp(TileOp.get(tile.x, tile.y, DrawOperation.opData, TileOpData.get(tile.data, tile.floorData, tile.overlayData)));
+                    addTileOp(TileOp.get(tile.x, tile.y, DrawOperation.opDataExtra, tile.extraData));
+                    oldData1 = TileOpData.get(tile.data, tile.floorData, tile.overlayData);
+                    oldData2 = tile.extraData;
+                    didDataOp = true;
+                }
+
+                int preDataOps = ops();
 
                 if(isFloor){
                     if(forceOverlay){
                         tile.setOverlay(drawBlock.asFloor());
+                        changed = true;
                     }else{
                         if(!(drawBlock.asFloor().wallOre && !tile.block().solid)){
                             tile.setFloor(drawBlock.asFloor());
+                            if(!(tile.overlay() instanceof OverlayFloor) && !drawBlock.asFloor().supportsOverlay){
+                                tile.setOverlay(Blocks.air);
+                            }
+                            changed = true;
                         }
                     }
                 }else if(!(tile.block().isMultiblock() && !drawBlock.isMultiblock())){
                     if(drawBlock.rotate && tile.build != null && tile.build.rotation != rotation){
-                        addTileOp(TileOp.get(tile.x, tile.y, (byte)OpType.rotation.ordinal(), (byte)rotation));
+                        addTileOp(TileOp.get(tile.x, tile.y, DrawOperation.opRotation, (byte)rotation));
                     }
 
                     tile.setBlock(drawBlock, drawTeam, rotation);
+                    changed = !drawBlock.synthetic();
+
+                    if(drawBlock.synthetic()){
+                        addTileOp(TileOp.get(tile.x, tile.y, DrawOperation.opTeam, (byte)drawTeam.id));
+                    }
+                }
+
+                if(changed && drawBlock.saveConfig){
+                    drawBlock.placeEnded(tile, null, editor.rotation, drawBlock.lastConfig);
+                    renderer.updateStatic(tile.x, tile.y);
+                }
+
+                //data and block did not change, undo the data ops
+                if(didDataOp && ops() == preDataOps && oldData1 == TileOpData.get(tile.data, tile.floorData, tile.overlayData) && oldData2 == tile.extraData){
+                    removeLastOps(2);
                 }
             };
 
@@ -230,26 +268,7 @@ public class MapEditor{
                 tile.setBlock(Blocks.air);
             }
         }
-    }
-
-    public void addFloorCliffs(){
-        for(Tile tile : world.tiles){
-            if(!tile.floor().hasSurface() || tile.block() == Blocks.cliff) continue;
-
-            int rotation = 0;
-            for(int i = 0; i < 8; i++){
-                Tile other = world.tiles.get(tile.x + Geometry.d8[i].x, tile.y + Geometry.d8[i].y);
-                if(other != null && !other.floor().hasSurface()){
-                    rotation |= (1 << i);
-                }
-            }
-
-            if(rotation != 0){
-                tile.setBlock(Blocks.cliff);
-            }
-
-            tile.data = (byte)rotation;
-        }
+        editor.flushOp();
     }
 
     public void drawCircle(int x, int y, Cons<Tile> drawer){
@@ -301,6 +320,14 @@ public class MapEditor{
                 if(previous.in(px, py)){
                     tiles.set(x, y, previous.getn(px, py));
                     Tile tile = tiles.getn(x, y);
+
+                    Object config = null;
+
+                    //fetch the old config first, configs can be relative to block position (tileX/tileY) before those are reassigned
+                    if(tile.build != null && tile.isCenter()){
+                        config = tile.build.config();
+                    }
+
                     tile.x = (short)x;
                     tile.y = (short)y;
 
@@ -309,11 +336,17 @@ public class MapEditor{
                         tile.build.y = y * tilesize + tile.block().offset;
 
                         //shift links to account for map resize
-                        Object config = tile.build.config();
                         if(config != null){
-                            Object out = BuildPlan.pointConfig(tile.block(), config, p -> p.sub(offsetX, offsetY));
+                            Object out = BuildPlan.pointConfig(tile.block(), config, p -> {
+                                if(!tile.build.block.ignoreResizeConfig){
+                                    p.sub(offsetX, offsetY);
+                                }
+                            });
                             if(out != config){
+                                boolean prev = state.rules.editor;
+                                state.rules.editor = true;
                                 tile.build.configureAny(out);
+                                state.rules.editor = prev;
                             }
                         }
                     }
@@ -364,7 +397,18 @@ public class MapEditor{
         if(currentOp == null) currentOp = new DrawOperation();
         currentOp.addOperation(data);
 
-        renderer.updatePoint(TileOp.x(data), TileOp.y(data));
+        renderer.updateStatic(TileOp.x(data), TileOp.y(data));
+    }
+
+    public int ops(){
+        if(currentOp == null) return 0;
+        return currentOp.size();
+    }
+
+    public void removeLastOps(int amount){
+        if(currentOp == null || loading) return;
+
+        currentOp.remove(amount);
     }
 
     class Context implements WorldContext{

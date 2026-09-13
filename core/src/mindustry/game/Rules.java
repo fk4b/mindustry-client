@@ -6,7 +6,9 @@ import arc.util.*;
 import arc.util.serialization.*;
 import arc.util.serialization.Json.*;
 import mindustry.*;
+import mindustry.audio.*;
 import mindustry.content.*;
+import mindustry.ctype.*;
 import mindustry.graphics.g3d.*;
 import mindustry.io.*;
 import mindustry.type.*;
@@ -19,8 +21,12 @@ import mindustry.world.blocks.*;
  * Does not store game state, just configuration.
  */
 public class Rules{
+    /** Allows editing the rules in-game. Essentially a cheat mode toggle. */
+    public boolean allowEditRules = false;
     /** Sandbox mode: Enables infinite resources, build range and build speed. */
     public boolean infiniteResources;
+    /** Allow building and deconstructing cores anywhere, as well as showing ui to change teams */
+    public boolean coreBuildAndConfig = false;
     /** Team-specific rules. */
     public TeamRules teams = new TeamRules();
     /** Whether the waves come automatically on a timer. If not, waves come when the play button is pressed. */
@@ -29,16 +35,24 @@ public class Rules{
     public boolean waveSending = true;
     /** Whether waves are spawnable at all. */
     public boolean waves;
+    /** Whether air units spawn at spawns instead of the edge of the map */
+    public boolean airUseSpawns = false;
+    /** If true, units spawn at enemy cores in attack maps with waves enabled. */
+    public boolean wavesSpawnAtCores = true;
     /** Whether the game objective is PvP. Note that this enables automatic hosting. */
     public boolean pvp;
     /** Whether is waiting for players enabled in PvP. */
     public boolean pvpAutoPause = true;
+    /** Whether pause is enabled or not in singleplayer */
+    public boolean pauseDisabled = false;
     /** Whether to pause the wave timer until all enemies are destroyed. */
     public boolean waitEnemies = false;
     /** Determines if gamemode is attack mode. */
     public boolean attackMode = false;
     /** Whether this is the editor gamemode. */
     public boolean editor = false;
+    /** Whether blocks can be repaired by clicking them. */
+    public boolean derelictRepair = true;
     /** Whether a gameover can happen at all. Set this to false to implement custom gameover conditions. */
     public boolean canGameOver = true;
     /** Whether cores change teams when they are destroyed. */
@@ -53,14 +67,16 @@ public class Rules{
     public boolean damageExplosions = true;
     /** Whether fire (and neoplasm spread) is enabled. */
     public boolean fire = true;
-    /** Whether units use and require ammo. */
-    public boolean unitAmmo = false;
+    /** If true, air and ground units target random things each wave instead of only the core/generators. */
+    public boolean randomWaveAI = false;
     /** EXPERIMENTAL! If true, blocks will update in units and share power. */
     public boolean unitPayloadUpdate = false;
+    /** If true, units' payloads are destroy()ed when the unit is destroyed. */
+    public boolean unitPayloadsExplode = false;
     /** Whether cores add to unit limit */
     public boolean unitCapVariable = true;
-    /** If true, unit spawn points are shown. */
-    public boolean showSpawns = false;
+    /** If true, unit spawn points are hidden. */
+    public boolean hideSpawns = true;
     /** Multiplies power output of solar panels. */
     public float solarMultiplier = 1f;
     /** How fast unit factories build units. */
@@ -73,10 +89,24 @@ public class Rules{
     public float unitHealthMultiplier = 1f;
     /** How much damage unit crash damage deals. (Compounds with unitDamageMultiplier) */
     public float unitCrashDamageMultiplier = 1f;
+    /** How fast units can mine. */
+    public float unitMineSpeedMultiplier = 1f;
+    /** Time until unit factories activate (global). */
+    public float unitFactoryActivationDelay = 0f;
     /** If true, ghost blocks will appear upon destruction, letting builder blocks/units rebuild them. */
     public boolean ghostBlocks = true;
+    /** If true, pings of players from other teams will be shown. */
+    public boolean showOtherTeamPings = false;
+    /** Whether to allow logic to control units. */
+    public boolean logicUnitControl = true;
     /** Whether to allow units to build with logic. */
     public boolean logicUnitBuild = true;
+    /** Whether to allow units to deconstruct blocks with logic. */
+    public boolean logicUnitDeconstruct = false;
+    /** If false, world processors can't link to player structures. This is used in the campaign; see issue #12091 */
+    public boolean worldProcessorPlayerLink = true;
+    /** If true, world processors can be edited and placed on this map. */
+    public boolean allowEditWorldProcessors = false;
     /** If true, world processors no longer update. Used for testing. */
     public boolean disableWorldProcessors = false;
     /** How much health blocks start with. */
@@ -89,6 +119,8 @@ public class Rules{
     public float buildSpeedMultiplier = 1f;
     /** Multiplier for percentage of materials refunded when deconstructing. */
     public float deconstructRefundMultiplier = 0.5f;
+    /** Multiplier for time in timer objectives. */
+    public float objectiveTimerMultiplier = 1f;
     /** No-build zone around enemy core radius. */
     public float enemyCoreBuildRadius = 400f;
     /** If true, no-build zones are calculated based on the closest core. */
@@ -99,10 +131,18 @@ public class Rules{
     public boolean cleanupDeadTeams = true;
     /** If true, items can only be deposited in the core. */
     public boolean onlyDepositCore = false;
+    /** If true, Serpulo unloaders can take items from the core. */
+    public boolean allowCoreUnloaders = true;
+    /** Cooldown, in seconds, of item depositing for players. */
+    public float itemDepositCooldown = 0.5f;
     /** If true, every enemy block in the radius of the (enemy) core is destroyed upon death. Used for campaign maps. */
     public boolean coreDestroyClear = false;
     /** If true, banned blocks are hidden from the build menu. */
     public boolean hideBannedBlocks = false;
+    /** If true, most blocks (including environmental walls) can be deconstructed. This is only meant to be used internally in sandbox/test maps. */
+    public boolean allowEnvironmentDeconstruct = false;
+    /** If true, buildings will be constructed instantly, with no limit on blocks placed per second. This is highly experimental and may cause lag! */
+    public boolean instantBuild = false;
     /** If true, bannedBlocks becomes a whitelist. */
     public boolean blockWhitelist = false;
     /** If true, bannedUnits becomes a whitelist. */
@@ -117,6 +157,8 @@ public class Rules{
     public int winWave = 0;
     /** Base unit cap. Can still be increased by blocks. */
     public int unitCap = 0;
+    /** If true, the unit cap is disabled. */
+    public boolean disableUnitCap;
     /** Environment drag multiplier. */
     public float dragMultiplier = 1f;
     /** Environmental flags that dictate visuals & how blocks function. */
@@ -125,12 +167,24 @@ public class Rules{
     public Attributes attributes = new Attributes();
     /** Sector for saves that have them. */
     public @Nullable Sector sector;
+    /** Overrides random ambient music to be played. */
+    public @Nullable Seq<MusicContainer> ambientMusic;
+    /** Overrides music that is played in certain situations, like during boss waves or low core health. */
+    public @Nullable Seq<MusicContainer> darkMusic;
+    /** If true, this overrides the game setting to always play ambient music. */
+    public boolean alwaysPlayMusic = false;
+    /** If true, automatic music is disabled. */
+    public boolean disableMusic = false;
+    /** Multiplier for music volume (max value is 1). */
+    public float musicVolume = 1f;
     /** Spawn layout. */
     public Seq<SpawnGroup> spawns = new Seq<>();
     /** Starting items put in cores. */
     public Seq<ItemStack> loadout = ItemStack.list(Items.copper, 100);
     /** Weather events that occur here. */
     public Seq<WeatherEntry> weather = new Seq<>(1);
+    /** Block placement limits by type. */
+    public ObjectIntMap<Block> blockLimits = new ObjectIntMap<>();
     /** Blocks that cannot be placed. */
     public ObjectSet<Block> bannedBlocks = new ObjectSet<>();
     /** Units that cannot be built. */
@@ -138,9 +192,7 @@ public class Rules{
     /** Reveals blocks normally hidden by build visibility. */
     public ObjectSet<Block> revealedBlocks = new ObjectSet<>();
     /** Unlocked content names. Only used in multiplayer when the campaign is enabled. */
-    public ObjectSet<String> researched = new ObjectSet<>();
-    /** Block containing these items as requirements are hidden. */
-    public ObjectSet<Item> hiddenBuildItems = Items.erekirOnlyItems.asSet();
+    public ObjectSet<UnlockableContent> researched = new ObjectSet<>();
     /** In-map objective executor. */
     public MapObjectives objectives = new MapObjectives();
     /** Flags set by objectives. Used in world processors. */
@@ -157,6 +209,8 @@ public class Rules{
     public boolean lighting = false;
     /** Ambient light color, used when lighting is enabled. */
     public Color ambientLight = new Color(0.01f, 0.01f, 0.04f, 0.99f);
+    /** Whether units produce light when lighting is enabled. */
+    public boolean unitLight = true;
     /** team of the player by default. */
     public Team defaultTeam = Team.sharded;
     /** team of the enemy in waves/sectors. */
@@ -168,7 +222,7 @@ public class Rules{
     /** Mission string displayed instead of wave/core counter. Null to disable. */
     public @Nullable String mission;
     /** Whether cores incinerate items when full, just like in the campaign. */
-    public boolean coreIncinerates = false;
+    public boolean coreIncinerates = true;
     /** If false, borders fade out into darkness. Only use with custom backgrounds!*/
     public boolean borderDarkness = true;
     /** If true, the map play area is cropped based on the rectangle below. */
@@ -193,10 +247,29 @@ public class Rules{
     public @Nullable PlanetParams planetBackground;
     /** Rules from this planet are applied. If it's {@code sun}, mixed tech is enabled. */
     public Planet planet = Planets.serpulo;
+    /** If the `data` instruction is allowed for world processors */
+    public boolean allowLogicData = false;
 
     /** Copies this ruleset exactly. Not efficient at all, do not use often. */
     public Rules copy(){
         return JsonIO.copy(this);
+    }
+
+    /**
+     * When a map is played, it uses rules from the rules dialog, which cannot contain patched content, since it doesn't exist at that point in time.
+     * This means that any existing rules containing patched content will contain garbage or empty data.
+     * This function copies original map rule data from {@param source} (obtained after map load) that may contain new content into this ruleset.
+     * */
+    public void retainContentFields(Rules source){
+        //these fields can't be modified in the custom rules anyway, so force-overwriting them is fine
+        spawns = source.spawns;
+        objectives = source.objectives;
+        weather = source.weather;
+
+        //TODO: this overwrites banned blocks/units and loadouts if someone set it in custom rules when playing; there isn't a good way to avoid this
+        if(Seq.with(source.bannedBlocks).contains(Content::isPatchContent)) bannedBlocks = source.bannedBlocks;
+        if(Seq.with(source.bannedUnits).contains(Content::isPatchContent)) bannedUnits = source.bannedUnits;
+        if(source.loadout.contains(i -> i.item.isPatchContent())) loadout = source.loadout;
     }
 
     /** Returns the gamemode that best fits these rules. */
@@ -216,6 +289,10 @@ public class Rules{
 
     public boolean hasEnv(int env){
         return (this.env & env) != 0;
+    }
+
+    public float buildRadius(Team team){
+        return !teams.get(team).protectCores ? 0f : enemyCoreBuildRadius + teams.get(team).extraCoreBuildRadius;
     }
 
     public float unitBuildSpeed(Team team){
@@ -239,6 +316,10 @@ public class Rules{
         return unitDamage(team) * unitCrashDamageMultiplier * teams.get(team).unitCrashDamageMultiplier;
     }
 
+    public float unitMineSpeed(Team team){
+        return unitMineSpeedMultiplier * teams.get(team).unitMineSpeedMultiplier;
+    }
+
     public float blockHealth(Team team){
         return blockHealthMultiplier * teams.get(team).blockHealthMultiplier;
     }
@@ -258,16 +339,30 @@ public class Rules{
         return unitWhitelist != bannedUnits.contains(unit);
     }
 
+    public float unitActivationDelay(Team team){
+        return unitFactoryActivationDelay + teams.get(team).unitFactoryActivationDelay;
+    }
+
+    public boolean isInfiniteResources(Team team){
+        return infiniteResources || teams.get(team).infiniteResources;
+    }
+
     /** A team-specific ruleset. */
     public static class TeamRule{
         /** Whether, when AI is enabled, ships should be spawned from the core. TODO remove / unnecessary? */
         public boolean aiCoreSpawn = true;
+        /** Whether the core no-build radius/polygonal protection applies to this team, unprotected teams are ignored by team assigner */
+        public boolean protectCores = true;
+        /** Whether the placeRangeCheck applies to this team */
+        public boolean checkPlacement = true;
         /** If true, blocks don't require power or resources. */
         public boolean cheat;
+        /** If true, the core is always filled to capacity with all items. */
+        public boolean fillItems;
         /** If true, resources are not consumed when building. */
         public boolean infiniteResources;
-        /** If true, this team has infinite unit ammo. */
-        public boolean infiniteAmmo;
+        /** EXPERIMENTAL, DO NOT USE: Pre-built base AI. Gives the illusion of intelligent design of pre-building an attack base. */
+        public boolean prebuildAi;
 
         /** AI that builds random schematics. */
         public boolean buildAi;
@@ -278,17 +373,21 @@ public class Rules{
         public boolean rtsAi;
         /** Minimum size of attack squads. */
         public int rtsMinSquad = 4;
-        /** Maximum size of attack squads. */
-        public int rtsMaxSquad = 1000;
+        /** Maximum size of attack squads. Any groups of units above this size will attack targets regardless of weight. */
+        public int rtsMaxSquad = 50;
         /** Minimum "advantage" needed for a squad to attack. Higher -> more cautious. */
         public float rtsMinWeight = 1.2f;
 
+        /** Time until unit factories activate. This is used for enemy teams in attack maps. */
+        public float unitFactoryActivationDelay = 0f;
         /** How fast unit factories build units. */
         public float unitBuildSpeedMultiplier = 1f;
         /** How much damage units deal. */
         public float unitDamageMultiplier = 1f;
         /** How much damage unit crash damage deals. (Compounds with unitDamageMultiplier) */
         public float unitCrashDamageMultiplier = 1f;
+        /** How fast units can mine. */
+        public float unitMineSpeedMultiplier = 1f;
         /** Multiplier of resources that units take to build. */
         public float unitCostMultiplier = 1f;
         /** How much health units start with. */
@@ -299,8 +398,21 @@ public class Rules{
         public float blockDamageMultiplier = 1f;
         /** Multiplier for building speed. */
         public float buildSpeedMultiplier = 1f;
+        /** Extra spacing added to the no-build zone around the core. */
+        public float extraCoreBuildRadius = 0f;
 
         //build cost disabled due to technical complexity
+
+        //for reading from json
+        public TeamRule(){
+        }
+
+        public TeamRule(Team team){
+            if(team == Team.derelict){
+                protectCores = false;
+                checkPlacement = false;
+            }
+        }
     }
 
     /** A simple map for storing TeamRules in an efficient way without hashing. */
@@ -309,7 +421,7 @@ public class Rules{
 
         public TeamRule get(Team team){
             TeamRule out = values[team.id];
-            return out == null ? (values[team.id] = new TeamRule()) : out;
+            return out == null ? (values[team.id] = new TeamRule(team)) : out;
         }
 
         @Override

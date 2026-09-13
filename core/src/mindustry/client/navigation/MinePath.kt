@@ -72,7 +72,7 @@ class MinePath @JvmOverloads constructor(
             }
         }
 
-        addListener { /*AutoTransfer.enabled = Core.settings.getBool("autotransfer") && !(state.rules.pvp && Server.io())*/ }
+        addListener { AutoTransfer.enabled = Core.settings.getBool("autotransfer") && !(state.rules.pvp && Server.io()) } // Re-enable autoTransfer if we turned it off during the path
     }
 
     companion object {
@@ -90,6 +90,7 @@ class MinePath @JvmOverloads constructor(
 
     override fun follow() {
         if (player.unit() == null) return
+        if (AutoTransfer.enabled) AutoTransfer.enabled = false // AutoTransfer doesn't play well with MinePath
 
         val core = player.closestCore() ?: return
         val maxCap = if (cap <= 0) core.storageCapacity else core.storageCapacity.coerceAtMost(cap)
@@ -203,7 +204,7 @@ class MinePath @JvmOverloads constructor(
 
     @Synchronized
     override fun draw() {
-        if ((waypoints.waypoints.lastOrNull()?.dst(player) ?: 0F) > tilesize * 3) {
+        if ((waypoints.last()?.dst(player) ?: 0F) > tilesize * 3) {
             waypoints.draw()
         }
     }

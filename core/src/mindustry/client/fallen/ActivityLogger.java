@@ -154,7 +154,7 @@ public class ActivityLogger {
             ));
         });
 
-        Events.on(UnitRealDeathEvent.class, it -> {
+        Events.on(UnitDeadEvent.class, it -> {
             if (it.unit == null || it.unit.type == null) return;
 
             Player p = it.unit.getPlayer();

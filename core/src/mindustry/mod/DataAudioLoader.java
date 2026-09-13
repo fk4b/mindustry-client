@@ -23,14 +23,15 @@ public class DataAudioLoader{
         int nextSoundId = soundIdOffset + 1;
 
         for(var asset : sounds){
-            String realName = prefix + asset.name;
+            String realName = prefix + asset.name.replace(' ', '_');
             if(registered.contains(realName)){
                 Log.warn("Duplicate audio file: " + asset.name);
                 continue;
             }
 
             Fi file = asset.getCacheFile();
-            Sound sound = Vars.headless || file == null ? new Sound() : Sound.createStream(file);
+            //large sounds become streams, standard ones don't
+            Sound sound = Vars.headless || file == null ? new Sound() : file.length() > 100_000 ? Sound.createStream(file) : Sound.createLazy(file);
             loadedSounds.add(sound);
 
             Sounds.registerSound(sound, nextSoundId ++);
@@ -45,7 +46,7 @@ public class DataAudioLoader{
         }
 
         for(var asset : musics){
-            String realName = prefix + asset.name;
+            String realName = prefix + asset.name.replace(' ', '_');
             if(registered.contains(realName)){
                 Log.warn("Duplicate audio file: " + asset.name);
                 continue;

@@ -17,6 +17,7 @@ import mindustry.*;
 import mindustry.client.*;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
+import mindustry.core.*;
 import mindustry.game.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
@@ -30,7 +31,7 @@ import static arc.Core.*;
 import static mindustry.Vars.*;
 
 public class ChatFragment extends Table{
-    private static final int messagesShown = 10;
+    private static int messagesShown = 10;
     private static final ImageButton.ImageButtonStyle uploadStyle = new ImageButton.ImageButtonStyle(Styles.emptyi);
     public Seq<ChatMessage> messages = new Seq<>();
     private float fadetime;
@@ -46,69 +47,81 @@ public class ChatFragment extends Table{
     private Seq<String> history = new Seq<>();
     private int historyPos = 0;
     private int scrollPos = 0;
+    private boolean lastFrameHadFocus;
+
     public Seq<Autocompleteable> completion = new Seq<>(); // FINISHME: The autocompletion system is awful.
     private int completionPos = -1;
     private static final Color hoverColor = Color.sky.cpy().mul(0.5f);
 
     public ChatFragment(){
         super();
+        setShownMessages();
 
         setFillParent(true);
         font = Fonts.def;
 
         visible(() -> {
             if (state.isMenu() && messages.size > 0) {
-                if (shown) hide();
+                if (shown) hide(false);
                 clearMessages();
             }
-            return ui.hudfrag.shown;
+            return ui.hudfrag.shown();
         });
 
         update(() -> {
+            boolean hasOtherFocus = (scene.getKeyboardFocus() != null && !chatfield.hasKeyboard()) && !(ui.minimapfrag.shown() && !(scene.getKeyboardFocus() instanceof TextField));
 
-            if(input.keyTap(Binding.chat) && (scene.getKeyboardFocus() == chatfield || scene.getKeyboardFocus() == null || ui.minimapfrag.shown()) && !ui.consolefrag.shown()){
+            if(input.keyTap(Binding.chat) && !hasOtherFocus && !lastFrameHadFocus && !ui.consolefrag.shown()){
                 toggle();
             }
 
             if(shown){
-                if(input.keyTap(Binding.chat_history_prev) && historyPos < history.size - 1){
+                if(input.keyTap(Binding.chatHistoryPrev) && historyPos < history.size - 1){
                     if(historyPos == 0) history.set(0, chatfield.getText().replaceFirst("^" + mode.normalizedPrefix(), ""));
                     historyPos++;
                     updateChat();
                 }
-                if(input.keyTap(Binding.chat_history_next) && historyPos > 0){
+                if(input.keyTap(Binding.chatHistoryNext) && historyPos > 0){
                     historyPos--;
                     updateChat();
                 }
                 boolean tabConsumed = false;
-                if (input.keyTap(Binding.chat_autocomplete) && completion.any() /*&& mode == ChatMode.normal*/) {
+                if (input.keyTap(Binding.chatAutocomplete) && completion.any() /*&& mode == ChatMode.normal*/) {
                     completionPos = Mathf.clamp(completionPos, 0, completion.size - 1);
                     String oldText = chatfield.getText();
-                    chatfield.setText(completion.get(completionPos).getCompletion(chatfield.getText()) + " ");
-                    updateCursor();
-                    if(chatfield.getText() != oldText){
+                    String newText = completion.get(completionPos).getCompletion(chatfield.getText());
+                    if(!(newText.equals(oldText) || oldText.equals(newText + " "))){
+                        //sometimes the autocomplete returns that it has a value
+                        //but it doesn't actually do anything
+                        //this breaks tab to switch modes
+                        chatfield.setText(newText + " ");
+                        updateCursor();
                         tabConsumed = true;
                     }
                 }
-                if (input.keyTap(Binding.chat_mode) && !tabConsumed) {
+                if (input.keyTap(Binding.chatMode) && !tabConsumed) {
                     nextMode();
                 }
-                scrollPos = (int)Mathf.clamp(scrollPos + input.axis(Binding.chat_scroll), 0, Math.max(0, messages.size - messagesShown));
+                scrollPos = (int)Mathf.clamp(scrollPos + input.axis(Binding.chatScroll), 0, Math.max(0, messages.size - messagesShown));
             }
+
+            lastFrameHadFocus = hasOtherFocus;
         });
 
         history.insert(0, "");
         setup();
     }
 
+    public static void setShownMessages(){
+        messagesShown = Core.settings.getInt("shownmessagescount");
+    }
+
     // FINISHME: Awful.
     void updateCompletion() {
         if (Autocomplete.matches(chatfield.getText())) {
-            Seq<Autocompleteable> oldCompletion = completion.copy();
+            Seq<Autocompleteable> oldCompletion = completion;
             completion = Autocomplete.closest(chatfield.getText()).retainAll(item -> item.matches(chatfield.getText()) > 0.5f);
-            completion.reverse();
-            completion.truncate(4);
-            completion.reverse();
+            if (completion.size > 4) completion.removeRange(0, completion.size - 5);
             if (!Arrays.equals(completion.items, oldCompletion.items)) {
                 completionPos = completion.size - 1;
             }
@@ -135,13 +148,26 @@ public class ChatFragment extends Table{
         fieldlabel.getStyle().font = font;
         fieldlabel.setStyle(fieldlabel.getStyle());
 
-        chatfield = new TextField("", new TextFieldStyle(scene.getStyle(TextFieldStyle.class)));
+        chatfield = new TextField("", new TextFieldStyle(scene.getStyle(TextFieldStyle.class))) {
+            // Another scuffed way to allow pasting long js
+            {
+                layout.ignoreMarkup = false;
+            }
+            @Override
+            public void paste(String content, boolean fireChangeEvent) {
+                if (content != null && (content.startsWith("!js ") || content.startsWith("!kt ")) &&
+                    Math.min(hasSelection ? selectionStart : Integer.MAX_VALUE, cursor) == 0) // Only increase length if pasting into front of text
+                        chatfield.setMaxLength(0);
+                super.paste(content, fireChangeEvent);
+            }
+        };
+
         chatfield.updateVisibility();
         chatfield.setFocusTraversal(false);
         chatfield.setProgrammaticChangeEvents(true);
         chatfield.setFilter((f, c) -> c != '\t'); // Using .changed(...) and allowing tabs causes problems for tab completion and cursor position, .typed(...) doesn't do what I need
         chatfield.changed(() -> {
-            chatfield.setMaxLength(chatfield.getText().startsWith("!js ") ? 0 : maxTextLength - 2); // Scuffed way to allow long js
+            updateMaxLength();
 
             // FINISHME: Implement proper replacement & string interpolation system
             var replacement = switch (chatfield.getText().replaceFirst("^" + mode.normalizedPrefix(), "")) {
@@ -191,7 +217,8 @@ public class ChatFragment extends Table{
             if(index >= 0 && index < cursor){
                 String text = chatfield.getText().substring(index + 1, cursor - 1);
                 String uni = Fonts.getUnicodeStr(text);
-                if(uni != null && uni.length() > 0){
+                if((uni == null || uni.isEmpty()) && Iconc.codes.containsKey(text)) uni = Character.toString((char)Iconc.codes.get(text));
+                if(uni != null && !uni.isEmpty()){
                     chatfield.setText(chatfield.getText().substring(0, index) + uni + chatfield.getText().substring(cursor));
                     chatfield.setCursorPosition(index + uni.length());
                 }
@@ -199,16 +226,31 @@ public class ChatFragment extends Table{
         }
     }
 
+    /** Updates the max length of the message based on command and server status */
+    private void updateMaxLength() {
+        updateMaxLength(chatfield.getText());
+    }
+
+    private void updateMaxLength(String text) {
+        int max = maxTextLength;
+        if (Server.io.b()) max = 256; // io allows longer messages FINISHME: Add this to fooplugin as an optional feature with a length specified by packet? Would require server to run a custom jar or provide their own mixin
+        max -= 2; // Account for 2 char message id
+        if (text.startsWith("!js ") || text.startsWith("!kt ")) max = 0; // If running js or kt, allow infinite length
+        else if (text.startsWith("!c ")) max = 503; // Max foo's chat length is 1000
+        else max = 2000; // split into multiple messages on send
+        chatfield.setMaxLength(max);
+    }
+
     protected void rect(float x, float y, float w, float h){
         //prevents texture bindings; the string lookup is irrelevant as it is only called <10 times per frame, and maps are very fast anyway
         Draw.rect("whiteui", x + w/2f, y + h/2f, w, h);
     }
 
-    private IntSeq litUp = new IntSeq();
-    public boolean hasLit = false;
+    public ClickableArea hoveredButton = null;
 
     @Override
     public void draw(){
+        boolean forceChat = Core.settings.getBool("forcechat");
         float opacity = Core.settings.getInt("chatopacity") / 100f;
         float textWidth = Math.min(Core.graphics.getWidth()/1.5f, Scl.scl(700f));
 
@@ -227,9 +269,9 @@ public class ChatFragment extends Table{
 
         Draw.color(shadowColor, shadowColor.a * opacity);
 
-        hasLit = false;
+        hoveredButton = null;
         float theight = offsety + spacing + getMarginBottom() + scene.marginBottom;
-        for(int i = scrollPos; i < messages.size && i < messagesShown + scrollPos && (i < fadetime || shown); i++){
+        for(int i = scrollPos; i < messages.size && i < messagesShown + scrollPos && (i < fadetime || shown || forceChat); i++){
             ChatMessage msg = messages.get(i);
 
             layout.setText(font, msg.formattedMessage, Color.white, textWidth, Align.bottomLeft, true);
@@ -260,59 +302,63 @@ public class ChatFragment extends Table{
 
             msg.start = theight - layout.height - 2;
             msg.height = layout.height + textspacing;
-            float mousey = input.mouseY();
-            float mousex = input.mouseX();
-            if (mousey > msg.start && mousey < msg.start + msg.height && msg.buttons != null) {
-                litUp.clear();
-                var co = Tmp.c1.set(Draw.getColor()); // Save current color for later
-                for (var g : font.getCache().getLayouts()) {
-                    for (var r : g.runs) {
-                        float x = r.x + r.xAdvances.get(0) + fontoffsetx + offsetx;
-                        int j = 0;
-                        for (var c : r.glyphs) {
-                            int idx = r.textPositions.get(j++);
-                            float w = r.xAdvances.get(j);
-                            float liney = r.y + theight - font.getLineHeight() + 2;
+            float mouseX = input.mouseX(), mouseY = input.mouseY();
+
+            if (mouseY > msg.start && mouseY < msg.start + msg.height && mouseX < offsetx + textWidth + Scl.scl(4f) && msg.buttons != null && !msg.buttons.isEmpty()) {
+                if (font.getCache().getLayouts().size != 1) throw new RuntimeException("Wrong layouts: " + font.getCache().getLayouts()); // This should only ever be 1. If It's not something is very wrong.
+                int idx = 0;
+
+                findButton:
+                for (var r : font.getCache().getLayouts().get(0).runs) { // Find hovered button
+                    if (r.continuation) idx++; // Line wrap before this, add offset
+                    float lineY = r.y + theight - font.getLineHeight() + 2;
+                    float x = r.x + r.xAdvances.get(0) + fontoffsetx + offsetx;
+                    for (int c = 0; c < r.glyphs.size; c++) {
+                        idx++;
+                        if (((char)r.glyphs.get(c).id) == '[') { // When we reach "[" we need to skip anything that would be considered a color code.
+                            StringBuilder remainingGlyphs = new StringBuilder(r.glyphs.size - c - 1);
+                            for (int ch = c + 1; ch < r.glyphs.size; ch++) remainingGlyphs.append((char)r.glyphs.get(ch).id);
+                            idx -= Strings.parseColorMarkupPublic(remainingGlyphs.toString(), 0, remainingGlyphs.length());
+                        }
+                        float w = r.xAdvances.get(c + 1);
+
+                        if (mouseX > x && mouseX <= x + w && mouseY > lineY && mouseY < lineY + font.getLineHeight()) { // The mouse is within this character
                             for (var area : msg.buttons) {
-                                if (idx >= area.start && idx < area.end) {
-                                    if (mousex > x && mousex <= x + w && mousey > liney && mousey < liney + font.getLineHeight()) {
-                                        hasLit = true;
-                                        litUp.add(area.start);
-                                        litUp.add(area.end);
-                                        if (Core.input.keyTap(Binding.select)) {
-                                            area.lambda.run();
-                                        }
-                                        if (control.input instanceof DesktopInput) {
-                                            Core.graphics.cursor(Graphics.Cursor.SystemCursor.hand);
-                                        }
-                                    }
+                                if (idx > area.start && idx <= area.end) { // The character is within the button ranges.
+                                    hoveredButton = area;
+
+                                    if (Core.input.keyTap(Binding.select)) area.clicked.run();
+                                    if (control.input instanceof DesktopInput) Core.graphics.cursor(Graphics.Cursor.SystemCursor.hand);
+                                    break findButton;
                                 }
                             }
-                            x += w;
                         }
+                        x += w;
                     }
                 }
 
-                Draw.color(hoverColor);
-                int[] litUpItems = litUp.items;
-                for (var g : font.getCache().getLayouts()) {
-                    for (var r : g.runs) {
+                highlightButton:
+                if (hoveredButton != null) { // Highlight hovered button...
+                    Draw.color(hoverColor);
+                    idx = 0;
+                    for (var r : font.getCache().getLayouts().get(0).runs) {
+                        if (r.continuation) idx++; // Skip on newline
+                        float lineY = r.y + theight - font.getLineHeight() + 2;
                         float x = r.x + r.xAdvances.get(0) + fontoffsetx + offsetx;
-                        int j = 0;
-                        for (var c : r.glyphs) {
-                            int idx = r.textPositions.get(j++);
-                            float w = r.xAdvances.get(j);
-                            float liney = r.y + theight - font.getLineHeight() + 2;
-                            for(int ii = 0; ii < litUp.size; ii += 2){
-                                if(litUpItems[ii] <= idx && idx < litUpItems[ii + 1]) {
-                                    rect(x, liney, w, font.getLineHeight());
-                                }
+                        for (int c = 0; c < r.glyphs.size; c++) {
+                            idx++;
+                            if (((char)r.glyphs.get(c).id) == '[') { // When we reach "[" we need to skip anything that would be considered a color code.
+                                StringBuilder remainingGlyphs = new StringBuilder(r.glyphs.size - c - 1);
+                                for (int ch = c + 1; ch < r.glyphs.size; ch++) remainingGlyphs.append((char)r.glyphs.get(ch).id);
+                                idx -= Strings.parseColorMarkupPublic(remainingGlyphs.toString(), 0, remainingGlyphs.length());
                             }
+                            float w = r.xAdvances.get(c + 1);
+                            if (idx > hoveredButton.start && idx <= hoveredButton.end) rect(x, lineY, w, font.getLineHeight()); // Highlight this character
                             x += w;
+                            if (idx > hoveredButton.end - 1) break highlightButton; // We are done highlighting this button
                         }
                     }
                 }
-                Draw.color(co); // Reset color
             }
             Draw.color(shadowColor, shadowColor.a * opacity);
 
@@ -337,7 +383,7 @@ public class ChatFragment extends Table{
         }
 
         if (completion.any() && shown) {
-            float pos = Reflect.<FloatSeq>get(chatfield, "glyphPositions").peek() + chatfield.x;
+            float pos = Reflect.<FloatSeq>get(TextField.class, chatfield, "glyphPositions").peek() + chatfield.x;
             StringBuilder contents = new StringBuilder();
             int index = 0;
             for (Autocompleteable auto : completion) {
@@ -371,15 +417,31 @@ public class ChatFragment extends Table{
         Draw.color();
     }
 
+    //ping format: "x,y [text]"
+    public static void checkPing(String message){
+        if (message.startsWith("/") || message.startsWith(ClientVars.clientCommandHandler.prefix)) return;
+        var coords = NetClient.findCoords(message, true);
+        if (coords.size == 0) return;
+        var msg = new StringBuilder(message);
+        for (int i = coords.size - 1; i >= 0; i--) {
+            var c = coords.get(i);
+            msg.delete(c.start, c.end);
+            if (c.start > 0 && msg.length() > c.start && msg.charAt(c.start-1) == ' ' && msg.charAt(c.start) == ' ') msg.deleteCharAt(c.start); // Coords in the middle with a space on either side: delete one of the spaces
+            if (msg.length() > 0 && msg.charAt(0) == ' ') msg.deleteCharAt(0); // Make sure the message doesn't start with a space (coords were right at the start)
+            if (msg.length() > 0 && msg.charAt(msg.length() - 1) == ' ') msg.deleteCharAt(msg.length() - 1); // Make sure the message doesn't end with a space (coords were right at the end)
+        }
+        var c = coords.first().pos;
+        Call.pingLocation(player, c.x, c.y, msg.toString());
+    }
+
     private void sendMessage(){
         String message = chatfield.getText().trim();
-        // FINISHME: make it so you need to press enter twice to send a message starting with /e
         clearChatInput();
 
         //avoid sending prefix-empty messages
         if(message.isEmpty() || (message.startsWith(mode.prefix) && message.substring(mode.prefix.length()).isEmpty())) return;
 
-        history.insert(1, message.replaceFirst("^" + mode.normalizedPrefix(), ""));
+        if(history.size < 2 || !history.get(1).equals(message)) history.insert(1, message.replaceFirst("^" + mode.normalizedPrefix(), ""));
 
         // Allow sending commands with chat modes; "/t /help" becomes "/help", "/a !go" becomes "!go"
         for (ChatMode mode : ChatMode.all) {
@@ -389,7 +451,7 @@ public class ChatFragment extends Table{
         StringBuilder messageBuild = new StringBuilder(message);
 
         for (var entry : ClientVars.containsCommandHandler.entries()){ // s l o w
-            String prefix = entry.key;
+            var prefix = entry.key.toString();
             int pos = -1;
             while (true) {
                 pos = messageBuild.indexOf(prefix, pos + 1);
@@ -412,24 +474,252 @@ public class ChatFragment extends Table{
         }
         message = messageBuild.toString();
 
-        handleClientCommand(message);
+        checkPing(message);
+
+        int chatMode = Core.settings.getInt("uchatmode", 0);
+        boolean isCommand = message.startsWith("/") || message.startsWith("!");
+        if(chatMode > 0 && mode == ChatMode.normal && !isCommand){
+            message = applyChatStyle(message, chatMode);
+        }
+        if(message.length() > chatPacketLimit() || (chatMode > 0 && !isCommand)){
+            sendSmartMessage(message);
+        }else{
+            handleClientCommand(message);
+        }
+    }
+
+    /** Leave room for Foo's invisible message-id from {@code Main.sign}. */
+    static int chatPacketLimit(){
+        return Math.max(80, maxTextLength - 16);
+    }
+
+    static String hexRgb(Color c){
+        int r = Mathf.clamp((int)(c.r * 255f + 0.5f), 0, 255);
+        int g = Mathf.clamp((int)(c.g * 255f + 0.5f), 0, 255);
+        int b = Mathf.clamp((int)(c.b * 255f + 0.5f), 0, 255);
+        return String.format("%02x%02x%02x", r, g, b);
+    }
+
+    static Color colorFromSetting(String key, String def, Color out){
+        String u = Core.settings.getString(key, def);
+        if(u == null || u.isBlank()) u = def;
+        u = u.trim();
+        if(u.startsWith("#")) u = u.substring(1);
+        try{
+            out.set(Color.valueOf(u));
+        }catch(Exception e){
+            try{
+                out.set(Color.valueOf(def));
+            }catch(Exception ignored){
+                out.set(Pal.accent);
+            }
+        }
+        out.a = 1f;
+        return out;
+    }
+
+    private String applyChatStyle(String msg, int mode){
+        String raw = Strings.stripColors(msg);
+        if(raw.isEmpty()) return msg;
+
+        if(mode == 1){
+            Color c = colorFromSetting("uchatcolor", "ffd37f", Tmp.c1);
+            return "[#" + hexRgb(c) + "]" + raw;
+        }
+
+        int totalLen = raw.length();
+        int step = totalLen > 60 ? 3 : (totalLen > 20 ? 2 : 1);
+        StringBuilder res = new StringBuilder(totalLen * 8);
+        String lastHex = "";
+
+        Color start = Tmp.c2, end = Tmp.c3;
+        if(mode == 2){
+            colorFromSetting("uchatgrad1", "ffd37f", start);
+            colorFromSetting("uchatgrad2", "ffffff", end);
+        }
+
+        for(int i = 0; i < totalLen; i++){
+            char ch = raw.charAt(i);
+            if(ch != ' ' && !Character.isWhitespace(ch) && i % step == 0){
+                float progress = totalLen <= 1 ? 0f : (float)i / (totalLen - 1);
+                String hex;
+                if(mode == 2){
+                    hex = hexRgb(Tmp.c1.set(start).lerp(end, progress));
+                }else if(mode == 3){
+                    hex = hexRgb(Tmp.c1.fromHsv(progress * 360f, 0.85f, 1f).a(1f));
+                }else if(mode == 4){
+                    int s = Mathf.clamp((int)(progress * 9f), 0, 9);
+                    hex = "f" + s + s + "000";
+                }else{
+                    hex = null;
+                }
+                if(hex != null && !hex.equals(lastHex)){
+                    res.append("[#").append(hex).append(']');
+                    lastHex = hex;
+                }
+            }
+            res.append(ch);
+        }
+        return res.toString();
+    }
+
+    private void sendSmartMessage(String styled){
+        int limit = chatPacketLimit();
+        Seq<String> chunks = splitChatByWords(styled, limit);
+        if(chunks.isEmpty()){
+            if(styled.length() <= limit) handleClientCommand(styled);
+            return;
+        }
+        for(int i = 0; i < chunks.size; i++){
+            String toSend = chunks.get(i);
+            float delay = i * 1.1f;
+            if(i == 0) handleClientCommand(toSend);
+            else arc.util.Timer.schedule(() -> handleClientCommand(toSend), delay);
+        }
+    }
+
+    private static boolean isColorTag(String tag){
+        if(tag == null || tag.length() < 2) return false;
+        if(tag.equals("[]")) return true;
+        if(tag.startsWith("[#") && tag.endsWith("]")) return true;
+        return tag.charAt(0) == '[' && tag.charAt(tag.length() - 1) == ']' && tag.charAt(1) != '/' && !tag.contains("=") && tag.length() <= 20;
+    }
+
+    private static boolean startsWithColorTag(String s){
+        if(s == null || s.isEmpty() || s.charAt(0) != '[') return false;
+        int end = s.indexOf(']');
+        return end >= 2 && isColorTag(s.substring(0, end + 1));
+    }
+
+    private static boolean hasVisibleText(CharSequence s){
+        return !Strings.stripColors(s.toString()).isBlank();
+    }
+
+    /** Split a (possibly color-tagged) message on word boundaries so each packet fits {@code maxLen}. */
+    private static Seq<String> splitChatByWords(String styled, int maxLen){
+        Seq<String> chunks = new Seq<>();
+        if(styled == null || styled.isEmpty()) return chunks;
+        if(styled.length() <= maxLen){
+            chunks.add(styled);
+            return chunks;
+        }
+
+        Seq<String> words = new Seq<>();
+        Seq<String> colorBefore = new Seq<>();
+        String lastColor = "";
+        String colorAtWordStart = "";
+        StringBuilder word = new StringBuilder();
+        int i = 0, n = styled.length();
+        while(i < n){
+            char ch = styled.charAt(i);
+            if(ch == '['){
+                int end = styled.indexOf(']', i);
+                if(end != -1){
+                    String tag = styled.substring(i, end + 1);
+                    if(word.length() == 0 && isColorTag(tag)){
+                        colorAtWordStart = tag.equals("[]") ? "" : tag;
+                    }
+                    word.append(tag);
+                    if(isColorTag(tag)) lastColor = tag.equals("[]") ? "" : tag;
+                    i = end + 1;
+                    continue;
+                }
+            }
+            if(Character.isWhitespace(ch)){
+                if(word.length() > 0){
+                    words.add(word.toString());
+                    colorBefore.add(colorAtWordStart);
+                    word.setLength(0);
+                }
+                colorAtWordStart = lastColor;
+                i++;
+                continue;
+            }
+            if(word.length() == 0) colorAtWordStart = lastColor;
+            word.append(ch);
+            i++;
+        }
+        if(word.length() > 0){
+            words.add(word.toString());
+            colorBefore.add(colorAtWordStart);
+        }
+
+        StringBuilder current = new StringBuilder();
+        boolean needSpace = false;
+        for(int w = 0; w < words.size; w++){
+            String piece = words.get(w);
+            String before = colorBefore.get(w);
+            if(!before.isEmpty() && !startsWithColorTag(piece)) piece = before + piece;
+            int extra = needSpace ? 1 : 0;
+            if(current.length() + extra + piece.length() <= maxLen){
+                if(needSpace) current.append(' ');
+                current.append(piece);
+                needSpace = true;
+                continue;
+            }
+            if(hasVisibleText(current)){
+                chunks.add(current.toString());
+                current.setLength(0);
+                needSpace = false;
+            }
+            if(piece.length() <= maxLen){
+                current.append(piece);
+                needSpace = true;
+            }else{
+                String prefix = before;
+                int pos = 0;
+                while(pos < piece.length()){
+                    if(current.length() == 0 && !prefix.isEmpty() && !startsWithColorTag(piece.substring(pos))){
+                        current.append(prefix);
+                    }
+                    if(piece.charAt(pos) == '['){
+                        int end = piece.indexOf(']', pos);
+                        if(end != -1){
+                            String tag = piece.substring(pos, end + 1);
+                            if(current.length() + tag.length() > maxLen && hasVisibleText(current)){
+                                chunks.add(current.toString());
+                                current.setLength(0);
+                                if(!prefix.isEmpty()) current.append(prefix);
+                            }
+                            current.append(tag);
+                            if(isColorTag(tag)) prefix = tag.equals("[]") ? "" : tag;
+                            pos = end + 1;
+                            continue;
+                        }
+                    }
+                    if(current.length() + 1 > maxLen && hasVisibleText(current)){
+                        chunks.add(current.toString());
+                        current.setLength(0);
+                        if(!prefix.isEmpty()) current.append(prefix);
+                    }
+                    current.append(piece.charAt(pos));
+                    pos++;
+                }
+                needSpace = true;
+            }
+        }
+        if(hasVisibleText(current)) chunks.add(current.toString());
+        return chunks;
     }
 
     public static CommandHandler.CommandResponse handleClientCommand(String message){
         return handleClientCommand(message, true);
     }
 
+    /** If send is false, only commands will be sent to the server */
     public static CommandHandler.CommandResponse handleClientCommand(String message, boolean send){
         //check if it's a command
         CommandHandler.CommandResponse response = ClientVars.clientCommandHandler.handleMessage(message, player);
         if(response.type == CommandHandler.ResponseType.noCommand){ //no command to handle
             String msg = Main.INSTANCE.sign(message);
             Events.fire(new ClientChatEvent(message));
-            if (send) Call.sendChatMessage(msg);
-            if (message.startsWith(netServer.clientCommands.getPrefix() + "sync")) { // /sync
-                ClientVars.syncing = true;
+            var prefix = netServer.clientCommands.getPrefix();
+            if(send || message.startsWith(prefix)){
+                Call.sendChatMessage(msg);
             }
-            if (!message.startsWith(netServer.clientCommands.getPrefix())) { // Only fire when not running any command
+            if(message.startsWith(prefix + "sync")){ // /sync
+                ClientVars.syncing = true;
+            }else if (!message.startsWith(prefix)){ // Only fire when not running any command
                 Events.fire(new EventType.SendChatMessageEvent(msg));
             }
         }else{
@@ -500,15 +790,20 @@ public class ChatFragment extends Table{
     }
 
     public void hide(){
+        hide(true);
+    }
+
+    public void hide(boolean clearInput){
         scene.setKeyboardFocus(null);
         shown = false;
         UploadDialog.INSTANCE.clearImages();
-        clearChatInput();
+        if(clearInput) clearChatInput();
     }
 
     public void updateChat(){
-        chatfield.setMaxLength(history.get(historyPos).startsWith("!js ") ? 0 : maxTextLength - 2);
-        chatfield.setText(mode.normalizedPrefix() + history.get(historyPos));
+        String text = mode.normalizedPrefix() + history.get(historyPos);
+        updateMaxLength(text);
+        chatfield.setText(text);
         updateCursor();
     }
 
@@ -582,12 +877,6 @@ public class ChatFragment extends Table{
         addMsg(message);
     }
 
-    /** @deprecated Kept for mod compatibility */
-    @Deprecated
-    public void addMessage(String ignored, String message){
-        addMessage(message, null, null, "", message);
-    }
-
     public void doFade(float seconds){
         fadetime += seconds/3; // Seconds/3 since this is scaled by 3 anyways fadetime -= Time.delta / 180f;
         fadetime = Math.min(fadetime, messagesShown);
@@ -595,24 +884,24 @@ public class ChatFragment extends Table{
 
     public static class ClickableArea {
         public int start, end;
-        public Runnable lambda;
+        public Runnable clicked;
 
-        public ClickableArea(int start, int end, Runnable lambda) {
+        public ClickableArea(int start, int end, Runnable clicked) {
             this.start = start;
             this.end = end;
-            this.lambda = lambda;
+            this.clicked = clicked;
         }
     }
 
     public static class ChatMessage{
         /** The sender (i.e. "bar") */
-        public String sender;
+        @Nullable public String sender;
         /** The full formatted message **as sent by the server** (i.e. "[bar]: hello", but with color tags) */
-        public String message;
+        @Nullable public String message;
         /** The message as reformatted by the client (i.e. "(checkmark) [bar]: hello" but with color tags */
         public String formattedMessage = "";
         /** The background color of the message. */
-        public Color backgroundColor;
+        @Nullable public Color backgroundColor;
         /** The prefix of the message, as added by the client.  This is usually an icon, such as a wrench or checkmark. */
         public String prefix;
         /** The content of the message (i.e. "gg") */
@@ -620,6 +909,9 @@ public class ChatFragment extends Table{
         @Nullable public Seq<Texture> attachments = new Seq<>(0); // This seq is deleted after 100 new messages to save ram
         public float start, height;
         @Nullable public Seq<ClickableArea> buttons = new Seq<>(0); // This seq is deleted after 100 new messages to save ram
+
+        /** The real time at which the message was received */
+        public long receivedAt = Time.millis();
 
         /**
          * Creates a new ChatMessage.
@@ -638,17 +930,62 @@ public class ChatFragment extends Table{
             format(false);
         }
 
-        public ChatMessage addButton(int start, int end, Runnable lambda) {
+        public ChatMessage addButton(int start, int end, Runnable clicked) {
+            String stripped = Strings.stripColors(formattedMessage);
+            int len = stripped.length();
+
+            start -= newlineOffset(stripped, start);
+            end -= newlineOffset(stripped, end);
+
+            if (start < 0 || end > len || start > end) {
+                Log.warn("Trying to add button to @ at indices @ to @; this is invalid!", stripped, start, end);
+                return this;
+            }
+
             if (buttons != null) {
-                buttons.add(new ClickableArea(start, end, lambda));
+                start += bracketOffset(formattedMessage, start);
+                end += bracketOffset(formattedMessage, end);
+                buttons.add(new ClickableArea(start, end, clicked));
                 buttons.shrink();
             }
+
             return this;
         }
 
-        public ChatMessage addButton(String text, Runnable lambda) {
-            int i = formattedMessage.indexOf(text);
-            return addButton(i, i + text.length(), lambda);
+        public ChatMessage addButton(String text, Runnable clicked) {
+            var stripped = Strings.stripColors(text);
+            int i = Strings.stripColors(formattedMessage).indexOf(stripped);
+            return i < 0 ? this : addButton(i, i + stripped.length(), clicked);
+        }
+
+        /** Count how many newlines occur before the target. */
+        private int newlineOffset(String text, int target) { // FINISHME: Turn run.continuation into an int and just set it to -1 for \n wraps instead of parsing them here?
+            int newlines = 0, nonNewlines = 0;
+
+            for (int i = 0; i < text.length(); i++) {
+                if (nonNewlines == target) break; // Enough good characters
+
+                if (text.charAt(i) == '\n') newlines++; // Newline: increase offset
+                else nonNewlines++; // Normal character: increase normal character count
+            }
+            return newlines;
+        }
+
+        /** We have to work around "[[" by offsetting by 1 for each pair of them as they are transformed to "[" in the message. */
+        private int bracketOffset(String text, int end) {
+            int offset = 0;
+            end = Math.min(end, text.length()); // Make sure it's capped by text length
+
+            for (int i = 0; i < end; i++) {
+                if (text.charAt(i) == '[') {
+                    int first = i;
+
+                    while (i + 1 < end && text.charAt(i + 1) == '[') i++; // Count consecutive [
+                    int consecutiveBrackets = i - first + 1;
+                    if (consecutiveBrackets % 2 == 0) offset += consecutiveBrackets / 2; // Only add the offset if there's an even number of brackets; otherwise they are used in formatting.
+                }
+            }
+            return offset;
         }
 
         public ChatMessage clearButtons() {
@@ -657,16 +994,15 @@ public class ChatFragment extends Table{
         }
 
         private void format(boolean moveButtons) {
-            int initial = formattedMessage.length();
+            int initial = Strings.stripColors(formattedMessage).length();
             if(sender == null){ //no sender, this is a server message?
                 formattedMessage = prefix + (message == null ? "" : message);
             } else {
-                if (Server.darkdustry.b()) formattedMessage = prefix + message; // Hack to allow darkdustry translation as they don't change sender
-                else formattedMessage = prefix + "[coral][[[white]" + sender + "[coral]]:[white] " + unformatted;
+                formattedMessage = prefix + message;
             }
-            int shift = formattedMessage.length() - initial;
             if (moveButtons && buttons != null) {
-                for (var b : buttons) {
+                int shift = Strings.stripColors(formattedMessage).length() - initial;
+                for (var b : buttons) { // FINISHME: Store original button texts, reformat message, adjust start, end as needed.
                     b.start += shift;
                     b.end += shift;
                 }
@@ -681,7 +1017,8 @@ public class ChatFragment extends Table{
     private enum ChatMode{
         normal(""),
         team("/t"),
-        admin("/a", player::admin),
+        // set disableadminchatifsolo to true if you want to hide admin chat as a solo admin.
+        admin("/a", () -> (Server.current.adminui()) && (!settings.getBool("disableadminchatifsolo") || Groups.player.count(p -> p.admin) > 1)),
         staff("/s", () -> Server.fish.b() && settings.getBool("fish-staff", false)),
         client("!c");
 
@@ -700,7 +1037,7 @@ public class ChatFragment extends Table{
         }
 
         public ChatMode next(){
-            return all[(ordinal() + 1) % all.length];
+            return all[(ordinal() + all.length + (input.ctrl() ? -1 : 1)) % all.length]; // ctrl to cycle backwards (we cant use shift as steam exists)
         }
 
         public String normalizedPrefix(){

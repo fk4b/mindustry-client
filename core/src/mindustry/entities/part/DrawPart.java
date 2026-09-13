@@ -18,7 +18,7 @@ public abstract class DrawPart{
     public int recoilIndex = -1;
 
     public abstract void draw(PartParams params);
-    public abstract void load(String name);
+    public void load(String name){}
     public void getOutlines(Seq<TextureRegion> out){}
 
     /** Parameters for drawing a part in draw(). */
@@ -85,7 +85,9 @@ public abstract class DrawPart{
         /** Weapon heat, 1 when just fired, 0, when it has cooled down (duration depends on weapon) */
         heat = p -> p.heat,
         /** Lifetime fraction, 0 to 1. Only for missiles. */
-        life = p -> p.life;
+        life = p -> p.life,
+        /** Current unscaled value of Time.time. */
+        time = p -> Time.time;
 
         float get(PartParams p);
 
@@ -94,90 +96,190 @@ public abstract class DrawPart{
         }
 
         default float getClamp(PartParams p){
-            return Mathf.clamp(get(p));
+            return getClamp(p, true);
+        }
+
+        default float getClamp(PartParams p, boolean clamp){
+            return clamp ? Mathf.clamp(get(p)) : get(p);
         }
 
         default PartProgress inv(){
-            return p -> 1f - get(p);
+            return CompatFix.inv(this);
         }
 
         default PartProgress slope(){
-            return p -> Mathf.slope(get(p));
+            return CompatFix.slope(this);
         }
 
         default PartProgress clamp(){
-            return p -> Mathf.clamp(get(p));
+            return CompatFix.clamp(this);
         }
 
         default PartProgress add(float amount){
-            return p -> get(p) + amount;
+            return CompatFix.add(this, amount);
         }
 
         default PartProgress add(PartProgress other){
-            return p -> get(p) + other.get(p);
+            return CompatFix.add(this, other);
         }
 
         default PartProgress delay(float amount){
-            return p -> (get(p) - amount) / (1f - amount);
+            return CompatFix.delay(this, amount);
         }
 
         default PartProgress curve(float offset, float duration){
-            return p -> (get(p) - offset) / duration;
+            return CompatFix.curve(this, offset, duration);
         }
 
         default PartProgress sustain(float offset, float grow, float sustain){
-            return p -> {
-                float val = get(p) - offset;
-                return Math.min(Math.max(val, 0f) / grow, (grow + sustain + grow - val) / grow);
-            };
+            return CompatFix.sustain(this, offset, grow, sustain);
         }
 
         default PartProgress shorten(float amount){
-            return p -> get(p) / (1f - amount);
+            return CompatFix.shorten(this, amount);
         }
 
         default PartProgress compress(float start, float end){
-            return p -> Mathf.curve(get(p), start, end);
+            return CompatFix.compress(this, start, end);
         }
 
         default PartProgress blend(PartProgress other, float amount){
-            return p -> Mathf.lerp(get(p), other.get(p), amount);
+            return CompatFix.blend(this, other, amount);
         }
 
         default PartProgress mul(PartProgress other){
-            return p -> get(p) * other.get(p);
+            return CompatFix.mul(this, other);
         }
 
         default PartProgress mul(float amount){
-            return p -> get(p) * amount;
+            return CompatFix.mul(this, amount);
         }
 
         default PartProgress min(PartProgress other){
-            return p -> Math.min(get(p), other.get(p));
+            return CompatFix.min(this, other);
         }
 
         default PartProgress sin(float offset, float scl, float mag){
-            return p -> get(p) + Mathf.sin(Time.time + offset, scl, mag);
+            return CompatFix.sin(this, offset, scl, mag);
         }
 
         default PartProgress sin(float scl, float mag){
-            return p -> get(p) + Mathf.sin(scl, mag);
+            return CompatFix.sin(this, scl, mag);
         }
 
         default PartProgress absin(float scl, float mag){
-            return p -> get(p) + Mathf.absin(scl, mag);
+            return CompatFix.absin(this, scl, mag);
+        }
+
+        default PartProgress mod(float amount){
+            return CompatFix.mod(this, amount);
+        }
+
+        default PartProgress loop(float time){
+            return CompatFix.loop(this, time);
         }
 
         default PartProgress apply(PartProgress other, PartFunc func){
-            return p -> func.get(get(p), other.get(p));
+            return CompatFix.apply(this, other, func);
         }
 
         default PartProgress curve(Interp interp){
-            return p -> interp.apply(get(p));
+            return CompatFix.curve(this, interp);
         }
     }
 
     public interface PartFunc{
         float get(float a, float b);
+    }
+
+    /** RoboVM chokes on lambdas referencing self in default methods in interfaces, so they have to be moved into a separate class. */
+    private static class CompatFix{
+
+        static PartProgress inv(PartProgress self){
+            return p -> 1f - self.get(p);
+        }
+
+        static PartProgress slope(PartProgress self){
+            return p -> Mathf.slope(self.get(p));
+        }
+
+        static PartProgress clamp(PartProgress self){
+            return p -> Mathf.clamp(self.get(p));
+        }
+
+        static PartProgress add(PartProgress self, float amount){
+            return p -> self.get(p) + amount;
+        }
+
+        static PartProgress add(PartProgress self, PartProgress other){
+            return p -> self.get(p) + other.get(p);
+        }
+
+        static PartProgress delay(PartProgress self, float amount){
+            return p -> (self.get(p) - amount) / (1f - amount);
+        }
+
+        static PartProgress curve(PartProgress self, float offset, float duration){
+            return p -> (self.get(p) - offset) / duration;
+        }
+
+        static PartProgress sustain(PartProgress self, float offset, float grow, float sustain){
+            return p -> {
+                float val = self.get(p) - offset;
+                return Math.min(Math.max(val, 0f) / grow, (grow + sustain + grow - val) / grow);
+            };
+        }
+
+        static PartProgress shorten(PartProgress self, float amount){
+            return p -> self.get(p) / (1f - amount);
+        }
+
+        static PartProgress compress(PartProgress self, float start, float end){
+            return p -> Mathf.curve(self.get(p), start, end);
+        }
+
+        static PartProgress blend(PartProgress self, PartProgress other, float amount){
+            return p -> Mathf.lerp(self.get(p), other.get(p), amount);
+        }
+
+        static PartProgress mul(PartProgress self, PartProgress other){
+            return p -> self.get(p) * other.get(p);
+        }
+
+        static PartProgress mul(PartProgress self, float amount){
+            return p -> self.get(p) * amount;
+        }
+
+        static PartProgress min(PartProgress self, PartProgress other){
+            return p -> Math.min(self.get(p), other.get(p));
+        }
+
+        static PartProgress sin(PartProgress self, float offset, float scl, float mag){
+            return p -> self.get(p) + Mathf.sin(Time.time + offset, scl, mag);
+        }
+
+        static PartProgress sin(PartProgress self, float scl, float mag){
+            return p -> self.get(p) + Mathf.sin(scl, mag);
+        }
+
+        static PartProgress absin(PartProgress self, float scl, float mag){
+            return p -> self.get(p) + Mathf.absin(scl, mag);
+        }
+
+        static PartProgress mod(PartProgress self, float amount){
+            return p -> Mathf.mod(self.get(p), amount);
+        }
+
+        static PartProgress loop(PartProgress self, float time){
+            return p -> Mathf.mod(self.get(p)/time, 1);
+        }
+
+        static PartProgress apply(PartProgress self, PartProgress other, PartFunc func){
+            return p -> func.get(self.get(p), other.get(p));
+        }
+
+        static PartProgress curve(PartProgress self, Interp interp){
+            return p -> interp.apply(self.get(p));
+        }
     }
 }

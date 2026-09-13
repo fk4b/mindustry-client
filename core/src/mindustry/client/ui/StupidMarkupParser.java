@@ -40,7 +40,7 @@ public class StupidMarkupParser {
             }
         }
         Table table = new Table().margin(10);
-        elements.forEach(e -> table.add(e).left().growX().wrap().getTable().row());
+        elements.each(e -> table.add(e).left().growX().wrap().getTable().row());
         return table;
     }
 }

@@ -1,13 +1,15 @@
 package mindustry.client.communication
 
 import arc.*
-import arc.files.Fi
+import arc.files.*
+import arc.graphics.*
 import arc.scene.ui.*
-import arc.scene.ui.layout.Scl
+import arc.scene.ui.layout.*
 import mindustry.Vars.*
+import mindustry.client.utils.*
 import mindustry.game.*
 import mindustry.gen.*
-import mindustry.ui.fragments.ChatFragment.ChatMessage
+import mindustry.ui.fragments.ChatFragment.*
 import java.io.*
 import kotlin.random.*
 
@@ -42,17 +44,18 @@ class SchematicTransmission : Transmission {
 
     fun addToChat() {
         val message: ChatMessage = ui.chatfrag.addMsg(
-            Core.bundle.format("schematic.chatsharemessage", Groups.player.getByID(this.senderID).name)
+            Core.bundle.format("client.schematic.chatsharemessage", Groups.player.getByID(this.senderID).name)
         )
 
-        message.addButton(0, message.message.length) {
+        message.backgroundColor = Color.darkGray.cpy()
+        message.addButton(0, message.formattedMessage.stripColors().length) {
             //Parse the schematic
             this.schematic = Schematics.read(ByteArrayInputStream(bytes))
             val inSchematics = senderID == player.id || schematics.all().contains(schematic) // FINISHME: The communication ID might not be player id
             if (!inSchematics) {
                 // This is incredibly cursed, if anyone has a better way please suggest
                 // Basically we create a temporary file because the schematics code expects every schematic to be linked to a file
-                    // (in particular, a change in tags will immediately be written to file)
+                // (in particular, a change in tags will immediately be written to file)
                 // but sometimes we just want to not save the schematic in file, so we use a temp file
                 if (tempFile === null) {
                     tempFile = Fi.tempFile("clientcomm_msch")

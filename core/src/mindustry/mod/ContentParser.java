@@ -1,8 +1,6 @@
 package mindustry.mod;
 
 import arc.*;
-import arc.assets.*;
-import arc.assets.loaders.SoundLoader.*;
 import arc.audio.*;
 import arc.files.*;
 import arc.func.*;
@@ -10,6 +8,7 @@ import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.math.geom.*;
+import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import arc.util.serialization.*;
@@ -29,6 +28,7 @@ import mindustry.entities.effect.*;
 import mindustry.entities.part.*;
 import mindustry.entities.part.DrawPart.*;
 import mindustry.entities.pattern.*;
+import mindustry.entities.units.*;
 import mindustry.game.*;
 import mindustry.game.Objectives.*;
 import mindustry.gen.*;
@@ -40,9 +40,9 @@ import mindustry.maps.generators.*;
 import mindustry.maps.planet.*;
 import mindustry.mod.Mods.*;
 import mindustry.type.*;
-import mindustry.type.ammo.*;
 import mindustry.type.weather.*;
 import mindustry.world.*;
+import mindustry.world.blocks.*;
 import mindustry.world.blocks.units.*;
 import mindustry.world.blocks.units.UnitFactory.*;
 import mindustry.world.consumers.*;
@@ -56,10 +56,17 @@ import static mindustry.Vars.*;
 @SuppressWarnings("unchecked")
 public class ContentParser{
     private static final boolean ignoreUnknownFields = true;
+    private static final ContentType[] typesToSearch = {ContentType.block, ContentType.item, ContentType.unit, ContentType.liquid, ContentType.planet};
+    static final ObjectSet<Class<?>> implicitNullable = ObjectSet.with(TextureRegion.class, TextureRegion[].class, TextureRegion[][].class, TextureRegion[][][].class);
+
     ObjectMap<Class<?>, ContentType> contentTypes = new ObjectMap<>();
-    ObjectSet<Class<?>> implicitNullable = ObjectSet.with(TextureRegion.class, TextureRegion[].class, TextureRegion[][].class, TextureRegion[][][].class);
-    ObjectMap<String, AssetDescriptor<?>> sounds = new ObjectMap<>();
     Seq<ParseListener> listeners = new Seq<>();
+    /** If false, arbitrary class names cannot be resolved with Class.forName. */
+    boolean allowClassResolution = true;
+    /** If false, sound asset loading is disabled. */
+    boolean allowAssetLoading = true;
+    /** If false, vanilla content cannot be edited. */
+    boolean allowPatching = true;
 
     ObjectMap<Class<?>, FieldParser> classParsers = new ObjectMap<>(){{
         put(Effect.class, (type, data) -> {
@@ -84,6 +91,17 @@ public class ContentParser{
             if(Attribute.exists(attr)) return Attribute.get(attr);
             return Attribute.add(attr);
         });
+        put(Attributes.class, (type, data) -> {
+            if(!data.isObject()){
+                throw new IllegalArgumentException("Attribute definitions must be objects, e.g. {heat: 10}");
+            }
+            Attributes attr = new Attributes();
+            for(var child : data){
+                Attribute value = Attribute.exists(child.name) ? Attribute.get(child.name) : Attribute.add(child.name);
+                attr.set(value, child.asFloat());
+            }
+            return attr;
+        });
         put(BuildVisibility.class, (type, data) -> field(BuildVisibility.class, data));
         put(Schematic.class, (type, data) -> {
             Object result = fieldOpt(Loadouts.class, data);
@@ -98,21 +116,45 @@ public class ContentParser{
                 }
             }
         });
-        put(Color.class, (type, data) -> Color.valueOf(data.asString()));
+        put(TextureRegion.class, (type, data) -> {
+            if(Core.atlas == null) return null;
+            String str = data.asString();
+            if(str.startsWith("icon-")){
+                var icon = Icon.icons.get(str.substring("icon-".length()));
+                if(icon != null){
+                    icon.getRegion().scale = 1f / Scl.scl(1f);
+                    return icon.getRegion();
+                }
+            }
+            TextureRegion result = Core.atlas.find(str);
+            if(!result.found()){
+                warn("Sprite not found: '" + str + "'");
+            }
+            return result;
+        });
+        put(Color.class, (type, data) -> {
+            if(data.isNumber()){
+                int len =  data.asString().length();
+                if(len != 6 && len != 8){
+                    warn("@Colors should strings, not numbers. Make sure you have quotes around the value, or they will not be parsed correctly: '@'", currentContent == null ? "" : "[" + currentContent.minfo.sourceFile.name() + "]: ", data);
+                }
+            }
+            return Color.valueOf(data.asString());
+        });
         put(StatusEffect.class, (type, data) -> {
             if(data.isString()){
                 StatusEffect result = locate(ContentType.status, data.asString());
                 if(result != null) return result;
                 throw new IllegalArgumentException("Unknown status effect: '" + data.asString() + "'");
             }
-            StatusEffect effect = new StatusEffect(currentMod.name + "-" + data.getString("name"));
+            StatusEffect effect = new StatusEffect((currentMod == null ? null : currentMod.name + "-") + data.getString("name"));
             effect.minfo.mod = currentMod;
             readFields(effect, data);
             return effect;
         });
         put(UnitCommand.class, (type, data) -> {
             if(data.isString()){
-               var cmd = UnitCommand.all.find(u -> u.name.equals(data.asString()));
+               var cmd = content.unitCommand(data.asString());
                if(cmd != null){
                    return cmd;
                }else{
@@ -122,26 +164,34 @@ public class ContentParser{
                 throw new IllegalArgumentException("Unit commands must be strings.");
             }
         });
+        put(UnitStance.class, (type, data) -> {
+            if(data.isString()){
+                var cmd = content.unitStance(data.asString());
+                if(cmd != null){
+                    return cmd;
+                }else{
+                    throw new IllegalArgumentException("Unknown unit stance name: " + data.asString());
+                }
+            }else{
+                throw new IllegalArgumentException("Unit stances must be strings.");
+            }
+        });
         put(BulletType.class, (type, data) -> {
             if(data.isString()){
                 return field(Bullets.class, data);
+            }else if(data.isArray()){
+                return new MultiBulletType(parser.readValue(BulletType[].class, data));
             }
-            Class<?> bc = resolve(data.getString("type", ""), BasicBulletType.class);
+            Class<?> alternate = resolve(Strings.capitalize(data.getString("type", "basic")) + "BulletType", Object.class, false);
+            Class<?> bc = alternate == Object.class ? resolve(data.getString("type", ""), BasicBulletType.class) : alternate;
             data.remove("type");
             BulletType result = (BulletType)make(bc);
+            result.minfo.mod = currentMod;
             readFields(result, data);
             return result;
         });
-        put(AmmoType.class, (type, data) -> {
-            //string -> item
-            //if liquid ammo support is added, this should scan for liquids as well
-            if(data.isString()) return new ItemAmmoType(find(ContentType.item, data.asString()));
-            //number -> power
-            if(data.isNumber()) return new PowerAmmoType(data.asFloat());
-
-            var bc = resolve(data.getString("type", ""), ItemAmmoType.class);
-            data.remove("type");
-            AmmoType result = make(bc);
+        put(MassDriverBolt.class, (type, data) -> {
+            MassDriverBolt result = make(MassDriverBolt.class);
             readFields(result, data);
             return result;
         });
@@ -174,7 +224,6 @@ public class ContentParser{
             readFields(result, data);
             return result;
         });
-        //TODO this is untested
         put(PartProgress.class, (type, data) -> {
             //simple case: it's a string or number constant
             if(data.isString()) return field(PartProgress.class, data.asString());
@@ -220,7 +269,9 @@ public class ContentParser{
         });
         put(PlanetGenerator.class, (type, data) -> {
             var result = new AsteroidGenerator(); //only one type for now
-            readFields(result, data);
+            if(data.isObject()){
+                readFields(result, data);
+            }
             return result;
         });
         put(Mat3D.class, (type, data) -> {
@@ -257,18 +308,37 @@ public class ContentParser{
             return new Vec3(data.getFloat("x", 0f), data.getFloat("y", 0f), data.getFloat("z", 0f));
         });
         put(Sound.class, (type, data) -> {
-            if(fieldOpt(Sounds.class, data) != null) return fieldOpt(Sounds.class, data);
-            if(Vars.headless) return new Sound();
+            if(data.isArray()) return new RandomSound(parser.readValue(Sound[].class, data));
 
-            String name = "sounds/" + data.asString();
-            String path = Vars.tree.get(name + ".ogg").exists() ? name + ".ogg" : name + ".mp3";
+            if(headless) return Sounds.none; //no reason to fetch on a server
 
-            if(sounds.containsKey(path)) return ((SoundParameter)sounds.get(path).params).sound;
-            var sound = new Sound();
-            AssetDescriptor<?> desc = Core.assets.load(path, Sound.class, new SoundParameter(sound));
-            desc.errored = Throwable::printStackTrace;
-            sounds.put(path, desc);
-            return sound;
+            var field = fieldOpt(Sounds.class, data);
+            //try grabbing it from the asset manager directly (relevant for data patches)
+            if(field == null) field = Core.assets.getOrNull(data.asString() + ".ogg", Sound.class);
+            if(field == null) field = Core.assets.getOrNull(data.asString() + ".mp3", Sound.class);
+            if(field == null) field = Core.assets.getOrNull(data.asString(), Sound.class);
+
+            if(!allowAssetLoading && field == null){
+                warn("Sound not found: @", data.asString());
+                return Sounds.none;
+            }
+            return field != null ? field : Vars.tree.loadSound(data.asString());
+        });
+        put(Music.class, (type, data) -> {
+            var field = fieldOpt(Musics.class, data);
+
+            if(headless) return new Music(); //no reason to fetch on a server
+
+            //try grabbing it from the asset manager directly (relevant for data patches)
+            if(field == null) field = Core.assets.getOrNull(data.asString() + ".ogg", Music.class);
+            if(field == null) field = Core.assets.getOrNull(data.asString() + ".mp3", Music.class);
+            if(field == null) field = Core.assets.getOrNull(data.asString(), Music.class);
+
+            if(!allowAssetLoading && field == null){
+                warn("Music not found: @", data.asString());
+                return new Music();
+            }
+            return field != null ? field : Vars.tree.loadMusic(data.asString());
         });
         put(Objectives.Objective.class, (type, data) -> {
             if(data.isString()){
@@ -294,7 +364,9 @@ public class ContentParser{
             data.remove("type");
             var weapon = make(oc);
             readFields(weapon, data);
-            weapon.name = currentMod.name + "-" + weapon.name;
+            if(currentMod != null){
+                weapon.name = currentMod.name + "-" + weapon.name;
+            }
             return weapon;
         });
         put(Consume.class, (type, data) -> {
@@ -311,6 +383,20 @@ public class ContentParser{
             readFields(consume, data);
             return consume;
         });
+        put(Team.class, (type, data) -> {
+            if(data.isString()){
+                Team out = Structs.find(Team.baseTeams, t -> t.name.equals(data.asString()));
+                if(out == null) throw new IllegalArgumentException("Unknown team: " + data.asString());
+                return out;
+            }else if(data.isNumber()){
+                if(data.asInt() >= Team.all.length || data.asInt() < 0){
+                    throw new IllegalArgumentException("Unknown team: " + data.asString());
+                }
+                return Team.get(data.asInt());
+            }else{
+                throw new IllegalArgumentException("Unknown team: " + data.asString() + ". Team must either be a string or a number.");
+            }
+        });
     }};
     /** Stores things that need to be parsed fully, e.g. reading fields of content.
      * This is done to accommodate binding of content names first.*/
@@ -318,16 +404,35 @@ public class ContentParser{
     private Seq<Runnable> postreads = new Seq<>();
     private ObjectSet<Object> toBeParsed = new ObjectSet<>();
 
-    LoadedMod currentMod;
-    Content currentContent;
+    @Nullable LoadedMod currentMod;
+    @Nullable Content currentContent;
+    @Nullable Fi currentFile;
 
     private Json parser = new Json(){
+        @Override
+        protected <T> Class<T> resolveClass(String className){
+            if(allowClassResolution){
+                return super.resolveClass(className);
+            }else{
+                throw new SerializationException("Resolving arbitrary classes (" + className + ") is not allowed. Use short names for classes only (without the package prefix).");
+            }
+        }
+
+        @Override
+        protected Object newInstance(Class type){
+            Object o = super.newInstance(type);
+            onNewInstance(o, type);
+            return o;
+        }
+
         @Override
         public <T> T readValue(Class<T> type, Class elementType, JsonValue jsonData, Class keyType){
             T t = internalRead(type, elementType, jsonData, keyType);
             if(t != null && !Reflect.isWrapper(t.getClass()) && (type == null || !type.isPrimitive())){
                 checkNullFields(t);
-                listeners.each(hook -> hook.parsed(type, jsonData, t));
+                if(jsonData.isObject()){
+                    listeners.each(hook -> hook.parsed(type, jsonData, t));
+                }
             }
             return t;
         }
@@ -338,6 +443,9 @@ public class ContentParser{
                     try{
                         return (T)classParsers.get(type).parse(type, jsonData);
                     }catch(Exception e){
+                        if(e instanceof RuntimeException rt){
+                            throw rt;
+                        }
                         throw new RuntimeException(e);
                     }
                 }
@@ -385,6 +493,17 @@ public class ContentParser{
                     return (T)new Rect(jsonData.get(0).asFloat(), jsonData.get(1).asFloat(), jsonData.get(2).asFloat(), jsonData.get(3).asFloat());
                 }
 
+                //search across different content types to find one by name
+                if(type == UnlockableContent.class){
+                    for(ContentType c : typesToSearch){
+                        T found = (T)locate(c, jsonData.asString());
+                        if(found != null){
+                            return found;
+                        }
+                    }
+                    throw new IllegalArgumentException("\"" + jsonData.name + "\": No content found with name '" + jsonData.asString() + "'.");
+                }
+
                 if(Content.class.isAssignableFrom(type)){
                     ContentType ctype = contentTypes.getThrow(type, () -> new IllegalArgumentException("No content type for class: " + type.getSimpleName()));
                     String prefix = currentMod != null ? currentMod.name + "-" : "";
@@ -393,7 +512,7 @@ public class ContentParser{
                     T two = (T)Vars.content.getByName(ctype, jsonData.asString());
 
                     if(two != null) return two;
-                    throw new IllegalArgumentException("\"" + jsonData.name + "\": No " + ctype + " found with name '" + jsonData.asString() + "'.\nMake sure '" + jsonData.asString() + "' is spelled correctly, and that it really exists!\nThis may also occur because its file failed to parse.");
+                    throw new IllegalArgumentException((jsonData.name == null ? "" : "\"" + jsonData.name + "\": ") + "No " + ctype + " found with name '" + jsonData.asString() + "'.\nMake sure '" + jsonData.asString() + "' is spelled correctly, and that it really exists!\nThis may also occur because its file failed to parse.");
                 }
             }
 
@@ -401,55 +520,82 @@ public class ContentParser{
         }
     };
 
+    public void readBlockConsumers(Block block, JsonValue value){
+        for(JsonValue child : value){
+            switch(child.name){
+                case "remove" -> {
+                    String[] values = child.isString() ? new String[]{child.asString()} : child.asStringArray();
+                    for(String type : values){
+                        if(type.equals("all")){
+                            block.removeConsumers(b -> true);
+                        }else{
+                            Class<?> consumeType = resolve("Consume" + Strings.capitalize(type), Consume.class);
+                            if(consumeType != Consume.class){
+                                block.removeConsumers(b -> consumeType.isAssignableFrom(b.getClass()));
+                            }else{
+                                warn("Unknown consumer type '@' (Class: @) in consume: remove.", type, "Consume" + Strings.capitalize(type));
+                            }
+                        }
+                    }
+                }
+                case "item" -> block.consumeItem(find(ContentType.item, child.asString()));
+                case "itemCharged" -> block.consume((Consume)parser.readValue(ConsumeItemCharged.class, child));
+                case "itemFlammable" -> block.consume((Consume)parser.readValue(ConsumeItemFlammable.class, child));
+                case "itemRadioactive" -> block.consume((Consume)parser.readValue(ConsumeItemRadioactive.class, child));
+                case "itemExplosive" -> block.consume((Consume)parser.readValue(ConsumeItemExplosive.class, child));
+                case "itemList" -> block.consume((Consume)parser.readValue(ConsumeItemList.class, child));
+                case "itemExplode" -> block.consume((Consume)parser.readValue(ConsumeItemExplode.class, child));
+                case "items" -> block.consume(
+                    child.isArray() ? new ConsumeItems(parser.readValue(ItemStack[].class, child)) :
+                    child.isString() ? new ConsumeItems(new ItemStack[]{parser.readValue(ItemStack.class, child)}) :
+                    parser.readValue(ConsumeItems.class, child));
+                case "itemsBoost" -> block.consume(child.isArray() ? new ConsumeItems(parser.readValue(ItemStack[].class, child)) :
+                    parser.readValue(ConsumeItems.class, child)).boost();
+
+                case "liquidFlammable" -> block.consume((Consume)parser.readValue(ConsumeLiquidFlammable.class, child));
+                case "liquid" -> block.consume((Consume)parser.readValue(ConsumeLiquid.class, child));
+                case "liquids" -> block.consume(
+                    child.isArray() ? new ConsumeLiquids(parser.readValue(LiquidStack[].class, child)) :
+                    parser.readValue(ConsumeLiquids.class, child));
+                case "coolant" -> block.consume((Consume)parser.readValue(ConsumeCoolant.class, child));
+                case "liquidsBoost" -> block.consume(child.isArray() ? new ConsumeLiquids(parser.readValue(LiquidStack[].class, child)) :
+                    parser.readValue(ConsumeLiquids.class, child)).boost();
+                case "power" -> {
+                    if(child.isNumber()){
+                        block.consumePower(child.asFloat());
+                    }else{
+                        block.consume((Consume)parser.readValue(ConsumePower.class, child));
+                    }
+                }
+                case "powerBuffered" -> block.consumePowerBuffered(child.asFloat());
+                default -> throw new IllegalArgumentException("Unknown consumption type: '" + child.name + "' for block '" + block.name + "'.");
+            }
+        }
+        value.remove("consumes");
+    }
+
     private ObjectMap<ContentType, TypeParser<?>> parsers = ObjectMap.of(
         ContentType.block, (TypeParser<Block>)(mod, name, value) -> {
             readBundle(ContentType.block, name, value);
 
             Block block;
 
-            if(locate(ContentType.block, name) != null){
+            if(allowPatching && locate(ContentType.block, name) != null){
                 if(value.has("type")){
-                    Log.warn("Warning: '" + currentMod.name + "-" + name + "' re-declares a type. This will be interpreted as a new block. If you wish to override a vanilla block, omit the 'type' section, as vanilla block `type`s cannot be changed.");
+                    warn("Warning: '" + currentMod.name + "-" + name + "' re-declares a type. This will be interpreted as a new block. If you wish to override a vanilla block, omit the 'type' section, as vanilla block `type`s cannot be changed.");
                     block = make(resolve(value.getString("type", ""), Block.class), mod + "-" + name);
                 }else{
                     block = locate(ContentType.block, name);
                 }
             }else{
-                block = make(resolve(value.getString("type", ""), Block.class), mod + "-" + name);
+                block = make(resolve(value.getString("type", "Block"), allowPatching ? Block.class : null), mod + "-" + name);
             }
 
             currentContent = block;
 
             read(() -> {
                 if(value.has("consumes") && value.get("consumes").isObject()){
-                    for(JsonValue child : value.get("consumes")){
-                        switch(child.name){
-                            case "item" -> block.consumeItem(find(ContentType.item, child.asString()));
-                            case "itemCharged" -> block.consume((Consume)parser.readValue(ConsumeItemCharged.class, child));
-                            case "itemFlammable" -> block.consume((Consume)parser.readValue(ConsumeItemFlammable.class, child));
-                            case "itemRadioactive" -> block.consume((Consume)parser.readValue(ConsumeItemRadioactive.class, child));
-                            case "itemExplosive" -> block.consume((Consume)parser.readValue(ConsumeItemExplosive.class, child));
-                            case "itemExplode" -> block.consume((Consume)parser.readValue(ConsumeItemExplode.class, child));
-                            case "items" -> block.consume(child.isArray() ?
-                                    new ConsumeItems(parser.readValue(ItemStack[].class, child)) :
-                                    parser.readValue(ConsumeItems.class, child));
-                            case "liquidFlammable" -> block.consume((Consume)parser.readValue(ConsumeLiquidFlammable.class, child));
-                            case "liquid" -> block.consume((Consume)parser.readValue(ConsumeLiquid.class, child));
-                            case "liquids" -> block.consume(child.isArray() ?
-                                    new ConsumeLiquids(parser.readValue(LiquidStack[].class, child)) :
-                                    parser.readValue(ConsumeLiquids.class, child));
-                            case "coolant" -> block.consume((Consume)parser.readValue(ConsumeCoolant.class, child));
-                            case "power" -> {
-                                if(child.isNumber()){
-                                    block.consumePower(child.asFloat());
-                                }else{
-                                    block.consume((Consume)parser.readValue(ConsumePower.class, child));
-                                }
-                            }
-                            case "powerBuffered" -> block.consumePowerBuffered(child.asFloat());
-                            default -> throw new IllegalArgumentException("Unknown consumption type: '" + child.name + "' for block '" + block.name + "'.");
-                        }
-                    }
+                    readBlockConsumers(block, value.get("consumes"));
                     value.remove("consumes");
                 }
 
@@ -471,7 +617,7 @@ public class ContentParser{
             readBundle(ContentType.unit, name, value);
 
             UnitType unit;
-            if(locate(ContentType.unit, name) == null){
+            if(!allowPatching || locate(ContentType.unit, name) == null){
 
                 unit = make(resolve(value.getString("template", ""), UnitType.class), mod + "-" + name);
 
@@ -492,8 +638,8 @@ public class ContentParser{
             }
 
             currentContent = unit;
-            //TODO test this!
             read(() -> {
+                unit.beforeParse();
                 //add reconstructor type
                 if(value.has("requirements")){
                     JsonValue rec = value.remove("requirements");
@@ -509,16 +655,15 @@ public class ContentParser{
                     }else{
                         throw new IllegalArgumentException("Missing a valid 'block' in 'requirements'");
                     }
-
                 }
 
                 if(value.has("controller") || value.has("aiController")){
-                    unit.aiController = supply(resolve(value.getString("controller", value.getString("aiController", "")), FlyingAI.class));
+                    unit.aiController = resolveController(value.getString("controller", value.getString("aiController", "")));
                     value.remove("controller");
                 }
 
                 if(value.has("defaultController")){
-                    var sup = supply(resolve(value.getString("defaultController"), FlyingAI.class));
+                    var sup = resolveController(value.getString("defaultController"));
                     unit.controller = u -> sup.get();
                     value.remove("defaultController");
                 }
@@ -541,7 +686,7 @@ public class ContentParser{
         },
         ContentType.weather, (TypeParser<Weather>)(mod, name, value) -> {
             Weather item;
-            if(locate(ContentType.weather, name) != null){
+            if(allowPatching && locate(ContentType.weather, name) != null){
                 item = locate(ContentType.weather, name);
                 readBundle(ContentType.weather, name, value);
             }else{
@@ -556,7 +701,7 @@ public class ContentParser{
         ContentType.item, parser(ContentType.item, Item::new),
         ContentType.liquid, (TypeParser<Liquid>)(mod, name, value) -> {
             Liquid liquid;
-            if(locate(ContentType.liquid, name) != null){
+            if(allowPatching && locate(ContentType.liquid, name) != null){
                 liquid = locate(ContentType.liquid, name);
                 readBundle(ContentType.liquid, name, value);
             }else{
@@ -568,36 +713,102 @@ public class ContentParser{
             read(() -> readFields(liquid, value));
             return liquid;
         },
-        ContentType.status, parser(ContentType.status, StatusEffect::new),
+        ContentType.status, (TypeParser<StatusEffect>)(mod, name, value) -> {
+            StatusEffect status;
+            if(allowPatching && locate(ContentType.status, name) != null){
+                status = locate(ContentType.status, name);
+                readBundle(ContentType.status, name, value);
+            }else{
+                readBundle(ContentType.status, name, value);
+                status = new StatusEffect(mod + "-" + name);
+            }
+            currentContent = status;
+            read(() -> readFields(status, value));
+
+            status.init(() -> {
+                var oldOpposite = status.opposites.copy();
+                status.opposites.clear();
+                status.opposite(oldOpposite.toSeq().toArray(StatusEffect.class));
+
+                var oldAffinities = status.affinities.copy();
+                status.affinities.clear();
+                for(StatusEffect affinity: oldAffinities){
+                    status.affinity(affinity, (unit, result, time) -> {
+                        unit.damagePierce(status.transitionDamage);
+                    });
+                }
+            });
+
+            return status;
+        },
         ContentType.sector, (TypeParser<SectorPreset>)(mod, name, value) -> {
+            readBundle(ContentType.sector, name, value);
             if(value.isString()){
                 return locate(ContentType.sector, name);
             }
 
-            if(!value.has("sector") || !value.get("sector").isNumber()) throw new RuntimeException("SectorPresets must have a sector number.");
+            SectorPreset preset;
+            SectorPreset found = allowPatching ? locate(ContentType.sector, name) : null;
 
-            SectorPreset out = new SectorPreset(mod + "-" + name, currentMod);
+            if(found != null){
+                preset = found;
+            }else{
+                if(!value.has("sector") || !value.get("sector").isNumber()) throw new RuntimeException("SectorPresets must have a sector number.");
 
-            currentContent = out;
+                preset = new SectorPreset(mod + "-" + name, currentMod);
+            }
+
+            currentContent = preset;
             read(() -> {
-                Planet planet = locate(ContentType.planet, value.getString("planet", "serpulo"));
+                Planet planet = preset.planet == null ? Planets.serpulo : preset.planet;
+                if(value.has("planet")){
+                    planet = locate(ContentType.planet, value.getString("planet", "serpulo"));
 
-                if(planet == null) throw new RuntimeException("Planet '" + value.getString("planet") + "' not found.");
+                    if(planet == null) throw new RuntimeException("Planet '" + value.getString("planet") + "' not found.");
+                }
 
-                out.initialize(planet, value.getInt("sector", 0));
+                if(value.has("sector")){
+                    //clear old value
+                    Sector prev = preset.sector;
+                    if(prev != null && prev.preset == preset){
+                        prev.preset = null;
+                    }
+                    int sector = value.getInt("sector", 0) % planet.sectors.size;
+                    if(!allowPatching && sector > 0 && planet.sectors.get(sector).preset != null){
+                        throw new RuntimeException("Overwriting existing sectors is not allowed.");
+                    }
+                    preset.initialize(planet, sector, true);
+                }
 
                 value.remove("sector");
                 value.remove("planet");
 
-                readFields(out, value);
+                if(value.has("rules")){
+                    JsonValue r = value.remove("rules");
+                    if(!r.isObject()) throw new RuntimeException("Rules must be an object!");
+                    preset.rules = rules -> {
+                        try{
+                            //Use standard JSON, this is not content-parser relevant
+                            JsonIO.json.readFields(rules, r);
+                        }catch(Throwable e){ //Try not to crash here, as that would be catastrophic and confusing
+                            Log.err(e);
+                        }
+                    };
+                }
+
+                readFields(preset, value);
             });
-            return out;
+            return preset;
         },
         ContentType.planet, (TypeParser<Planet>)(mod, name, value) -> {
+            readBundle(ContentType.planet, name, value);
             if(value.isString()) return locate(ContentType.planet, name);
 
-            Planet parent = locate(ContentType.planet, value.getString("parent"));
+            Planet parent = locate(ContentType.planet, value.getString("parent", ""));
+            //TODO: even if allowPatching is off, this modifies the parent.
             Planet planet = new Planet(mod + "-" + name, parent, value.getFloat("radius", 1f), value.getInt("sectorSize", 0));
+
+            value.remove("sectorSize");
 
             if(value.has("mesh")){
                 var mesh = value.get("mesh");
@@ -629,16 +840,50 @@ public class ContentParser{
                 };
             }
 
+            if(value.has("rules")){
+                JsonValue r = value.remove("rules");
+                if(!r.isObject()) throw new RuntimeException("Rules must be an object!");
+                planet.ruleSetter = rules -> {
+                    try{
+                        //Use standard JSON, this is not content-parser relevant
+                        JsonIO.json.readFields(rules, r);
+                    }catch(Throwable e){ //Try not to crash here, as that would be catastrophic and confusing
+                        Log.err(e);
+                    }
+                };
+            }
+
             //always one sector right now...
             planet.sectors.add(new Sector(planet, Ptile.empty));
 
             currentContent = planet;
             read(() -> readFields(planet, value));
             return planet;
+        },
+        ContentType.team, (TypeParser<TeamEntry>)(mod, name, value) -> {
+            TeamEntry entry;
+            Team team;
+            if(value.has("team")){
+                team = (Team)classParsers.get(Team.class).parse(Team.class, value.get("team"));
+            }else{
+                throw new RuntimeException("Team field missing.");
+            }
+            value.remove("team");
+
+            if(allowPatching && locate(ContentType.team, name) != null){
+                entry = locate(ContentType.team, name);
+                readBundle(ContentType.team, name, value);
+            }else{
+                readBundle(ContentType.team, name, value);
+                entry = new TeamEntry(mod + "-" + name, team);
+            }
+            currentContent = entry;
+            read(() -> readFields(entry, value));
+            return entry;
         }
     );
 
-    private Prov<Unit> unitType(JsonValue value){
+    Prov<Unit> unitType(JsonValue value){
         if(value == null) return UnitEntity::create;
         return switch(value.asString()){
             case "flying" -> UnitEntity::create;
@@ -651,7 +896,7 @@ public class ContentParser{
             case "hover" -> ElevationMoveUnit::create;
             case "tether" -> BuildingTetherPayloadUnit::create;
             case "crawl" -> CrawlUnit::create;
-            default -> throw new RuntimeException("Invalid unit type: '" + value + "'. Must be 'flying/mech/legs/naval/payload/missile/tether/crawl'.");
+            default -> throw new IllegalArgumentException("Invalid unit type: '" + value.asString() + "'. Must be 'flying/mech/legs/naval/payload/missile/tether/crawl'.");
         };
     }
 
@@ -669,7 +914,7 @@ public class ContentParser{
 
     private <T extends Content> T find(ContentType type, String name){
         Content c = Vars.content.getByName(type, name);
-        if(c == null) c = Vars.content.getByName(type, currentMod.name + "-" + name);
+        if(c == null && currentMod != null) c = Vars.content.getByName(type, currentMod.name + "-" + name);
         if(c == null) throw new IllegalArgumentException("No " + type + " found with name '" + name + "'");
         return (T)c;
     }
@@ -677,7 +922,7 @@ public class ContentParser{
     private <T extends Content> TypeParser<T> parser(ContentType type, Func<String, T> constructor){
         return (mod, name, value) -> {
             T item;
-            if(locate(type, name) != null){
+            if(allowPatching && locate(type, name) != null){
                 item = (T)locate(type, name);
                 readBundle(type, name, value);
             }else{
@@ -691,7 +936,7 @@ public class ContentParser{
     }
 
     private void readBundle(ContentType type, String name, JsonValue value){
-        UnlockableContent cont = locate(type, name) instanceof UnlockableContent ? locate(type, name) : null;
+        UnlockableContent cont = allowPatching && locate(type, name) instanceof UnlockableContent ? locate(type, name) : null;
 
         String entryName = cont == null ? type + "." + currentMod.name + "-" + name + "." : type + "." + cont.name + ".";
         I18NBundle bundle = Core.bundle;
@@ -718,7 +963,9 @@ public class ContentParser{
     private void read(Runnable run){
         Content cont = currentContent;
         LoadedMod mod = currentMod;
+        Fi file = currentFile;
         reads.add(() -> {
+            this.currentFile = file;
             this.currentMod = mod;
             this.currentContent = cont;
             run.run();
@@ -750,7 +997,6 @@ public class ContentParser{
         try{
             run.run();
         }catch(Throwable t){
-            Log.err(t);
             //don't overwrite double errors
             markError(currentContent, t);
         }
@@ -762,6 +1008,8 @@ public class ContentParser{
         reads.clear();
         postreads.clear();
         toBeParsed.clear();
+        currentMod = null;
+        currentFile = null;
     }
 
     /**
@@ -773,24 +1021,24 @@ public class ContentParser{
      * @return the content that was parsed
      */
     public Content parse(LoadedMod mod, String name, String json, Fi file, ContentType type) throws Exception{
-        if(contentTypes.isEmpty()){
-            init();
-        }
+        checkInit();
 
         //remove extra # characters to make it valid json... apparently some people have *unquoted* # characters in their json
         if(file.extension().equals("json")){
             json = json.replace("#", "\\#");
         }
 
+        currentFile = file;
         currentMod = mod;
 
-        JsonValue value = parser.fromJson(null, Jval.read(json).toString(Jformat.plain));
+        var rawValue = parser.fromJson(null, Jval.read(json).toString(Jformat.plain));
+        if(!(rawValue instanceof JsonValue value)) throw new SerializationException("Content JSON must be an object, not a single value.");
 
         if(!parsers.containsKey(type)){
             throw new SerializationException("No parsers for content type '" + type + "'");
         }
 
-        boolean located = locate(type, name) != null;
+        boolean located = allowPatching && locate(type, name) != null;
         Content c = parsers.get(type).parse(mod.name, name, value);
         c.minfo.sourceFile = file;
         toBeParsed.add(c);
@@ -798,11 +1046,20 @@ public class ContentParser{
         if(!located){
             c.minfo.mod = mod;
         }
+
+        currentMod = null;
+        currentFile = null;
         return c;
     }
 
+    public void checkInit(){
+        if(contentTypes.isEmpty()){
+            init();
+        }
+    }
+
     public void markError(Content content, LoadedMod mod, Fi file, Throwable error){
-        Log.err("Error for @ / @:\n@\n", content, file, Strings.getStackTrace(error));
+        Log.err("Error loading content: " + file, error);
 
         content.minfo.mod = mod;
         content.minfo.sourceFile = file;
@@ -841,7 +1098,7 @@ public class ContentParser{
 
     private <T extends MappableContent> T locate(ContentType type, String name){
         T first = Vars.content.getByName(type, name); //try vanilla replacement
-        return first != null ? first : Vars.content.getByName(type, currentMod.name + "-" + name);
+        return first != null ? first : Vars.content.getByName(type, currentMod == null ? name : currentMod.name + "-" + name);
     }
 
     private <T extends MappableContent> T locateAny(String name){
@@ -871,14 +1128,13 @@ public class ContentParser{
         String tname = Strings.capitalize(data.getString("type", "NoiseMesh"));
 
         return switch(tname){
-            //TODO NoiseMesh is bad
             case "NoiseMesh" -> new NoiseMesh(planet,
-            data.getInt("seed", 0), data.getInt("divisions", 1), data.getFloat("radius", 1f),
-            data.getInt("octaves", 1), data.getFloat("persistence", 0.5f), data.getFloat("scale", 1f), data.getFloat("mag", 0.5f),
-            Color.valueOf(data.getString("color1", data.getString("color", "ffffff"))),
-            Color.valueOf(data.getString("color2", data.getString("color", "ffffff"))),
-            data.getInt("colorOct", 1), data.getFloat("colorPersistence", 0.5f), data.getFloat("colorScale", 1f),
-            data.getFloat("colorThreshold", 0.5f));
+                data.getInt("seed", 0), data.getInt("divisions", 1), data.getFloat("radius", 1f),
+                data.getInt("octaves", 1), data.getFloat("persistence", 0.5f), data.getFloat("scale", 1f), data.getFloat("mag", 0.5f),
+                Color.valueOf(data.getString("color1", data.getString("color", "ffffff"))),
+                Color.valueOf(data.getString("color2", data.getString("color", "ffffff"))),
+                data.getInt("colorOct", 1), data.getFloat("colorPersistence", 0.5f), data.getFloat("colorScale", 1f),
+                data.getFloat("colorThreshold", 0.5f));
             case "SunMesh" -> {
                 var cvals = data.get("colors").asStringArray();
                 var colors = new Color[cvals.length];
@@ -891,9 +1147,9 @@ public class ContentParser{
                 data.getFloat("colorScale", 1f), colors);
             }
             case "HexSkyMesh" -> new HexSkyMesh(planet,
-            data.getInt("seed", 0), data.getFloat("speed", 0), data.getFloat("radius", 1f),
-            data.getInt("divisions", 3), Color.valueOf(data.getString("color", "ffffff")), data.getInt("octaves", 1),
-            data.getFloat("persistence", 0.5f), data.getFloat("scale", 1f), data.getFloat("thresh", 0.5f));
+                data.getInt("seed", 0), data.getFloat("speed", 0), data.getFloat("radius", 1f),
+                data.getInt("divisions", 3), Color.valueOf(data.getString("color", "ffffff")), data.getInt("octaves", 1),
+                data.getFloat("persistence", 0.5f), data.getFloat("scale", 1f), data.getFloat("thresh", 0.5f));
             case "MultiMesh" -> new MultiMesh(parseMeshes(planet, data.get("meshes")));
             case "MatMesh" -> new MatMesh(parseMesh(planet, data.get("mesh")), parser.readValue(Mat3D.class, data.get("mat")));
             default -> throw new RuntimeException("Unknown mesh type: " + tname);
@@ -916,6 +1172,8 @@ public class ContentParser{
             case "min" -> base.min(parser.readValue(PartProgress.class, data.get("other")));
             case "sin" -> base.sin(data.has("offset") ? data.getFloat("offset") : 0f, data.getFloat("scl"), data.getFloat("mag"));
             case "absin" -> base.absin(data.getFloat("scl"), data.getFloat("mag"));
+            case "mod" -> base.mod(data.getFloat("amount"));
+            case "loop" -> base.loop(data.getFloat("time"));
             case "curve" -> data.has("interp") ? base.curve(parser.readValue(Interp.class, data.get("interp"))) : base.curve(data.getFloat("offset"), data.getFloat("duration"));
             default -> throw new RuntimeException("Unknown operation '" + op + "', check PartProgress class for a list of methods.");
         };
@@ -956,6 +1214,12 @@ public class ContentParser{
         }
     }
 
+    Prov<UnitController> resolveController(String type){
+        //this is used as a captured value to avoid parsing it multiple times
+        var controller = supply(resolve(type, FlyingAI.class));
+        return controller::get;
+    }
+
     Object field(Class<?> type, JsonValue value){
         return field(type, value.asString());
     }
@@ -970,7 +1234,6 @@ public class ContentParser{
             throw new RuntimeException(e);
         }
     }
-
     Object fieldOpt(Class<?> type, JsonValue value){
         try{
             return type.getField(value.asString()).get(null);
@@ -989,7 +1252,7 @@ public class ContentParser{
                 if(!field.field.isAnnotationPresent(Nullable.class) && field.field.get(object) == null && !implicitNullable.contains(field.field.getType())){
                     throw new RuntimeException("'" + field.field.getName() + "' in " +
                         ((object.getClass().isAnonymousClass() ? object.getClass().getSuperclass() : object.getClass()).getSimpleName()) +
-                        " is missing! Object = " + object + ", field = (" + field.field.getName() + " = " + field.field.get(object) + ")");
+                        " is missing! " + object + "." + field.field.getName() + " cannot be null.");
                 }
             }catch(Exception e){
                 throw new RuntimeException(e);
@@ -1003,6 +1266,7 @@ public class ContentParser{
     }
 
     void readFields(Object object, JsonValue jsonMap){
+        if(!jsonMap.isObject()) throw new SerializationException("Expecting an object, but found: '" + jsonMap + "'");
         JsonValue research = jsonMap.remove("research");
 
         toBeParsed.remove(object);
@@ -1012,7 +1276,7 @@ public class ContentParser{
             FieldMetadata metadata = fields.get(child.name().replace(" ", "_"));
             if(metadata == null){
                 if(ignoreUnknownFields){
-                    Log.warn("[@]: Ignoring unknown field: @ (@)", currentContent.minfo.sourceFile.name(), child.name, type.getSimpleName());
+                    warn("@Unknown field '@' for class '@'", currentContent == null ? "" : "[" + currentContent.minfo.sourceFile.name() + "]: ", child.name, type.getSimpleName());
                     continue;
                 }else{
                     SerializationException ex = new SerializationException("Field not found: " + child.name + " (" + type.getName() + ")");
@@ -1022,7 +1286,41 @@ public class ContentParser{
             }
             Field field = metadata.field;
             try{
-                field.set(object, parser.readValue(field.getType(), metadata.elementType, child, metadata.keyType));
+                if(child.isObject() && child.has("add") && (Seq.class.isAssignableFrom(field.getType()) || ObjectSet.class.isAssignableFrom(field.getType()))){
+                    Object readField = parser.readValue(field.getType(), metadata.elementType, child.get("add"), metadata.keyType);
+                    Object fieldObj = field.get(object);
+
+                    if(fieldObj instanceof ObjectSet set){
+                        set.addAll((ObjectSet)readField);
+                    }else if(fieldObj instanceof Seq seq){
+                        seq.addAll((Seq)readField);
+                    }else{
+                        throw new SerializationException("This should be impossible");
+                    }
+                }else{
+                    boolean isMap = ObjectMap.class.isAssignableFrom(field.getType()) || ObjectIntMap.class.isAssignableFrom(field.getType()) || ObjectFloatMap.class.isAssignableFrom(field.getType());
+                    boolean mergeMap = isMap && child.has("add") && child.get("add").isBoolean() && child.getBoolean("add", false);
+
+                    if(mergeMap){
+                        child.remove("add");
+                    }
+
+                    Object readField = parser.readValue(field.getType(), metadata.elementType, child, metadata.keyType);
+                    Object fieldObj = field.get(object);
+
+                    //if a map has add: true, add its contents to the map instead
+                    if(mergeMap && (fieldObj instanceof ObjectMap<?,?> || fieldObj instanceof ObjectIntMap<?> || fieldObj instanceof ObjectFloatMap<?>)){
+                        if(field.get(object) instanceof ObjectMap<?,?> baseMap){
+                            baseMap.putAll((ObjectMap)readField);
+                        }else if(field.get(object) instanceof ObjectIntMap<?> baseMap){
+                            baseMap.putAll((ObjectIntMap)readField);
+                        }else if(field.get(object) instanceof ObjectFloatMap<?> baseMap){
+                            baseMap.putAll((ObjectFloatMap)readField);
+                        }
+                    }else{
+                        field.set(object, readField);
+                    }
+                }
             }catch(IllegalAccessException ex){
                 throw new SerializationException("Error accessing field: " + field.getName() + " (" + type.getName() + ")", ex);
             }catch(SerializationException ex){
@@ -1037,6 +1335,10 @@ public class ContentParser{
         }
 
         if(object instanceof UnlockableContent unlock && research != null){
+            if(!allowPatching){
+                warn("Modifying the tech tree is not allowed (@)", currentFile);
+                return;
+            }
 
             //add research tech node
             String researchName;
@@ -1059,10 +1361,12 @@ public class ContentParser{
 
             TechNode node = new TechNode(null, unlock, customRequirements == null ? ItemStack.empty : customRequirements);
             LoadedMod cur = currentMod;
+            Fi file = currentFile;
 
             postreads.add(() -> {
                 currentContent = unlock;
                 currentMod = cur;
+                currentFile = file;
 
                 //add custom objectives
                 if(research.has("objectives")){
@@ -1070,8 +1374,8 @@ public class ContentParser{
                 }
 
                 //all items have a produce requirement unless already specified
-                if(object instanceof Item i && !node.objectives.contains(o -> o instanceof Produce p && p.content == i)){
-                    node.objectives.add(new Produce(i));
+                if((unlock instanceof Item || unlock instanceof Liquid) && !node.objectives.contains(o -> o instanceof Produce p && p.content == unlock)){
+                    node.objectives.add(new Produce(unlock));
                 }
 
                 //remove old node from parent
@@ -1097,7 +1401,7 @@ public class ContentParser{
                         TechNode parent = TechTree.all.find(t -> t.content.name.equals(researchName) || t.content.name.equals(currentMod.name + "-" + researchName) || t.content.name.equals(SaveVersion.mapFallback(researchName)));
 
                         if(parent == null){
-                            Log.warn("Content '" + researchName + "' isn't in the tech tree, but '" + unlock.name + "' requires it to be researched.");
+                            warn("Content '" + researchName + "' isn't in the tech tree, but '" + unlock.name + "' requires it to be researched.");
                         }else{
                             //add this node to the parent
                             if(!parent.children.contains(node)){
@@ -1105,9 +1409,10 @@ public class ContentParser{
                             }
                             //reparent the node
                             node.parent = parent;
+                            node.planet = parent.planet;
                         }
                     }else{
-                        Log.warn(unlock.name + " is not a root node, and does not have a `parent: ` property. Ignoring.");
+                        warn(unlock.name + " is not a root node, and does not have a `parent: ` property. Ignoring.");
                     }
                 }
             });
@@ -1121,6 +1426,11 @@ public class ContentParser{
 
     /** Tries to resolve a class from the class type map. */
     <T> Class<T> resolve(String base, Class<T> def){
+        return resolve(base, def, true);
+    }
+
+    /** Tries to resolve a class from the class type map. */
+    <T> Class<T> resolve(String base, Class<T> def, boolean warn){
         //no base class specified
         if((base == null || base.isEmpty()) && def != null) return def;
 
@@ -1129,7 +1439,7 @@ public class ContentParser{
         if(out != null) return (Class<T>)out;
 
         //try to resolve it as a raw class name
-        if(base.indexOf('.') != -1){
+        if(base.indexOf('.') != -1 && allowClassResolution){
             try{
                 return (Class<T>)Class.forName(base);
             }catch(Exception ignored){
@@ -1141,10 +1451,25 @@ public class ContentParser{
         }
 
         if(def != null){
-            Log.warn("[@] No type '" + base + "' found, defaulting to type '" + def.getSimpleName() + "'", currentContent == null ? currentMod.name : "");
+            if(warn) warn("[@] No type '" + base + "' found, defaulting to type '" + def.getSimpleName() + "'", currentFile != null ? currentFile : currentMod != null ? currentMod.name : "");
             return def;
         }
         throw new IllegalArgumentException("Type not found: " + base);
+    }
+
+    void warn(String string, Object... format){
+        warnContext(currentContent, currentFile, string, format);
+    }
+
+    void warnContext(@Nullable Content currentContent, @Nullable Fi currentFile, String string, Object... format){
+        Log.warn(string, format);
+    }
+
+    void onNewInstance(Object object, Class<?> type){}
+
+    public Json getJson(){
+        checkInit();
+        return parser;
     }
 
     private interface FieldParser{

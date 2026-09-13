@@ -12,6 +12,7 @@ import mindustry.client.communication.*
 import mindustry.client.utils.*
 import mindustry.game.*
 import mindustry.gen.*
+import mindustry.input.*
 import mindustry.ui.*
 import mindustry.ui.dialogs.*
 
@@ -23,21 +24,23 @@ object UploadDialog : BaseDialog("@client.uploadtitle") { // FINISHME: Somehow s
         addCloseButton()
         buttons.button("@clear", Icon.trash, ::clearImages)
         buttons.button("@add", Icon.upload) {
-            Vars.platform.showMultiFileChooser({
-                try {
-                    addImage(Pixmap(it))
-                } catch (e: Exception) {
-                    Vars.ui.showInfoToast(Core.bundle["client.failedtoloadimage"], 3f)
+            FileChooser.open("png", "jpg", "jpeg").submitMulti { files ->
+                for (file in files){
+                    try {
+                        addImage(Pixmap(file))
+                    } catch (e: Exception) {
+                        Vars.ui.showInfoToast(Core.bundle["client.failedtoloadimage"], 3f)
+                        Log.err("Error loading image", e)
+                    }
                 }
-            }, "png", "jpg", "jpeg")
+            }
         }
 
-        keyDown {
-            if (Core.input.ctrl() && it == KeyCode.v) { // For some reason, it seems that interacting with the clipboard breaks sdl on Mac
-                if (OS.isMac) Vars.ui.showInfoToast("Image pasting does not work on mac.", 3f)
-                else {
-                    addImage(pixmapFromClipboard() ?: return@keyDown)
-                }
+        keyDown(Binding.paste) {
+            // For some reason, it seems that interacting with the clipboard breaks sdl on Mac
+            if (OS.isMac) Vars.ui.showInfoToast("Image pasting does not work on mac.", 3f)
+            else {
+                addImage(pixmapFromClipboard() ?: return@keyDown)
             }
         }
 
@@ -51,24 +54,23 @@ object UploadDialog : BaseDialog("@client.uploadtitle") { // FINISHME: Somehow s
             if (!BlockCommunicationSystem.logicAvailable && ClientVars.pluginVersion == -1F) {
                 Vars.ui.chatfrag.addMessage(Core.bundle["client.placelogic"])
                 imgs[false]?.forEach(Pixmap::dispose)
-            } else if (false in imgs) {
+            } else {
                 if (true in imgs) Vars.ui.chatfrag.addMessage(Core.bundle["client.imagetoobig"]) // Any of the images was removed for being too large.
-                for (image in imgs[false]!!) {
+                for (image in imgs[false] ?: emptyList()) {
                     Main.send(ImageTransmission(id, image)) {
                         image.dispose()
                         doneCount++
+                        Log.debug("Thread is @", Thread.currentThread().name)
                         if (doneCount == imgs[false]!!.size) Core.app.post { Vars.ui.showInfoToast(Core.bundle["client.finisheduploading"], 3f) } // Thread safety doesn't exist
                     }
                 }
             }
-            images.clear()
+            images.clear() // FINISHME: Is replacing these two lines with clearImages okay?
             updateImages()
         }
 
         Events.on(EventType.WorldLoadEvent::class.java) {
-            images.forEach(Pixmap::dispose)
-            images.clear()
-            updateImages()
+            clearImages()
         }
     }
 
@@ -90,15 +92,15 @@ object UploadDialog : BaseDialog("@client.uploadtitle") { // FINISHME: Somehow s
         textures.forEach(Texture::dispose)
         textures.clear()
         cont.pane { pane ->
-            images.forEach {
-                val tex = Texture(it)
+            images.forEach { pix ->
+                val tex = Texture(pix)
                 textures.add(tex)
                 pane.stack(
                     Image(tex),
                     Table { t ->
                         t.button(Icon.cancel.tint(Color.red), Styles.emptyi) {
-                            it.dispose()
-                            images.remove(it)
+                            pix.dispose()
+                            images.remove(pix)
                             updateImages()
                         }.expand().top().left().pad(10f)
                     }

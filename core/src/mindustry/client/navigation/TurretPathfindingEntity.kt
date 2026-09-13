@@ -5,22 +5,34 @@ import arc.math.geom.*
 import arc.math.geom.QuadTree.*
 import arc.struct.*
 import mindustry.Vars.*
+import mindustry.content.*
 import mindustry.gen.*
 import mindustry.logic.*
+import mindustry.type.*
 import java.util.concurrent.locks.*
 import kotlin.concurrent.*
 
-class TurretPathfindingEntity(@JvmField val entity: Ranged, @JvmField val range: Float, @JvmField val targetGround: Boolean, @JvmField val targetAir: Boolean, private val canShoot: Boolp) : QuadTreeObject {
+class TurretPathfindingEntity(@JvmField val entity: Ranged, @JvmField val range: Floatp, @JvmField val targetGround: Boolean, @JvmField val targetAir: Boolean, private val canShoot: Boolp) : QuadTreeObject {
     var id = 0L
 
+    fun range() = range.get()
     fun canShoot() = canShoot.get()
-    fun canHitPlayer() = if (player.unit().isFlying) targetAir else targetGround
+    fun canHitPlayer() = if (player.unit()?.isFlying ?: false) targetAir else targetGround
+    fun isObstacle() = canShoot() && canHitPlayer() && !ignoreDamageSource(player.unit()?.type ?: UnitTypes.alpha, entity)
     fun x() = entity.x
     fun y() = entity.y
     @JvmField val turret = entity is Building
 
     companion object {
         private var nextId: Long = 0
+        fun ignoreDamageSource(unit: UnitType, damageSource: Ranged): Boolean {
+            return if(damageSource is Unitc) when(damageSource.type()) {
+                UnitTypes.alpha, UnitTypes.horizon, UnitTypes.evoke, UnitTypes.incite, UnitTypes.emanate -> true
+                UnitTypes.beta, UnitTypes.nova, UnitTypes.flare -> unit.health >= 100
+                UnitTypes.gamma, UnitTypes.dagger, UnitTypes.crawler, UnitTypes.poly, UnitTypes.risso, UnitTypes.retusa, UnitTypes.atrax, UnitTypes.mega -> unit.health > 1000
+                else -> false
+            } else false
+        }
     }
 
     init {
@@ -36,7 +48,7 @@ class TurretPathfindingEntity(@JvmField val entity: Ranged, @JvmField val range:
     }
 
     override fun hitbox(out: Rect) {
-        out.setCentered(entity.x, entity.y, range * 2)
+        out.setCentered(entity.x, entity.y, range() * 2)
     }
 
     /**
@@ -48,7 +60,7 @@ class TurretPathfindingEntity(@JvmField val entity: Ranged, @JvmField val range:
     fun contains(x: Float, y: Float): Boolean {
         val dx = entity.x - x
         val dy = entity.y - y
-        val range = range + tilesize / 2F
+        val range = range() + tilesize / 2F
         return dx * dx + dy * dy <= range * range
     }
 

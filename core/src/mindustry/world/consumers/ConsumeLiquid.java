@@ -25,7 +25,7 @@ public class ConsumeLiquid extends ConsumeLiquidBase{
     @Override
     public void apply(Block block){
         super.apply(block);
-        block.liquidFilter[liquid.id] = true;
+        if(liquid.id < block.liquidFilter.length) block.liquidFilter[liquid.id] = true;
     }
 
     @Override
@@ -49,5 +49,10 @@ public class ConsumeLiquid extends ConsumeLiquidBase{
     @Override
     public void display(Stats stats){
         stats.add(booster ? Stat.booster : Stat.input, liquid, amount * 60f, true);
+    }
+
+    @Override
+    public boolean consumes(Liquid liquid){
+        return liquid == this.liquid;
     }
 }

@@ -1,8 +1,10 @@
 package mindustry.world.blocks.defense;
 
+import arc.audio.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
 import mindustry.annotations.Annotations.*;
@@ -30,6 +32,10 @@ public class MendProjector extends Block{
     public float phaseBoost = 12f;
     public float phaseRangeBoost = 50f;
     public float useTime = 400f;
+    public Sound mendSound = Sounds.healWave;
+    public float mendSoundVolume = 0.5f;
+
+    private boolean any = false;
 
     public MendProjector(String name){
         super(name);
@@ -42,6 +48,8 @@ public class MendProjector extends Block{
         lightRadius = 50f;
         suppressable = true;
         envEnabled |= Env.space;
+        flags = EnumSet.of(BlockFlag.blockRepair);
+        drawCached = true;
     }
 
     @Override
@@ -62,7 +70,7 @@ public class MendProjector extends Block{
             stats.add(Stat.booster, StatValues.itemBoosters(
                 "{0}" + StatUnit.timesSpeed.localized(),
                 stats.timePeriod, (phaseBoost + healPercent) / healPercent, phaseRangeBoost,
-                cons.items, this::consumesItem)
+                cons.items)
             );
         }
     }
@@ -70,7 +78,7 @@ public class MendProjector extends Block{
     @Override
     public void drawPlace(int x, int y, int rotation, boolean valid){
         super.drawPlace(x, y, rotation, valid);
-        
+
         Drawf.dashCircle(x * tilesize + offset, y * tilesize + offset, range, baseColor);
 
         indexer.eachBlock(player.team(), x * tilesize + offset, y * tilesize + offset, range, other -> true, other -> Drawf.selected(other, Tmp.c1.set(baseColor).a(Mathf.absin(4f, 1f))));
@@ -80,7 +88,8 @@ public class MendProjector extends Block{
     public void setBars(){
         super.setBars();
 
-        addBar("progress", (MendBuild entity) -> new Bar("bar.progress", Pal.heal, () -> entity.charge / reload));
+        // Some mods improperly extend MendProjector but do not extend MendBuild
+        if (newBuilding() instanceof MendBuild) addBar("progress", (MendBuild entity) -> new Bar("bar.progress", Pal.heal, () -> entity.charge / reload));
     }
 
     public class MendBuild extends Building implements Ranged{
@@ -101,7 +110,7 @@ public class MendProjector extends Block{
 
             phaseHeat = Mathf.lerpDelta(phaseHeat, optionalEfficiency, 0.1f);
 
-            if(optionalEfficiency > 0 && timer(timerUse, useTime) && canHeal){
+            if(optionalEfficiency > 0 && timer(timerUse, useTime / timeScale) && canHeal){
                 consume();
             }
 
@@ -110,12 +119,19 @@ public class MendProjector extends Block{
                 charge = 0f;
 
                 var flood = CustomMode.flood.b();
+                any = false;
+
                 indexer.eachBlock(this, realRange, b -> b.damaged() && !b.isHealSuppressed(), other -> {
                     if (flood) other.heal((healAmount + phaseHeat * phaseBoost) * efficiency);
                     else other.heal(other.maxHealth() * (healPercent + phaseHeat * phaseBoost) / 100f * efficiency);
                     other.recentlyHealed();
                     Fx.healBlockFull.at(other.x, other.y, other.block.size, baseColor, other.block);
+                    any = true;
                 });
+
+                if(any){
+                    mendSound.at(this, 1f + Mathf.range(0.1f), mendSoundVolume);
+                }
             }
         }
 
@@ -135,15 +151,20 @@ public class MendProjector extends Block{
         }
 
         @Override
-        public void draw(){
+        public void drawCached(){
             super.draw();
+        }
 
+        @Override
+        public void draw(){
             float f = 1f - (Time.time / 100f) % 1f;
 
+            if(!Lod.l2) return;
+
             Draw.color(baseColor, phaseColor, phaseHeat);
-            Draw.alpha(heat * Mathf.absin(Time.time, 50f / Mathf.PI2, 1f) * 0.5f);
+            Draw.alpha(heat * Mathf.absin(Time.time, 50f / Mathf.PI2, 1f) * 0.5f * Lod.alpha2);
             Draw.rect(topRegion, x, y);
-            Draw.alpha(1f);
+            Draw.alpha(Lod.alpha2);
             Lines.stroke((2f * f + 0.2f) * heat);
             Lines.square(x, y, Math.min(1f + (1f - f) * size * tilesize / 2f, size * tilesize/2f));
 

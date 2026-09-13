@@ -33,7 +33,7 @@ public class LoadRenderer implements Disposable{
     private float testprogress = 0f;
     private StringBuilder assetText = new StringBuilder();
     private Bar[] bars;
-    private Mesh mesh = MeshBuilder.buildHex(colorRed, 2, true, 1f);
+    private Mesh mesh = MeshBuilder.buildPlanetGrid(PlanetGrid.create(2), colorRed, 1f);
     private Camera3D cam = new Camera3D();
     private int lastLength = -1;
     private FxProcessor fx;
@@ -102,9 +102,9 @@ public class LoadRenderer implements Disposable{
             for(String name : assets.getAssetNames()){
                 boolean isRed = name.toLowerCase().contains("mod") || assets.getAssetType(name).getSimpleName().toLowerCase().contains("mod") || name.contains("preview");
                 assetText
-                .append(isRed ? red : orange)
-                .append(name.replace(OS.username, "<<host>>").replace("/", "::")).append(red).append("::[]")
-                .append(assets.getAssetType(name).getSimpleName()).append("\n");
+                    .append(isRed ? red : orange)
+                    .append(name.replace(OS.username, "<<host>>").replace("/", "::")).append(red).append("::[]")
+                    .append(assets.getAssetType(name).getSimpleName()).append("\n");
             }
 
             lastLength = assets.getLoadedAssets();

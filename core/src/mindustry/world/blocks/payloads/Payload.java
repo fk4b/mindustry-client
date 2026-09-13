@@ -37,8 +37,15 @@ public interface Payload extends Position{
     /** @return the time taken to build this payload. */
     float buildTime();
 
+    boolean contentEquals(Payload other);
+
     /** update this payload inside a container unit or building. either can be null. */
     default void update(@Nullable Unit unitHolder, @Nullable Building buildingHolder){}
+
+    /** @return if this payload died for whatever reason (e.g. reactor/combustion generator exploding itself) */
+    default boolean isDead(){
+        return false;
+    }
 
     /** @return whether this payload was dumped. */
     default boolean dump(){
@@ -54,6 +61,8 @@ public interface Payload extends Position{
     default float rotation(){
         return 0f;
     }
+
+    default void destroyed(){};
 
     /** writes the payload for saving. */
     void write(Writes write);
@@ -73,6 +82,8 @@ public interface Payload extends Position{
     default float getY(){
         return y();
     }
+
+    default void remove(){}
 
     static void write(@Nullable Payload payload, Writes write){
         if(payload == null){

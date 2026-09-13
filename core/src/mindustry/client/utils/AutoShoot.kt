@@ -54,7 +54,7 @@ fun autoShoot() {
 
     if (target == null || Client.timer.get(2, 6f)) { // Acquire target FINISHME: Heal allied units?
         if (type.canAttack) {
-            val ignoreDisarmed = Server.io()
+            val ignoreDisarmed = Server.io() && !CustomMode.defense();
             target = Units.closestEnemy(unit.team, unit.x, unit.y, unit.range()) { u -> !(ignoreDisarmed && u.disarmed) && u.checkTarget(type.targetAir, unit.type.targetGround) }
         }
         if (type.canHeal && target == null) {
@@ -110,10 +110,11 @@ fun autoShoot() {
         Vars.player.shooting = !boosting
 
         if (type.omniMovement && Vars.player.shooting && type.hasWeapons() && type.faceTarget && !boosting) { // Rotate towards enemy
-            unit.lookAt(unit.angleTo(Vars.player.mouseX, Vars.player.mouseY))
+            unit.lookAt(Vars.player.mouseX, Vars.player.mouseY)
         }
 
         unit.aim(Vars.player.mouseX, Vars.player.mouseY)
+        unit.controlWeapons(true, Vars.player.shooting)
         hadTarget = true
     }
 }

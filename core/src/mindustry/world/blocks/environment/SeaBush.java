@@ -19,10 +19,12 @@ public class SeaBush extends Prop{
     public SeaBush(String name){
         super(name);
         variants = 0;
+        obstructsLight = false;
     }
 
     @Override
     public void drawBase(Tile tile){
+        Draw.z(layer);
         rand.setSeed(tile.pos());
         float offset = rand.random(180f);
         int lobes = rand.random(lobesMin, lobesMax);

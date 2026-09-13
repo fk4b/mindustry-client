@@ -25,6 +25,7 @@ import mindustry.game.EventType.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.input.*;
 import mindustry.logic.*;
 import mindustry.type.*;
 import mindustry.world.*;
@@ -70,13 +71,15 @@ public class ConstructBlock extends Block{
 
     @Remote(called = Loc.server)
     public static void deconstructFinish(Tile tile, Block block, Unit builder){
+        if(tile == null) return;
+
         Team team = tile.team();
         tile.getLinkedTiles(t -> Events.fire(new BlockBuildEventTile(t, team, builder, block, Blocks.air, tile.build == null ? null : tile.build.config(), null))); // This line is a client thing FINISHME: Move this line into its own method to make merges less painful
         if(!headless && fogControl.isVisibleTile(Vars.player.team(), tile.x, tile.y)){
             block.breakEffect.at(tile.drawx(), tile.drawy(), block.size, block.mapColor);
             if(shouldPlay()) block.breakSound.at(tile, block.breakPitchChange ? calcPitch(false) : 1f);
         }
-        Events.fire(new BlockBuildEndEvent(tile, builder, team, true, tile.build == null ? null : tile.build.config(), tile.block())); // FINISHME: This overrides the vanilla class; likely to cause issues w/ mods | Vanilla: Events.fire(new BlockBuildEndEvent(tile, builder, team, true, null));
+        Events.fire(new BlockBuildEndEvent(tile, builder, team, true, null));
         tile.remove();
     }
 
@@ -99,27 +102,25 @@ public class ConstructBlock extends Block{
         Seq<Building> prev = tile.build instanceof ConstructBuild co ? co.prevBuild : null;
         Block prevBlock = tile.block();
 
-        if (block == null) {
-            Events.fire(new BlockBreakEvent(tile, team, builder, tile.block(), tile.build == null ? null : tile.build.config(), rotation));
-        }
-
         if(block instanceof OverlayFloor overlay){
             tile.setOverlay(overlay);
-            tile.setBlock(Blocks.air);
         }else if(block instanceof Floor floor){
-            tile.setFloorUnder(floor);
-            tile.setBlock(Blocks.air);
+            tile.setFloor(floor);
+            if(!(tile.overlay() instanceof OverlayFloor) && !floor.supportsOverlay){
+                tile.setOverlay(Blocks.air);
+            }
         }else{
             tile.setBlock(block, team, rotation);
         }
 
-        if(tile.build != null){
+        if(tile.build != null && tile.build.block == block){
             tile.build.health = block.health * healthf;
 
             if(config != null){
                 tile.build.configured(builder, config);
             }else if(player != null){ // Foo's addition that allows for local configuration of blocks
                 control.input.playerPlanTree.intersect(tile.getBounds(Tmp.r1), Build.planSeq);
+                if (control.input instanceof DesktopInput d && d.splan != null) Build.planSeq.add(d.splan); // Also add the plan currently being moved if it exists
                 var plan = Build.planSeq.find(p -> p.x == tile.x && p.y == tile.y && p.block == block && p.configLocal);
                 if (plan != null) ClientVars.configs.add(new ConfigRequest(tile.build, plan.config)); // Found a matching plan, configure the building to match the plan
                 Build.planSeq.clear();
@@ -135,23 +136,13 @@ public class ConstructBlock extends Block{
 
             //make sure block indexer knows it's damaged
             indexer.notifyHealthChanged(tile.build);
-        }
 
-        //last builder was this local client player, call placed()
-        if(tile.build != null && !headless && builder == player.unit()){
-            tile.build.playerPlaced(config);
-        }
-
-        Events.fire(new BlockBuildEndEvent(tile, builder, team, false, config, prevBlock));
-
-        if (tile.build instanceof ConstructBuild b) { // FINISHME: Does this even work?
-            for (var item : b.prevBuild != null ? b.prevBuild : new Seq<Building>()) {
-                Events.fire(new BlockBuildEventTile(item.tile, item.team, builder, item.block, block, item.config(), null));
+            //last builder was this local client player, call placed()
+            if(!headless && builder == player.unit()){
+                tile.build.playerPlaced(config);
             }
         }
 
-        Fx.placeBlock.at(tile.drawx(), tile.drawy(), block.size);
-        if(shouldPlay()) block.placeSound.at(tile, block.placePitchChange ? calcPitch(true) : 1f);
         if(fogControl.isVisibleTile(team, tile.x, tile.y)){
             block.placeEffect.at(tile.drawx(), tile.drawy(), block.size);
             if(shouldPlay()) block.placeSound.at(tile, block.placePitchChange ? calcPitch(true) : 1f);
@@ -163,7 +154,9 @@ public class ConstructBlock extends Block{
             }
         }
 
-        Events.fire(new BlockBuildEndEvent(tile, builder, team, false, config, prevBlock)); // FINISHME: Yet another case of a changed vanilla event. Vanilla: Events.fire(new BlockBuildEndEvent(tile, builder, team, false, config));
+        block.placeEnded(tile, builder, rotation, config);
+
+        Events.fire(new BlockBuildEndEvent(tile, builder, team, false, config));
     }
 
     static boolean shouldPlay(){
@@ -188,6 +181,10 @@ public class ConstructBlock extends Block{
             lastTime = Time.millis();
             return Mathf.random(0.7f, 1.3f);
         }
+    }
+
+    public static void playRepairSound(Team team, Tile tile){
+        if(!headless && shouldPlay() && fogControl.isVisibleTile(team, tile.x, tile.y)) Sounds.blockRepair.at(tile, calcPitch(true));
     }
 
     public static void constructed(Tile tile, Block block, Unit builder, byte rotation, Team team, Object config){
@@ -242,8 +239,9 @@ public class ConstructBlock extends Block{
         public boolean wasConstructing, activeDeconstruct;
         public float constructColor;
 
-        private float[] accumulator;
-        private float[] totalAccumulator;
+        private @Nullable float[] accumulator;
+        private @Nullable float[] totalAccumulator;
+        private @Nullable int[] itemsLeft;
 
         private float lastProgress = 0f;
 
@@ -270,8 +268,8 @@ public class ConstructBlock extends Block{
         @Override
         public void tapped(){
             //if the target is constructable, begin constructing
-            if(current.isPlaceable()){
-                if(control.input.buildWasAutoPaused && !control.input.isBuilding && player.isBuilder()){
+            if(current.isPlaceable() && player.isBuilder()){
+                if(control.input.buildWasAutoPaused && !control.input.isBuilding){
                     control.input.isBuilding = true;
                 }
                 if(attachedPlan == null) attachedPlan = new BuildPlan(tile.x, tile.y, rotation, current, lastConfig);
@@ -282,8 +280,19 @@ public class ConstructBlock extends Block{
 
         @Override
         public double sense(LAccess sensor){
-            if(sensor == LAccess.progress) return Mathf.clamp(progress);
-            return super.sense(sensor);
+            return switch(sensor){
+                case progress -> Mathf.clamp(progress);
+                case breaking -> activeDeconstruct ? 1 : 0;
+                default -> super.sense(sensor);
+            };
+        }
+
+        @Override
+        public Object senseObject(LAccess sensor){
+            return switch(sensor){
+                case building -> current;
+                default -> super.senseObject(sensor);
+            };
         }
 
         @Override
@@ -325,7 +334,7 @@ public class ConstructBlock extends Block{
                     Shaders.blockbuild.time = Time.time;
                     Shaders.blockbuild.progress = progress;
 
-                    Draw.rect(region, x, y, current.rotate && (noOverrides || current.regionRotated2 == i || current.regionRotated1 == i) ? rotdeg() : 0);
+                    Draw.rect(region, x, y, current.rotate && (noOverrides || current.regionRotated2 == i || current.regionRotated1 == i) ? rotdeg() + current.visualRotationOffset : 0);
                     Draw.flush();
                     i ++;
                 }
@@ -335,6 +344,8 @@ public class ConstructBlock extends Block{
         }
 
         public void construct(Unit builder, @Nullable Building core, float amount, Object config){
+            if(accumulator == null || totalAccumulator == null) return;
+
             wasConstructing = true;
             activeDeconstruct = false;
 
@@ -346,11 +357,13 @@ public class ConstructBlock extends Block{
                 setConstruct(previous, current);
             }
 
+            boolean infinite = team.rules().infiniteResources || state.rules.infiniteResources;
+
             float maxProgress = core == null || team.rules().infiniteResources ? amount : checkRequired(core.items, amount, false);
 
             for(int i = 0; i < current.requirements.length; i++){
                 int reqamount = Math.round(state.rules.buildCostMultiplier * current.requirements[i].amount);
-                accumulator[i] += Math.min(reqamount * maxProgress, reqamount - totalAccumulator[i] + 0.00001f); //add min amount progressed to the accumulator
+                accumulator[i] += Math.min(reqamount * maxProgress, reqamount - totalAccumulator[i]); //add min amount progressed to the accumulator
                 totalAccumulator[i] = Math.min(totalAccumulator[i] + reqamount * maxProgress, reqamount);
             }
 
@@ -365,14 +378,35 @@ public class ConstructBlock extends Block{
             handleBlockWarning();
 
             if(progress >= 1f || state.rules.infiniteResources){
-                if(lastBuilder == null) lastBuilder = builder;
-                if(!net.client()){
-                    constructed(tile, current, lastBuilder, (byte)rotation, builder.team, config);
+                boolean canFinish = !current.isOverPlacementLimit(team);
+
+                //look at leftover resources to consume, get them from the core if necessary, delay building if not
+                if(!infinite){
+                    for(int i = 0; i < itemsLeft.length; i++){
+                        if(itemsLeft[i] > 0){
+                            if(core != null && core.items.has(current.requirements[i].item, itemsLeft[i])){
+                                core.items.remove(current.requirements[i].item, itemsLeft[i]);
+                                itemsLeft[i] = 0;
+                            }else{
+                                canFinish = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if(canFinish){
+                    if(lastBuilder == null) lastBuilder = builder;
+                    if(!net.client()){
+                        constructed(tile, current, lastBuilder, (byte)rotation, builder.team, config);
+                    }
                 }
             }
         }
 
         public void deconstruct(Unit builder, @Nullable CoreBuild core, float amount){
+            if(accumulator == null || totalAccumulator == null) return;
+
             //reset accumulated resources when switching modes
             if(wasConstructing){
                 Arrays.fill(accumulator, 0);
@@ -405,7 +439,8 @@ public class ConstructBlock extends Block{
                     if(core != null && requirements[i].item.unlockedNowHost() && player != null){ //only accept items that are unlocked
                         int accepting = Math.min(accumulated, core.storageCapacity - core.items.get(requirements[i].item));
                         //transfer items directly, as this is not production.
-                        core.items.add(requirements[i].item, accepting);
+                        if(!state.rules.infiniteResources) core.items.add(requirements[i].item, accepting);
+                        itemsLeft[i] += accepting;
                         accumulator[i] -= accepting;
                     }else{
                         accumulator[i] -= accumulated;
@@ -416,6 +451,20 @@ public class ConstructBlock extends Block{
             progress = Mathf.clamp(progress - amount);
 
             if(progress <= current.deconstructThreshold || state.rules.infiniteResources){
+                //add any leftover items that weren't obtained due to rounding errors
+                if(core != null && !state.rules.infiniteResources){
+                    for(int i = 0; i < itemsLeft.length; i++){
+                        int target = Mathf.round(requirements[i].amount * state.rules.buildCostMultiplier * state.rules.deconstructRefundMultiplier);
+                        int remaining = target - itemsLeft[i];
+
+                        if(requirements[i].item.unlockedNowHost()){
+                            core.items.add(requirements[i].item, Mathf.clamp(remaining, 0, core.storageCapacity - core.items.get(requirements[i].item)));
+                        }
+                        itemsLeft[i] = target;
+                    }
+                }
+
+                if(lastBuilder == null) lastBuilder = builder;
                 Call.deconstructFinish(tile, this.current, lastBuilder);
             }
         }
@@ -425,6 +474,11 @@ public class ConstructBlock extends Block{
             boolean infinite = team.rules().infiniteResources || state.rules.infiniteResources;
 
             for(int i = 0; i < current.requirements.length; i++){
+                //there is no need to remove items that have already been fully taken out
+                if(itemsLeft[i] == 0){
+                    continue;
+                }
+
                 int sclamount = Math.round(state.rules.buildCostMultiplier * current.requirements[i].amount);
                 int required = (int)(accumulator[i]); //calculate items that are required now
 
@@ -444,6 +498,7 @@ public class ConstructBlock extends Block{
                     //remove stuff that is actually used
                     if(remove && !infinite){
                         inventory.remove(current.requirements[i].item, maxUse);
+                        itemsLeft[i] -= maxUse;
                     }
                 }
                 //else, no items are required yet, so just keep going
@@ -452,6 +507,7 @@ public class ConstructBlock extends Block{
             return maxProgress;
         }
 
+        @Override
         public float progress(){
             return progress;
         }
@@ -463,9 +519,15 @@ public class ConstructBlock extends Block{
             this.wasConstructing = true;
             this.current = block;
             this.previous = previous;
-            this.buildCost = block.buildCost * state.rules.buildCostMultiplier;
+            this.buildCost = block.buildTime * state.rules.buildCostMultiplier;
+            this.itemsLeft = new int[block.requirements.length];
             this.accumulator = new float[block.requirements.length];
             this.totalAccumulator = new float[block.requirements.length];
+
+            ItemStack[] requirements = current.requirements;
+            for(int i = 0; i < requirements.length; i++){
+                this.itemsLeft[i] = Mathf.round(requirements[i].amount * state.rules.buildCostMultiplier);
+            }
             pathfinder.updateTile(tile);
         }
 
@@ -477,10 +539,16 @@ public class ConstructBlock extends Block{
             this.previous = previous;
             this.progress = 1f;
             this.current = previous;
-            this.buildCost = previous.buildCost * state.rules.buildCostMultiplier;
+            this.buildCost = previous.buildTime * state.rules.buildCostMultiplier;
+            this.itemsLeft = new int[previous.requirements.length];
             this.accumulator = new float[previous.requirements.length];
             this.totalAccumulator = new float[previous.requirements.length];
             pathfinder.updateTile(tile);
+        }
+
+        @Override
+        public byte version(){
+            return 1;
         }
 
         @Override
@@ -497,6 +565,7 @@ public class ConstructBlock extends Block{
                 for(int i = 0; i < accumulator.length; i++){
                     write.f(accumulator[i]);
                     write.f(totalAccumulator[i]);
+                    write.i(itemsLeft[i]);
                 }
             }
         }
@@ -512,9 +581,13 @@ public class ConstructBlock extends Block{
             if(acsize != -1){
                 accumulator = new float[acsize];
                 totalAccumulator = new float[acsize];
+                itemsLeft = new int[acsize];
                 for(int i = 0; i < acsize; i++){
                     accumulator[i] = read.f();
                     totalAccumulator[i] = read.f();
+                    if(revision >= 1){
+                        itemsLeft[i] = read.i();
+                    }
                 }
             }
 
@@ -524,7 +597,7 @@ public class ConstructBlock extends Block{
             if(previous == null) previous = Blocks.air;
             if(current == null) current = Blocks.air;
 
-            buildCost = current.buildCost * state.rules.buildCostMultiplier;
+            buildCost = current.buildTime * state.rules.buildCostMultiplier;
         }
 
         /** Returns the smallest distance to the core and/or its connected vaults.*/
@@ -545,19 +618,18 @@ public class ConstructBlock extends Block{
             var warnBlock = warnBlocks.get(current);
             if (warnBlock == null) return;
 
-            lastBuilder.drawBuildPlans(); // Draw their build plans FINISHME: This is kind of dumb because it only draws while they are building one of these blocks rather than drawing whenever there is one in the queue
             int distance = distanceToGreaterCore();
 
             // Play warning sound (only played when no reactor has been built for 10s)
             if (warnBlock.soundDistance == 101 || distance <= (warnBlock.soundDistance)) {
-                if (Time.timeSinceMillis(lastWarn) > 10 * 1000) Sounds.corexplode.play(.3f * (float)Core.settings.getInt("sfxvol") / 100.0F);
+                if (Time.timeSinceMillis(lastWarn) > 10 * 1000) Sounds.explosionCore.play(.3f * (float)Core.settings.getInt("sfxvol") / 100.0F);
                 lastWarn = Time.millis();
             }
 
             if (warnBlock.warnDistance == 101 || distance <= warnBlock.warnDistance) {
                 String toastMessage = Core.bundle.format(
-                        "client.blockwarn", ClientUtils.getName(lastBuilder),
-                        current.localizedName, tile.x, tile.y, distance
+                    "client.blockwarn", ClientUtils.getName(lastBuilder),
+                    current.localizedName, tile.x, tile.y, distance
                 );
                 String toastSubtitle = String.format("%2d%% completed.", Mathf.round(progress * 100));
                 if (toast == null || toast.parent == null) {
@@ -576,12 +648,12 @@ public class ConstructBlock extends Block{
             if (
                 lastProgress == 0 && Core.settings.getBool("removecorenukes")
                 && state.rules.reactorExplosions && current instanceof NuclearReactor
-                && !lastBuilder.isLocal() && distance <= 21
-            ) { // Automatically remove reactors within explosion radiusof core
+                && !lastBuilder.isLocal() && distance <= 21 && !CustomMode.flood.b() // FINISHME: Can we check if the builder is building the player's local plan easily?
+            ) { // Automatically remove reactors within explosion radius of core
                 Call.buildingControlSelect(player, closestCore());
-                Timer.schedule(() -> player.unit().plans.add( // FINISHME: Cleanup
-                        new BuildPlan(tile.x, tile.y)
-                ), net.client() ? netClient.getPing()/1000f+.3f : 0);
+                Timer.schedule(() -> { // FINISHME: Cleanup
+                    if (player.unit() != null) player.unit().plans.add(new BuildPlan(tile.x, tile.y));
+                }, net.client() ? netClient.getPing()/1000f+.3f : 0);
             }
             lastProgress = progress;
         }

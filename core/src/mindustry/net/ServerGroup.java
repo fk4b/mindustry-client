@@ -24,10 +24,17 @@ public class ServerGroup{
         return Core.settings.getBool(key() + "-hidden", Core.settings.getBool("hideserversbydefault"));
     }
 
+    public boolean favorite(){
+        return Core.settings.getBool(key() + "-favorite", false);
+    }
 
     public void setHidden(boolean hidden){
         if(hidden != Core.settings.getBool("hideserversbydefault")) Core.settings.put(key() + "-hidden", hidden);
         else Core.settings.remove(key() + "-hidden"); // Delete redundant setting, no need to have it around if its doing nothing (unless people want to swap between hidden/shown by default for some reason?)
+    }
+
+    public void setFavorite(boolean favorite){
+        Core.settings.put(key() + "-favorite", favorite);
     }
 
     String key(){

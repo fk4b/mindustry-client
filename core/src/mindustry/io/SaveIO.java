@@ -2,10 +2,13 @@ package mindustry.io;
 
 import arc.*;
 import arc.files.*;
+import arc.graphics.*;
 import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
 import mindustry.*;
+import mindustry.content.*;
+import mindustry.game.*;
 import mindustry.game.EventType.*;
 import mindustry.io.versions.*;
 import mindustry.world.*;
@@ -20,7 +23,7 @@ public class SaveIO{
     /** Save format header. */
     public static final byte[] header = {'M', 'S', 'A', 'V'};
     public static final IntMap<SaveVersion> versions = new IntMap<>();
-    public static final Seq<SaveVersion> versionArray = Seq.with(new Save1(), new Save2(), new Save3(), new Save4(), new Save5(), new Save6(), new Save7());
+    public static final Seq<SaveVersion> versionArray = Seq.with(new Save1(), new Save2(), new Save3(), new Save4(), new Save5(), new Save6(), new Save7(), new Save8(), new Save9(), new Save10(), new Save11(), new Save12(), new Save13());
 
     static{
         for(SaveVersion version : versionArray){
@@ -32,15 +35,19 @@ public class SaveIO{
         return versionArray.peek();
     }
 
-    public static SaveVersion getSaveWriter(int version){
+    public static @Nullable SaveVersion getSaveWriter(int version){
         return versions.get(version);
     }
 
     public static void save(Fi file){
+        save(file, new SaveOptions());
+    }
+
+    public static void save(Fi file, SaveOptions options){
         boolean exists = file.exists();
         if(exists) file.moveTo(backupFileFor(file));
         try{
-            write(file);
+            write(file, options);
         }catch(Throwable e){
             if(exists) backupFileFor(file).moveTo(file);
             throw new RuntimeException(e);
@@ -56,8 +63,13 @@ public class SaveIO{
     }
 
     public static boolean isSaveValid(Fi file){
+        return isSaveFileValid(file) || isSaveFileValid(backupFileFor(file));
+    }
+
+    private static boolean isSaveFileValid(Fi file){
         try(DataInputStream stream = new DataInputStream(new InflaterInputStream(file.read(bufferSize)))){
-            return isSaveValid(stream);
+            getMeta(stream);
+            return true;
         }catch(Throwable e){
             return false;
         }
@@ -103,26 +115,22 @@ public class SaveIO{
         return file.sibling(file.name() + "-backup." + file.extension());
     }
 
-    public static void write(Fi file, StringMap tags){
-        write(new FastDeflaterOutputStream(file.write(false, bufferSize)), tags);
+    public static void write(Fi file, SaveOptions options){
+        write(new FastDeflaterOutputStream(file.write(false, bufferSize)), options);
     }
 
     public static void write(Fi file){
-        write(file, null);
+        write(file, new SaveOptions());
     }
 
-    public static void write(OutputStream os, StringMap tags){
+    public static void write(OutputStream os, SaveOptions options){
         try(DataOutputStream stream = new DataOutputStream(os)){
             Events.fire(new SaveWriteEvent());
             SaveVersion ver = getVersion();
 
             stream.write(header);
             stream.writeInt(ver.version);
-            if(tags == null){
-                ver.write(stream);
-            }else{
-                ver.write(stream, tags);
-            }
+            ver.write(stream, options);
         }catch(Throwable e){
             throw new RuntimeException(e);
         }
@@ -161,12 +169,130 @@ public class SaveIO{
 
             if(ver == null) throw new IOException("Unknown save version: " + version + ". Are you trying to load a save from a newer version?");
 
-            ver.read(stream, counter, context);
+            ver.read(stream, counter, new SaveReadState(context));
             Events.fire(new SaveLoadEvent(context.isMap()));
+
+            //this gets handled elsewhere when starting a new game or loading a sector
+            if(!context.isMap() && !state.isCampaign()){
+                Events.fire(new RulesLoadEvent(state.rules, true));
+            }
         }catch(Throwable e){
             throw new SaveException(e);
         }finally{
             world.setGenerating(false);
+            content.setTemporaryMapper(null);
+        }
+    }
+
+    public static Pixmap generatePreview(Saves.SaveSlot slot) throws IOException{
+        Pixmap[] floors = {null}, walls = {null};
+        short[][] floorIds = new short[1][0];
+        boolean[][] overlays = new boolean[1][0];
+        try(InputStream is = new InflaterInputStream(slot.file.read(bufferSize)); CounterInputStream counter = new CounterInputStream(is); DataInputStream stream = new DataInputStream(counter)){
+            SaveIO.readHeader(stream);
+            int version = stream.readInt();
+            SaveVersion ver = SaveIO.getSaveWriter(version);
+
+            if(ver == null) throw new IOException("Unknown save version: " + version + ". Are you trying to load a save from a newer version?");
+            ver.readRegion("meta", stream, counter, ver::readStringMap);
+
+            int black = 255;
+            int shade = Color.rgba8888(0f, 0f, 0f, 0.5f);
+            CachedTile tile = new CachedTile(){
+                @Override
+                public void setBlock(Block type){
+                    super.setBlock(type);
+
+                    int c = MapIO.colorFor(block(), Blocks.air, Blocks.air, team());
+                    if(c != black){
+                        walls[0].setRaw(x, floors[0].height - 1 - y, c);
+                        floors[0].set(x, floors[0].height - 1 - y + 1, shade);
+                    }
+                }
+            };
+
+            ver.readRegion("content", stream, counter, ver::readContentHeader);
+            ver.readRegion("preview_map", stream, counter, in -> ver.readMap(in, new SaveReadState(new WorldContext(){
+                @Override public void resize(int width, int height){
+                    walls[0] = new Pixmap(width, height);
+                    floors[0] = new Pixmap(width, height);
+                    int len = width * height;
+                    floorIds[0] = new short[len];
+                    overlays[0] = new boolean[len];
+                }
+                @Override public boolean isGenerating(){return false;}
+                @Override public void begin(){
+                    world.setGenerating(true);
+                }
+                @Override public void end(){
+                    world.setGenerating(false);
+                }
+
+                @Override
+                public void onReadBuilding(){
+                    //read team colors
+                    if(tile.build != null){
+                        int c = tile.build.team.color.rgba8888();
+                        int size = tile.block().size;
+                        int offsetx = -(size - 1) / 2;
+                        int offsety = -(size - 1) / 2;
+                        for(int dx = 0; dx < size; dx++){
+                            for(int dy = 0; dy < size; dy++){
+                                int drawx = tile.x + dx + offsetx, drawy = tile.y + dy + offsety;
+                                walls[0].set(drawx, floors[0].height - 1 - drawy, c);
+                            }
+                        }
+                    }
+                }
+
+                @Override
+                public Tile tile(int index){
+                    tile.x = (short)(index % floors[0].width);
+                    tile.y = (short)(index / floors[0].width);
+                    return tile;
+                }
+
+                @Override
+                public Tile create(int x, int y, int floorID, int overlayID, int wallID){
+                    if(overlayID != 0){
+                        floors[0].set(x, floors[0].height - 1 - y, MapIO.colorFor(Blocks.air, Blocks.air, content.block(overlayID), Team.derelict));
+                    }else{
+                        floors[0].set(x, floors[0].height - 1 - y, MapIO.colorFor(Blocks.air, content.block(floorID), Blocks.air, Team.derelict));
+                    }
+
+                    floorIds[0][x + y * floors[0].width] = (short)floorID;
+                    overlays[0][x + y * floors[0].width] = overlayID != 0;
+                    return tile;
+                }
+
+                @Override
+                public void onReadTileData(){
+                    Block block = tile.block();
+                    Block floor = content.block(floorIds[0][tile.x + tile.y*walls[0].width]);
+
+                    if(!block.synthetic() && block != Blocks.air){
+                        int color = block.minimapColor(tile);
+                        if(color != 0){
+                            walls[0].set(tile.x, walls[0].height - 1 - tile.y, color);
+                        }
+                    }else if(!overlays[0][tile.array()] && block == Blocks.air){
+                        int color = floor.minimapColor(tile);
+                        if(color != 0){
+                            floors[0].set(tile.x, floors[0].height - 1 - tile.y, color);
+                        }
+                    }
+                }
+            }){{
+                preview = true;
+            }}));
+
+            floors[0].draw(walls[0], true);
+            return floors[0];
+        }catch(Exception e){
+            floors[0].dispose();
+            throw e;
+        }finally{
+            walls[0].dispose();
             content.setTemporaryMapper(null);
         }
     }

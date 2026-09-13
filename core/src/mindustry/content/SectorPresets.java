@@ -1,5 +1,7 @@
 package mindustry.content;
 
+import mindustry.client.ui.*;
+import mindustry.maps.*;
 import mindustry.type.*;
 
 import static mindustry.content.Planets.*;
@@ -7,10 +9,10 @@ import static mindustry.content.Planets.*;
 public class SectorPresets{
     public static SectorPreset
     groundZero,
-    craters, biomassFacility, frozenForest, ruinousShores, windsweptIslands, stainedMountains, tarFields,
-    fungalPass, extractionOutpost, saltFlats, overgrowth,
+    crateredBattleground, biomassFacility, taintedWoods, frozenForest, ruinousShores, facility32m, windsweptIslands, stainedMountains, tarFields,
+    frontier, fungalPass, infestedCanyons, atolls, sunkenPier, mycelialBastion, extractionOutpost, saltFlats, testingGrounds, overgrowth,
     impact0078, desolateRift, nuclearComplex, planetaryTerminal,
-    coastline, navalFortress,
+    coastline, navalFortress, weatheredChannels, perilousHarbor, littoralShipyard,
 
     onset, aegis, lake, intersect, basin, atlas, split, marsh, peaks, ravine, caldera,
     stronghold, crevice, siege, crossroads, karst, origin;
@@ -26,10 +28,18 @@ public class SectorPresets{
             overrideLaunchDefaults = true;
             noLighting = true;
             startWaveTimeMultiplier = 3f;
+            if(localizedName.equals("Ground Zero") && CursednessLevel.atLeast(CursednessLevel.UHH)){
+                localizedName = "Soybean Base";
+            }
         }};
 
         saltFlats = new SectorPreset("saltFlats", serpulo, 101){{
             difficulty = 5;
+        }};
+
+        testingGrounds = new SectorPreset("testingGrounds", serpulo, 3){{
+            difficulty = 7;
+            captureWave = 33;
         }};
 
         frozenForest = new SectorPreset("frozenForest", serpulo, 86){{
@@ -42,7 +52,12 @@ public class SectorPresets{
             difficulty = 3;
         }};
 
-        craters = new SectorPreset("craters", serpulo, 18){{
+        taintedWoods = new SectorPreset("taintedWoods", serpulo, 221){{
+            captureWave = 33;
+            difficulty = 5;
+        }};
+
+        crateredBattleground = new SectorPreset("crateredBattleground", serpulo, 18){{
             captureWave = 20;
             difficulty = 2;
         }};
@@ -50,6 +65,15 @@ public class SectorPresets{
         ruinousShores = new SectorPreset("ruinousShores", serpulo, 213){{
             captureWave = 30;
             difficulty = 3;
+        }};
+
+        perilousHarbor = new SectorPreset("perilousHarbor", serpulo, 47){{
+            difficulty = 4;
+        }};
+
+        facility32m = new SectorPreset("facility32m", serpulo, 64){{
+            captureWave = 25;
+            difficulty = 4;
         }};
 
         windsweptIslands = new SectorPreset("windsweptIslands", serpulo, 246){{
@@ -71,12 +95,38 @@ public class SectorPresets{
             difficulty = 5;
         }};
 
-        navalFortress = new SectorPreset("navalFortress", serpulo, 216){{
+        weatheredChannels = new SectorPreset("weatheredChannels", serpulo, 39){{
+            captureWave = 40;
             difficulty = 9;
         }};
 
-        fungalPass = new SectorPreset("fungalPass", serpulo, 21){{
+        navalFortress = new SectorPreset("navalFortress", serpulo, 216){{
+            difficulty = 8;
+        }};
+
+        frontier = new SectorPreset("frontier", serpulo, 50){{
             difficulty = 4;
+        }};
+
+        fungalPass = new SectorPreset("fungalPass", serpulo, 21){{
+            difficulty = 2;
+        }};
+
+        infestedCanyons = new SectorPreset("infestedCanyons", serpulo, 210){{
+            difficulty = 4;
+        }};
+
+        atolls = new SectorPreset("atolls", serpulo, 1){{
+            difficulty = 7;
+        }};
+
+        sunkenPier = new SectorPreset("sunkenPier", serpulo, -1){{
+            captureWave = 50;
+            difficulty = 8;
+        }};
+
+        mycelialBastion = new SectorPreset("mycelialBastion", serpulo, 260){{
+            difficulty = 8;
         }};
 
         overgrowth = new SectorPreset("overgrowth", serpulo, 134){{
@@ -103,16 +153,21 @@ public class SectorPresets{
             difficulty = 7;
         }};
 
+        littoralShipyard = new SectorPreset("littoralShipyard", serpulo, 204){{
+            difficulty = 9;
+        }};
+
         planetaryTerminal = new SectorPreset("planetaryTerminal", serpulo, 93){{
             difficulty = 10;
             isLastSector = true;
         }};
 
+        SectorSubmissions.registerSectors();
+
         //endregion
         //region erekir
 
         onset = new SectorPreset("onset", erekir, 10){{
-            addStartingItems = true;
             alwaysUnlocked = true;
             difficulty = 1;
         }};
@@ -131,11 +186,11 @@ public class SectorPresets{
             attackAfterWaves = true;
         }};
 
-        atlas = new SectorPreset("atlas", erekir, 14){{ //TODO random sector, pick a better one
+        atlas = new SectorPreset("atlas", erekir, 14){{
             difficulty = 5;
         }};
 
-        split = new SectorPreset("split", erekir, 19){{ //TODO random sector, pick a better one
+        split = new SectorPreset("split", erekir, 19){{
             difficulty = 2;
         }};
 

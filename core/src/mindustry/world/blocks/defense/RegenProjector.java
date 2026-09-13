@@ -46,6 +46,9 @@ public class RegenProjector extends Block{
         suppressable = true;
         envEnabled |= Env.space;
         rotateDraw = false;
+        flags = EnumSet.of(BlockFlag.blockRepair);
+        ambientSound = Sounds.loopRegen;
+        ambientSoundVolume = 0.45f;
     }
 
     @Override
@@ -97,7 +100,7 @@ public class RegenProjector extends Block{
             stats.add(Stat.booster, StatValues.itemBoosters(
                 "{0}" + StatUnit.timesSpeed.localized(),
                 stats.timePeriod, optionalMultiplier, 0f,
-                cons.items, this::consumesItem)
+                cons.items)
             );
         }
     }
@@ -136,7 +139,7 @@ public class RegenProjector extends Block{
             anyTargets = targets.contains(b -> b.damaged());
 
             if(efficiency > 0){
-                if((optionalTimer += Time.delta * optionalEfficiency) >= optionalUseTime){
+                if((optionalTimer += edelta() * optionalEfficiency) >= optionalUseTime){
                     consume();
                     optionalTimer = 0f;
                 }

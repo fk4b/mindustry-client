@@ -1,6 +1,8 @@
 package mindustry.ui.dialogs;
 
 import arc.*;
+import arc.files.*;
+import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.scene.style.*;
 import arc.scene.ui.*;
@@ -18,6 +20,7 @@ import mindustry.ui.*;
 
 import java.io.*;
 
+import static arc.Core.*;
 import static mindustry.Vars.*;
 
 public class LoadDialog extends BaseDialog{
@@ -44,8 +47,20 @@ public class LoadDialog extends BaseDialog{
         });
         onResize(this::setup);
 
-        addCloseButton();
+        // Manually add a close button/listener and set the default height as we don't want to set a default width which addCloseButton() does
+        buttons.defaults().height(64).minWidth(210);
+        buttons.button("@back", Icon.left, this::hide);
+        addCloseListener();
+
         addSetup();
+
+        buttons.button("@client.save.createpreviews.now", Vars.control.saves::createMissingPreviews);
+        buttons.table(Tex.button, t ->
+            t.check("@client.save.createpreviews.async", settings.getBool("createmissingsavepreviews"), b -> { if(b) settings.put("createmissingsavepreviews", true); else settings.remove("createmissingsavepreviews"); }).fill()
+                .tooltip("@client.save.createpreviews.async.tooltip").get().getLabelCell().fillX()
+        );
+
+        buttons.getCells().each(c -> c.wrapLabel(false)); // Need to do this due to our hacky buttons.defaults stuff above
     }
 
     protected void setup(){
@@ -83,27 +98,26 @@ public class LoadDialog extends BaseDialog{
         cont.add(pane).growY();
     }
 
-    private int count = 0;
     public void rebuild(){
-        count = 0;
+        int[] count = {0};
         slots.clear();
         slots.marginRight(24).marginLeft(20f);
 
         Time.runTask(2f, () -> Core.scene.setScrollFocus(pane));
 
-        int maxwidth = Math.max((int)(Core.graphics.getWidth() / Scl.scl(470)), 1);
+        int cols = Math.max((int)(Core.graphics.getWidth() / Scl.scl(470)), 1);
 
-        if(control.saves.loadedSaveCount() == 0){
+        if(!control.saves.loading){ // Start an async load if we haven't yet done so
             control.saves.load(false, s -> {
                 if(!visible) return;
-                if(s != null && addSlot(s, count, maxwidth)) count++;
+                if(s != null && addSlot(s, count[0], cols)) count[0]++;
                 else if (s == null) rebuild(); // Ensures that ordering is correct based on last played timestamp and not file last modified timestamp.
             });
         }else{
             for(SaveSlot slot : control.saves.getSaveSlots().sort(s -> -s.getTimestamp())){
-                if(addSlot(slot, count, maxwidth)) count++;
+                if(addSlot(slot, count[0], cols)) count[0]++;
             }
-            if(count == 0) slots.add("@save.none");
+            if(count[0] == 0) slots.add("@save.none");
         }
     }
 
@@ -145,7 +159,13 @@ public class LoadDialog extends BaseDialog{
                     });
                 }).right();
 
-                t.button(Icon.export, Styles.emptyi, () -> platform.export("save-" + slot.getName(), saveExtension, slot::exportFile)).right();
+                t.button(Icon.export, Styles.emptyi, () -> {
+                    if(slot.hasExternalAssets() && !slot.isBeingPlayed()){
+                        ui.showInfo("@save.export.needsload");
+                    }else{
+                        FileChooser.export(slot.getName(), saveExtension, slot::exportFile);
+                    }
+                }).right();
 
             }).padRight(-10).growX();
         }).growX().colspan(2);
@@ -154,22 +174,27 @@ public class LoadDialog extends BaseDialog{
         String color = "[lightgray]";
         TextureRegion def = Core.atlas.find("nomap");
 
-        button.left().add(new BorderImage(def, 4f)).update(im -> {
-            TextureRegionDrawable draw = (TextureRegionDrawable)im.getDrawable();
-            if(draw.getRegion().texture.isDisposed()){
-                draw.setRegion(def);
-            }
+        button.left().add(new BorderImage(def, 4f){
+            @Override
+            public void draw(){
+                TextureRegionDrawable draw = (TextureRegionDrawable)getDrawable();
+                if(draw.getRegion().texture.isDisposed()){
+                    draw.setRegion(def);
+                    invalidate();
+                }
 
-            var reg = slot.previewTexture();
-            if(draw.getRegion() != reg){
-                draw.setRegion(reg);
+                var reg = slot.previewTexture();
+                if(draw.getRegion() != reg){
+                    draw.setRegion(reg);
+                    invalidate();
+                }
+                super.draw();
             }
-            im.setScaling(Scaling.fit);
-        }).left().size(160f).padRight(6);
+        }).left().size(160f).padRight(6).get().setScaling(Scaling.fit);
 
         button.table(meta -> {
             meta.left().top();
-            meta.defaults().padBottom(-2).left().width(290f);
+            meta.defaults().padBottom(-2).left().width(280f);
             meta.row();
             meta.labelWrap(Core.bundle.format("save.map", color + (slot.getMap() == null ? Core.bundle.get("unknown") : slot.getMap().name())));
             meta.row();
@@ -181,7 +206,7 @@ public class LoadDialog extends BaseDialog{
             meta.row();
             meta.labelWrap(color + slot.getDate());
             meta.row();
-        }).left().growX().width(250f);
+        }).left().growX().width(260f);
 
         modifyButton(button, slot);
 
@@ -196,24 +221,27 @@ public class LoadDialog extends BaseDialog{
     public void addSetup(){
 
         buttons.button("@save.import", Icon.add, () -> {
-            platform.showFileChooser(true, saveExtension, file -> {
-                if(SaveIO.isSaveValid(file)){
-                    var meta = SaveIO.getMeta(file);
+            FileChooser.open("msav").submitMulti(files -> {
+                for(Fi file : files){
+                    if(SaveIO.isSaveValid(file)){
+                        var meta = SaveIO.getMeta(file);
 
-                    if(meta.rules.sector != null){
-                        ui.showErrorMessage("@save.nocampaign");
-                    }else{
-                        try{
-                            control.saves.importSave(file);
-                            rebuild();
-                        }catch(IOException e){
-                            e.printStackTrace();
-                            ui.showException("@save.import.fail", e);
+                        if(meta.rules.sector != null){
+                            ui.showErrorMessage("@save.nocampaign");
+                        }else{
+                            try{
+                                control.saves.importSave(file);
+                            }catch(Exception e){
+                                Log.err(e);
+                                ui.showException("@save.import.fail", e);
+                            }
                         }
+                    }else{
+                        ui.showErrorMessage("@save.import.invalid");
                     }
-                }else{
-                    ui.showErrorMessage("@save.import.invalid");
                 }
+
+                rebuild();
             });
         }).fillX().margin(10f);
     }
@@ -228,6 +256,27 @@ public class LoadDialog extends BaseDialog{
                 state.rules.editor = false;
                 state.rules.sector = null;
                 state.set(State.playing);
+
+                var missing = state.data.getMissingAssets();
+                if(missing.size > 0){
+                    BaseDialog d = new BaseDialog("@save.assets.missing");
+                    d.cont.add("@save.assets.missing.info").labelAlign(Align.center).expandX().wrap().colspan(2);
+                    d.cont.row();
+
+                    Collapser col = new Collapser(base -> base.pane(t -> {
+                        t.margin(14f);
+                        for(var asset : missing){
+                            t.add("[accent]" + asset.getType() + ": [lightgray]" + asset.path).left().row();
+                        }
+                    }), true);
+
+                    d.cont.button("@save.assets.missing.list", Styles.togglet, col::toggle).size(180f, 50f).checked(b -> !col.isCollapsed()).fillX().right();
+                    d.cont.button("@ok", d::hide).size(110, 50).fillX().left();
+                    d.cont.row();
+                    d.cont.add(col).colspan(2).pad(2);
+
+                    d.show();
+                }
             }catch(SaveException e){
                 Log.err(e);
                 logic.reset();

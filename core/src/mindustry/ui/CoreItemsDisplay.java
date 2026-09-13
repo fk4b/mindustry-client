@@ -7,7 +7,6 @@ import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
-import mindustry.client.*;
 import mindustry.core.*;
 import mindustry.type.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
@@ -27,7 +26,6 @@ public class CoreItemsDisplay extends Table{
 
     public CoreItemsDisplay(){
         rebuild();
-        ClientVars.coreItemsDisplay = this;
     }
 
     public void resetUsed(){
@@ -74,12 +72,9 @@ public class CoreItemsDisplay extends Table{
                 image(item.uiIcon).size(iconSmall).padRight(3).tooltip(tooltip);
                 //TODO leaks garbage
                 label(() -> (core == null ? "0" : switch(mode){
-                    case disabled ->
-                        colorFor(totalItems.getAverageChange(trackSteps, item)) + UI.formatAmount(core.items.get(item));
-                    case inputOnly ->
-                        formatAmount(inputItems.getAverage(trackSteps, item));
-                    case all ->
-                        formatAmount(totalItems.getAverageChange(trackSteps, item));
+                    case disabled -> colorFor(totalItems.getAverageChange(trackSteps, item)) + UI.formatAmount(core.items.get(item));
+                    case inputOnly -> formatAmount(inputItems.getAverage(trackSteps, item));
+                    case all -> formatAmount(totalItems.getAverageChange(trackSteps, item));
                 })).padRight(3).minWidth(52f).left().tooltip(tooltip);
                 //TODO properly update the tooltip
 
@@ -93,6 +88,11 @@ public class CoreItemsDisplay extends Table{
 
     public void addItem(Item item, int amount){
         if(amount > 0 && (trackItems || mode == CoreItemDisplayMode.inputOnly)) inputItems.add(item, amount);
+    }
+
+    public void checkContentArrayCapacity(int items){
+        inputItems.checkArrayCapacity(items);
+        totalItems.checkArrayCapacity(items);
     }
 
     public static String colorFor(float rate){
@@ -130,7 +130,7 @@ public class CoreItemsDisplay extends Table{
         private final static int pollScl = 30; // every 30 time units or something
         private final static float rateMultiplier = 60f / pollScl;
         private float lastUpdate = 0;
-        private final int numItems = content.items().size;
+        private int numItems = content.items().size;
         private int[] itemRates = new int[numItems * (trackItems ? 1800 : trackSteps + 1)]; // +1 because we don't want average to loop around to itself
         private int stepsRecorded = 0;
 
@@ -181,23 +181,28 @@ public class CoreItemsDisplay extends Table{
             return steps;
         }
 
+        public void checkArrayCapacity(int size){
+            if(size != numItems){
+                numItems = size;
+                reset();
+            }
+        }
+
         public void reset(){
             int targetLength = numItems * (trackItems ? 1800 : trackSteps + 1);
             if (itemRates.length != targetLength) itemRates = new int[targetLength];
-            itemRates[0] = 0;
-            for (int i = 1; i < targetLength; i <<= 1) {
-                System.arraycopy(itemRates, 0, itemRates, i, Math.min(targetLength - i, i));
-            }
+            else Arrays.fill(itemRates, 0);
             idx = 0;
             stepsRecorded = 0;
         }
 
         public void update(ItemModule items){
+            checkArrayCapacity(items.length()); // Crashes otherwise. Maybe it's because ui is updating before these are being resized? I don't know but this should fix it.
             // TODO handle interpolation of data
             int steps = checkUpdate();
             if (steps <= 0) return;
             changeIdx(steps);
-            if (numItems >= 0) System.arraycopy(items.getAllItems(), 0, itemRates, idx, numItems); // ok intellij, i trust that arraycopy will not be slow for <30 elements
+            if (numItems >= 0) System.arraycopy(items.getAllItems(), 0, itemRates, idx, numItems);
         }
 
         public void update(){

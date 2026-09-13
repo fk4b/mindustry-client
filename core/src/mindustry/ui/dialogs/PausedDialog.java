@@ -1,21 +1,51 @@
 package mindustry.ui.dialogs;
 
 import arc.*;
+import arc.scene.ui.*;
+import arc.scene.ui.layout.*;
+import arc.util.*;
+import mindustry.*;
 import mindustry.client.ui.*;
+import mindustry.game.*;
+import mindustry.editor.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 
 import static mindustry.Vars.*;
 
 public class PausedDialog extends BaseDialog{
-    private final SaveDialog save = new SaveDialog();
-    private boolean wasClient = false;
+    private MapProcessorsDialog processors = new MapProcessorsDialog();
+    private SaveDialog save = new SaveDialog();
+    private LoadDialog load = new LoadDialog();
+    private CustomRulesDialog rulesDialog = new CustomRulesDialog();
 
     public PausedDialog(){
         super("@menu");
         shouldPause = true;
 
-        shown(this::rebuild);
+        clearChildren();
+        add(titleTable).growX().row();
+
+        stack(cont, new Table(t -> {
+            t.bottom().left();
+            t.button(Icon.book, () -> {
+                Rules toEdit = Vars.state.rules.copy();
+                rulesDialog.show(toEdit, () -> state.rules.copy());
+                rulesDialog.hidden(() -> {
+                    //apply rule changes only once it is hidden
+                    Vars.state.rules = toEdit;
+                    Call.setRules(toEdit);
+                });
+            }).size(70f).tooltip("@customize").visible(() -> state.rules.allowEditRules && (net.server() || !net.active()));
+        })).grow().row();
+
+        shown(() -> {
+            rebuild();
+
+            if(state.isCampaign()){
+                state.getPlanet().saveStats();
+            }
+        });
 
         addCloseListener();
     }
@@ -30,14 +60,30 @@ public class PausedDialog extends BaseDialog{
         });
 
         if(!mobile){
+            float tpad = -60f;
+
+            if(steam){
+                tpad = 0f;
+
+                cont.check("@steam.friendsonly", !Core.settings.getBool("steampublichost2"), val -> {
+                    Core.settings.put("steampublichost2", !val);
+                    platform.updateLobby();
+                }).colspan(2).left().with(c -> ui.addDescTooltip(c, "@steam.friendsonly.tooltip")).width(440f)
+                    .visible(() -> net.server()).center().colspan(2).fillX().padBottom(10f).padTop(-60f).row();
+            }
+
             float dw = 230f;
             cont.defaults().width(dw).height(55).pad(5f);
 
-            cont.button("@objective", Icon.info, () -> ui.fullText.show("@objective", state.rules.sector.preset.description))
-            .visible(() -> state.rules.sector != null && state.rules.sector.preset != null && state.rules.sector.preset.description != null).padTop(-60f);
+            boolean showObjective = state.rules.sector != null && state.rules.sector.preset != null && state.rules.sector.preset.description != null;
 
-            cont.button("@abandon", Icon.cancel, () -> ui.planet.abandonSectorConfirm(state.rules.sector, this::hide)).padTop(-60f)
-            .disabled(b -> net.client()).visible(() -> state.rules.sector != null).row();
+            if(showObjective){
+                cont.button("@objective", Icon.info, () -> ui.fullText.show("@objective", state.rules.sector != null && state.rules.sector.preset != null ? state.rules.sector.preset.description : "oh dear")).padTop(tpad);
+            }
+
+            cont.button("@abandon", Icon.cancel, () -> ui.planet.abandonSectorConfirm(state.rules.sector, this::hide)).padTop(tpad)
+            .colspan(showObjective ? 1 : 2).width(showObjective ? dw : dw * 2 + 10f)
+            .disabled(b -> net.client() || state.gameOver).visible(() -> state.rules.sector != null).row();
 
             cont.button("@back", Icon.left, this::hide).name("back");
             cont.button("@settings", Icon.settings, ui.settings::show).name("settings");
@@ -45,7 +91,7 @@ public class PausedDialog extends BaseDialog{
             if(!state.isCampaign() && !state.isEditor()){
                 cont.row();
                 cont.button("@savegame", Icon.save, save::show);
-                cont.button("@loadgame", Icon.upload, ui.load::show).disabled(b -> net.active());
+                cont.button("@loadgame", Icon.upload, load::show).disabled(b -> net.active());
             }
 
             cont.row();
@@ -60,6 +106,14 @@ public class PausedDialog extends BaseDialog{
             // FINISHME: Enable while not hosting but make this host when clicked (or add a tooltip or smth)
             cont.button("@client.claj.manage", Icon.link, () -> ui.clajManager.show()).tooltip("@client.claj.info").disabled(f -> !net.server());
 
+            if(state.isEditor()){ // World proc button gets its own row due to foo's claj button
+                cont.row();
+                cont.button("@editor.worldprocessors", Icon.logic, () -> {
+                    hide();
+                    processors.show();
+                }).colspan(2).width(dw * 2 + 10f);
+            }
+
             cont.row();
 
             cont.button("@client.changelog", Icon.edit, ChangelogDialog.INSTANCE::show);
@@ -67,7 +121,7 @@ public class PausedDialog extends BaseDialog{
 
             cont.row();
 
-            cont.button("@client.keyshare", Icon.lock, () -> new TLSKeyDialog().show()).tooltip("@client.keysharedescription");
+            cont.button("@client.certs.manage.title", Icon.lock, () -> new TLSKeyDialog().show()).tooltip("@client.certs.manage.description");
             cont.button("@quit", Icon.exit, this::showQuitConfirm).update(s -> s.setText(control.saves.getCurrent() != null && control.saves.getCurrent().isAutosave() ? "@save.quit" : "@quit"));
 
 
@@ -81,7 +135,17 @@ public class PausedDialog extends BaseDialog{
 
                 cont.row();
 
-                cont.buttonRow("@load", Icon.download, ui.load::show).disabled(b -> net.active());
+                cont.buttonRow("@load", Icon.download, () -> {
+                    if(net.active()){
+                        ui.database.show();
+                    }else{
+                        load.show();
+                    }
+                }).update(t -> {
+                    Image image = (Image)t.getChildren().first();
+                    image.setDrawable(net.active() ? Icon.book : Icon.download);
+                    t.setText(net.active() ? "@database" : "@load");
+                });
             }else if(state.isCampaign()){
                 cont.buttonRow("@research", Icon.tree, ui.research::show);
 
@@ -129,7 +193,11 @@ public class PausedDialog extends BaseDialog{
     }
 
     public void runExitSave(){
-        wasClient = net.client();
+        runExitSave(true);
+    }
+
+    public void runExitSave(boolean save){
+        boolean wasClient = net.client();
         if(net.client()) netClient.disconnectQuietly();
 
         if(state.isEditor() && !wasClient){
@@ -141,19 +209,21 @@ public class PausedDialog extends BaseDialog{
 
         if (!wasClient) Events.fire(new EventType.MenuReturnEvent());
 
-        if(control.saves.getCurrent() == null || !control.saves.getCurrent().isAutosave() || wasClient || state.gameOver){
+        if(control.saves.getCurrent() == null || !control.saves.getCurrent().isAutosave() || wasClient || state.gameOver || disableSave){
             logic.reset();
             return;
         }
 
-        ui.loadAnd("@saving", () -> {
-            try{
-                control.saves.getCurrent().save();
-            }catch(Throwable e){
-                e.printStackTrace();
-                ui.showException("[accent]" + Core.bundle.get("savefail"), e);
-            }
-            logic.reset();
-        });
+        if(save){
+            ui.loadAnd("@saving", () -> {
+                try{
+                    control.saves.getCurrent().save();
+                }catch(Throwable e){
+                    Log.err(e);
+                    ui.showException("[accent]" + Core.bundle.get("savefail"), e);
+                }
+                logic.reset();
+            });
+        }
     }
 }

@@ -31,6 +31,8 @@ public class Sorter extends Block{
         unloadable = false;
         saveConfig = true;
         clearOnDoubleTap = true;
+        drawCached = true;
+        drawDynamic = false;
 
         config(Item.class, (SorterBuild tile, Item item) -> tile.sortItem = item);
         configClear((SorterBuild tile) -> tile.sortItem = null);
@@ -65,6 +67,7 @@ public class Sorter extends Block{
             super.configured(player, value);
 
             if(!headless){
+                recache();
                 renderer.minimap.update(tile);
             }
         }
@@ -81,6 +84,12 @@ public class Sorter extends Block{
             }
 
             super.draw();
+        }
+
+        @Override
+        public void drawSelect(){
+            super.drawSelect();
+            drawItemSelection(sortItem);
         }
 
         @Override
@@ -111,8 +120,8 @@ public class Sorter extends Block{
                 }
                 to = nearby(dir);
             }else{
-                Building a = nearby(Mathf.mod(dir - 1, 4));
-                Building b = nearby(Mathf.mod(dir + 1, 4));
+                Building a = nearby((dir + 3) & 3); // Mathf.mod(dir - 1, 4)
+                Building b = nearby((dir + 1) & 3); // Mathf.mod(dir + 1, 4)
                 boolean ac = a != null && !(a.block.instantTransfer && source.block.instantTransfer) &&
                 a.acceptItem(this, item);
                 boolean bc = b != null && !(b.block.instantTransfer && source.block.instantTransfer) &&

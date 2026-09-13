@@ -24,7 +24,7 @@ public class ConsumeItems extends Consume{
         block.hasItems = true;
         block.acceptsItems = true;
         for(var stack : items){
-            block.itemFilter[stack.item.id] = true;
+            if(stack.item.id < block.itemFilter.length) block.itemFilter[stack.item.id] = true;
         }
     }
 
@@ -33,7 +33,7 @@ public class ConsumeItems extends Consume{
         table.table(c -> {
             int i = 0;
             for(var stack : items){
-                c.add(new ReqImage(new ItemImage(stack.item.uiIcon, Math.round(stack.amount * multiplier.get(build))),
+                c.add(new ReqImage(StatValues.stack(stack.item, Math.round(stack.amount * multiplier.get(build))),
                 () -> build.items.has(stack.item, Math.round(stack.amount * multiplier.get(build))))).padRight(8);
                 if(++i % 4 == 0) c.row();
             }

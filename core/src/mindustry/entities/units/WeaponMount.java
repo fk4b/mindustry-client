@@ -32,6 +32,8 @@ public class WeaponMount{
     public float aimX, aimY;
     /** whether to shoot right now */
     public boolean shoot = false;
+    /** whether to allow any shooting effects */
+    public boolean allowShootEffects = true;
     /** whether to rotate to face the target right now */
     public boolean rotate = false;
     /** extra state for alternating weapons */
@@ -40,6 +42,8 @@ public class WeaponMount{
     public int totalShots;
     /** counter for which barrel bullets have been fired from; used for alternating patterns */
     public int barrelCounter;
+    /** Last aim length of weapon. Only used for point lasers. */
+    public float lastLength;
     /** current bullet for continuous weapons */
     public @Nullable Bullet bullet;
     /** sound loop for continuous weapons */

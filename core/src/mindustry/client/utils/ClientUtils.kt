@@ -1,16 +1,19 @@
-@file:Suppress("UNUSED")
+@file:Suppress("UNUSED", "PLATFORM_CLASS_MAPPED_TO_KOTLIN")
 @file:JvmName("ClientUtils")
 
 package mindustry.client.utils
 
 import arc.*
 import arc.files.*
+import arc.func.Floatf
 import arc.graphics.*
+import arc.input.*
 import arc.math.*
 import arc.math.geom.*
 import arc.scene.*
 import arc.scene.ui.*
 import arc.scene.ui.layout.*
+import arc.struct.*
 import arc.util.*
 import arc.util.serialization.*
 import mindustry.*
@@ -63,13 +66,10 @@ fun ByteBuffer.bytes(num: Int): ByteArray {
 /** Converts a [Long] representing unix time in seconds to [Instant] */
 fun Long.toInstant(): Instant = try { Instant.ofEpochSecond(this) } catch (e: DateTimeException) { Instant.EPOCH }
 
-/** Seconds between this and [other].  If [other] happened after this, it will be positive. */
-fun Temporal.secondsBetween(other: Temporal) = timeSince(other, ChronoUnit.SECONDS)
-
 fun Temporal.timeSince(other: Temporal, unit: TemporalUnit) = unit.between(this, other)
 
-/** The age of this temporal in the given unit (by default seconds). Always positive. */
-fun Temporal.age(unit: TemporalUnit = ChronoUnit.SECONDS) = abs(this.timeSince(Instant.now(), unit))
+/** The age of this temporal in the given unit (by default seconds). Always positive. Based on the NTP clock. */
+fun Temporal.ageNTP(unit: TemporalUnit = ChronoUnit.SECONDS) = abs(this.timeSince(Main.ntp.instant(), unit))
 
 /** Adds an element to the table followed by a row. */
 fun <T : Element> Table.row(element: T): Cell<T> = add(element).also { row() }
@@ -135,7 +135,7 @@ fun String.stripColors(): String = Strings.stripColors(this)
 inline fun <T> Iterable<T>.sortedThreshold(threshold: Double, predicate: (T) -> Double): List<T> {
     return zip(map(predicate))  // Compute the predicate for each value and put it in pairs with the original item
         .filter { it.second >= threshold }  // Filter by threshold
-        .sortedBy { it.second }  // Sort
+        .sortedBy(Pair<T, Double>::second)  // Sort
         .unzip().first  // Go from a list of pairs back to a list
 }
 
@@ -219,7 +219,8 @@ fun <T> Iterable<T>.unescape(escapement: T, vararg escape: T): List<T> {
     return output
 }
 
-fun String.bundle(): String? = Core.bundle[removePrefix("@")]
+fun String.bundle(): String = Core.bundle[removePrefix("@")]
+fun String.bundle(vararg args: Any?): String = Core.bundle.formatKt(removePrefix("@"), args)
 
 val X509Certificate.readableName: String
     get() = subjectX500Principal.name.removePrefix("CN=")
@@ -260,7 +261,7 @@ fun pixmapFromClipboard(): Pixmap? {
         val clipboard = tkClass.getMethod("getSystemClipboard").invoke(tk)
         val clipboardClass = Class.forName("java.awt.datatransfer.Clipboard")
 
-        val content = clipboardClass.getMethod("getContents", java.lang.Object::class.java)
+        val content = clipboardClass.getMethod("getContents", Object::class.java)
             .invoke(clipboard, null)
 
         val flavorClass = Class.forName("java.awt.datatransfer.DataFlavor")
@@ -304,10 +305,10 @@ inline fun <T : Disposable, V> T.use(lambda: T.() -> V) = lambda().also { this.d
 private val bytes = ByteArrayOutputStream()
 
 fun compressImage(img: Pixmap): ByteArray {
+    if (ClientVars.jpegQuality == 0f) {
+        return compressImageAsPng(img)
+    }
     try {
-        if (ClientVars.jpegQuality == 0f) {
-            throw ClassNotFoundException("I am lazy so we might use an already-implemented function")
-        }
         val imgIO = Class.forName("javax.imageio.ImageIO")
         val writers =
             imgIO.getMethod("getImageWritersByFormatName", String::class.java).invoke(null, "jpeg") as Iterator<*>
@@ -316,7 +317,7 @@ fun compressImage(img: Pixmap): ByteArray {
         bytes.reset()
         val memCacheOutCls = Class.forName("javax.imageio.stream.MemoryCacheImageOutputStream")
         val out = memCacheOutCls.getConstructor(OutputStream::class.java).newInstance(bytes)
-        writerCls.getMethod("setOutput", java.lang.Object::class.java).invoke(writer, out)
+        writerCls.getMethod("setOutput", Object::class.java).invoke(writer, out)
 
         val bufImCls = Class.forName("java.awt.image.BufferedImage")
         val im = bufImCls.getConstructor(Int::class.java, Int::class.java, Int::class.java)
@@ -369,14 +370,23 @@ fun compressImage(img: Pixmap): ByteArray {
 
         return bytes.toByteArray()
     } catch (e: ClassNotFoundException) {
-        bytes.reset()
-        PixmapIO.PngWriter().use { write(bytes, img.flipY()) } // PNG is somehow flipped vertically when transferred to baos
-        return bytes.toByteArray()
+        Log.err(e)
+        return compressImageAsPng(img)
     }
 }
 
+fun compressImageAsPng(img: Pixmap): ByteArray {
+    bytes.reset()
+    val writer = PixmapIO.PngWriter() // FINISHME: Just initialize the writer once
+    writer.setFlipY(false)
+    writer.setCompression(Deflater.BEST_COMPRESSION)
+    writer.write(bytes, img)
+    writer.dispose()
+        return bytes.toByteArray()
+    }
+
 fun inflateImage(array: ByteArray, offset: Int, length: Int): Pixmap? {
-    return try { Pixmap(array, offset, length) } catch (e: Exception) { null }
+    return try { Pixmap(array, offset, length) } catch (e: Exception) { Log.err(e); null }
 }
 
 inline fun circle(x: Int, y: Int, radius: Float, cons: (Tile?) -> Unit) {
@@ -398,7 +408,7 @@ inline fun circle(x: Int, y: Int, radius: Float, cons: (Tile?) -> Unit) {
 }
 
 /** Send a signed message to chat. */
-fun sendMessage(msg: String) = Call.sendChatMessage(Main.sign(msg))
+fun sendMessage(msg: String) = Call.sendChatMessage(Main.sign(msg).also { checkPing(it) })
 
 fun getName(builder:mindustry.gen.Unit?):String {
     return if(builder == null){
@@ -458,9 +468,18 @@ fun ChatMessage.findCoords(): ChatMessage = NetClient.findCoords(this)
 
 fun ChatMessage.findLinks(start: Int = 0): ChatMessage = NetClient.findLinks(this, start)
 
+fun ChatMessage.findPlayerName(playerSender: Player): ChatMessage = NetClient.findPlayerName(this, playerSender)
+
 fun findItem(arg: String): Item = content.items().min { b -> biasedLevenshtein(arg, b.localizedName) }
 
-fun findUnit(arg: String): UnitType = content.units().min { b -> biasedLevenshtein(arg, b.localizedName) }
+fun findUnit(arg: String): UnitType = content.units().min(
+    { u: UnitType -> !u.internal },
+    // Filter out internals as people will try spawning block entities and crash the game otherwise (all internals are filtered since they should likely never be manually spawned)
+    if (Core.settings.getBool("uselocalizedname", true))
+        fun(u: UnitType):Float = biasedLevenshtein(arg, u.localizedName)
+    else
+        fun(u: UnitType):Float = biasedLevenshtein(arg, u.name)
+)
 
 fun findBlock(arg: String): Block = content.blocks().min { b -> biasedLevenshtein(arg, b.localizedName) }
 
@@ -471,7 +490,25 @@ fun parseBool(arg: String) = arg.lowercase().startsWith("y") || arg.lowercase().
 /** Returns true if right, false if left. */
 fun rotationDirection(old: Int, new: Int) = old < new && (old != 0 || new != 3) || old == 3 && new == 0
 
-fun restartGame() = openJar("-jar", Fi.get(ClientVars::class.java.protectionDomain.codeSource.location.toURI().path).absolutePath())
+fun restartGame(){
+    if(!Core.settings.getBool("autorestart", true)){
+        return
+    }
+    if(!Core.settings.getBool("realautorestart", !OS.hasProp("running-under-external-launcher"))){
+        Log.info("Exiting to reload game.")
+        Core.app.exit()
+        return
+    }
+    openJar(
+        // JVM args
+        *try { java.lang.management.ManagementFactory.getRuntimeMXBean().inputArguments.toTypedArray() }
+            catch (e: Exception) { arrayOf() }
+            catch (e: NoClassDefFoundError) { arrayOf() },
+        "-jar", Fi.get(ClientVars::class.java.protectionDomain.codeSource.location.toURI().path).absolutePath(),
+        // Game args
+        *try { Reflect.get(Core.app.listeners[0], "args") } catch (e: Exception) { arrayOf() } // Gets the DesktopLauncher instance which has the launch args
+    )
+}
 
 fun openJar(vararg extraArgs: String) {
     try {
@@ -538,6 +575,8 @@ fun biasedLevenshtein(x: String, y: String, caseSensitive: Boolean = false, leng
 // FINISHME: This should be merged with the function above
 @Suppress("NAME_SHADOWING")
 private fun biasedLevenshteinLengthIndependent(x: String, y: String): Float {
+    if (x == y) return 0f
+    if (x.endsWith(y)) return 0.2f
     var x = x
     var y = y
     if (x.length > y.length) x = y.apply { y = x } // Y will be the longer of the two
@@ -565,7 +604,7 @@ private fun biasedLevenshteinLengthIndependent(x: String, y: String): Float {
     }
 
     // startsWith
-    if (dp[curr + xl] == 0) return 0f
+    if (dp[curr + xl] == 0) return 0.1f
     // Disregard insertions at the end - if it made it it made it
     var output = xl
     for (i in curr until curr + yl) {
@@ -574,3 +613,5 @@ private fun biasedLevenshteinLengthIndependent(x: String, y: String): Float {
     // contains
     return if (output == 0) 0.5f else output.toFloat() // Prefer startsWith
 }
+operator fun <K, V> ObjectMap.Entry<K, V>.component1(): K = this.key
+operator fun <K, V> ObjectMap.Entry<K, V>.component2(): V = this.value

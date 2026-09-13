@@ -1,23 +1,21 @@
 package mindustry.game;
 
-import arc.math.geom.Vec2;
-import arc.util.Nullable;
-import mindustry.core.GameState.State;
-import mindustry.ctype.UnlockableContent;
-import mindustry.gen.Building;
-import mindustry.gen.Bullet;
-import mindustry.gen.Player;
-import mindustry.gen.Unit;
-import mindustry.net.Host;
-import mindustry.net.NetConnection;
-import mindustry.net.Packets.AdminAction;
-import mindustry.net.Packets.ConnectPacket;
-import mindustry.type.Item;
-import mindustry.type.ItemStack;
-import mindustry.type.Sector;
-import mindustry.world.Block;
-import mindustry.world.Tile;
-import mindustry.world.blocks.storage.CoreBlock.CoreBuild;
+import arc.math.geom.*;
+import arc.struct.*;
+import arc.util.*;
+import mindustry.ai.*;
+import mindustry.core.GameState.*;
+import mindustry.ctype.*;
+import mindustry.gen.*;
+import mindustry.graphics.MultiPacker;
+import mindustry.mod.data.*;
+import mindustry.net.*;
+import mindustry.net.Packets.*;
+import mindustry.type.*;
+import mindustry.ui.builder.*;
+import mindustry.world.*;
+import mindustry.world.blocks.environment.*;
+import mindustry.world.blocks.storage.CoreBlock.*;
 
 @SuppressWarnings("ClassCanBeRecord")
 public class EventType{
@@ -25,6 +23,8 @@ public class EventType{
     //events that occur very often
     public enum Trigger{
         shock,
+        cannotUpgrade,
+        fireCreate,
         openConsole,
         blastFreeze,
         impactPower,
@@ -47,8 +47,12 @@ public class EventType{
         teamCoreDamage,
         socketConfigChanged,
         update,
+        beforeGameUpdate,
+        afterGameUpdate,
         unitCommandChange,
+        unitCommandPosition,
         unitCommandAttack,
+        unitCommandBoost,
         importMod,
         draw,
         drawOver,
@@ -87,16 +91,22 @@ public class EventType{
     public static class TurnEvent{}
     /** Called when the player places a line, mobile or desktop.*/
     public static class LineConfirmEvent{}
-    /** Called when a turret receives ammo, but only when the tutorial is active! */
-    public static class TurretAmmoDeliverEvent{}
-    /** Called when a core receives ammo, but only when the tutorial is active! */
-    public static class CoreItemDeliverEvent{}
     /** Called when the player opens info for a specific block.*/
     public static class BlockInfoEvent{}
     /** Called *after* all content has been initialized. */
     public static class ContentInitEvent{}
+    /** Called *after* all content has been added to the atlas, but before its pixmaps are disposed. */
+    public static class AtlasPackEvent{
+        public final MultiPacker multiPacker;
+
+        public AtlasPackEvent(MultiPacker multiPacker){
+          this.multiPacker = multiPacker;
+        }
+    }
+    /** Called *after* all mod content has been loaded, but before it has been initialized. */
+    public static class ModContentLoadEvent{}
     /** Called when the client game is first loaded. */
-    public static class ClientLoadEvent{}
+    public static class ClientLoadEvent{} // FINISHME: Add logging to see what events are taking up so much time here
     /** Called after SoundControl registers its music. */
     public static class MusicRegisterEvent{}
     /** Called *after* all the modded files have been added into Vars.tree */
@@ -112,6 +122,24 @@ public class EventType{
     public static class WorldLoadBeginEvent{}
     /** Called when a game begins and the world tiles are initiated. About to updates tile proximity and sets up physics for the world(Before WorldLoadEvent) */
     public static class WorldLoadEndEvent{}
+
+    /** Called when a save loads custom data patches. {@link #assets} can be modified in the event handler. The array may be empty. */
+    public static class DataPatchLoadEvent{
+        public final Seq<DataAsset> assets;
+
+        public DataPatchLoadEvent(Seq<DataAsset> assets){
+            this.assets = assets;
+        }
+    }
+
+    /** Called when a new texture is received from the server via {@link mindustry.core.NetServer#sendTexture}. */
+    public static class TextureStreamEvent {
+        public final String name;
+
+        public TextureStreamEvent(String name){
+            this.name = name;
+        }
+    }
 
     public static class SaveLoadEvent{
         public final boolean isMap;
@@ -201,6 +229,19 @@ public class EventType{
             this.player = player;
             this.menuId = menuId;
             this.option = option;
+        }
+    }
+
+    /** Consider using Menus.registerMenu instead. */
+    public static class MenuBuilderOptionChooseEvent{
+        public final Player player;
+        public final int menuId;
+        public final MenuResult result;
+
+        public MenuBuilderOptionChooseEvent(Player player, int menuId, MenuResult result){
+            this.player = player;
+            this.menuId = menuId;
+            this.result = result;
         }
     }
 
@@ -409,6 +450,20 @@ public class EventType{
     }
 
     /**
+     * Called when a bullet has been created.
+     * WARNING! This event is special: its instance is reused! Do not cache or use with a timer.
+     * Do not modify any tiles inside listeners that use this tile.
+     * */
+    public static class BulletCreateEvent{
+        public Bullet bullet;
+
+        public BulletCreateEvent set(Bullet bullet){
+            this.bullet = bullet;
+            return this;
+        }
+    }
+
+    /**
      * Called *before* a tile has changed.
      * WARNING! This event is special: its instance is reused! Do not cache or use with a timer.
      * Do not modify any tiles inside listeners that use this tile.
@@ -432,6 +487,38 @@ public class EventType{
 
         public TileChangeEvent set(Tile tile){
             this.tile = tile;
+            return this;
+        }
+    }
+
+    /**
+     * Called when a tile changes its floor. Do not cache or use with a timer.
+     * Do not modify any tiles inside listener code.
+     * */
+    public static class TileFloorChangeEvent{
+        public Tile tile;
+        public Floor previous, floor;
+
+        public TileFloorChangeEvent set(Tile tile, Floor previous, Floor floor){
+            this.tile = tile;
+            this.previous = previous;
+            this.floor = floor;
+            return this;
+        }
+    }
+
+    /**
+     * Called when a tile changes its overlay. Do not cache or use with a timer.
+     * Do not modify any tiles inside listener code.
+     * */
+    public static class TileOverlayChangeEvent{
+        public Tile tile;
+        public Floor previous, overlay;
+
+        public TileOverlayChangeEvent set(Tile tile, Floor previous, Floor overlay){
+            this.tile = tile;
+            this.previous = previous;
+            this.overlay = overlay;
             return this;
         }
     }
@@ -485,6 +572,22 @@ public class EventType{
         }
     }
 
+    /** Called when all rules of the current map are loaded. */
+    public static class RulesLoadEvent{
+        public final Rules rules;
+        public final boolean fromSave;
+
+        public RulesLoadEvent(Rules rules){
+            this.rules = rules;
+            this.fromSave = false;
+        }
+
+        public RulesLoadEvent(Rules rules, boolean fromSave){
+            this.rules = rules;
+            this.fromSave = fromSave;
+        }
+    }
+
     /**
      * Called when block building begins by placing down the ConstructBlock.
      * The tile's block will nearly always be a ConstructBlock.
@@ -512,13 +615,15 @@ public class EventType{
         public final @Nullable Unit unit;
         public final boolean breaking;
         public final @Nullable Block newBlock;
+        public final int rotation;
 
-        public BlockBuildBeginEventBefore(Tile tile, Team team, Unit unit, boolean breaking, Block newBlock){
+        public BlockBuildBeginEventBefore(Tile tile, Team team, Unit unit, boolean breaking, Block newBlock, int rotation){
             this.tile = tile;
             this.team = team;
             this.unit = unit;
             this.breaking = breaking;
             this.newBlock = newBlock;
+            this.rotation = rotation;
         }
     }
 
@@ -528,19 +633,17 @@ public class EventType{
         public final @Nullable Unit unit;
         public final boolean breaking;
         public final @Nullable Object config;
-        public final Block previous;
 
-        public BlockBuildEndEvent(Tile tile, @Nullable Unit unit, Team team, boolean breaking, @Nullable Object config, Block previous){
+        public BlockBuildEndEvent(Tile tile, @Nullable Unit unit, Team team, boolean breaking, @Nullable Object config){
             this.tile = tile;
             this.team = team;
             this.unit = unit;
             this.breaking = breaking;
             this.config = config;
-            this.previous = previous;
         }
     }
 
-    public static class BlockBuildEventTile {
+    public static class BlockBuildEventTile { // FINISHME: Unused
         public final Tile tile;
         public final Team team;
         public final Unit unit;
@@ -584,24 +687,6 @@ public class EventType{
         }
     }
 
-    public static class BlockBreakEvent {
-        public final Tile tile;
-        public final Team team;
-        public final @Nullable Unit unit;
-        public final Block oldBlock;
-        public final @Nullable Object oldConfig;
-        public final byte rotation;
-
-        public BlockBreakEvent(Tile tile, Team team, @Nullable Unit unit, Block oldBlock, @Nullable Object oldConfig, byte rotation) {
-            this.tile = tile;
-            this.team = team;
-            this.unit = unit;
-            this.oldBlock = oldBlock;
-            this.oldConfig = oldConfig;
-            this.rotation = rotation;
-        }
-    }
-
     public static class BuildRotateEvent{
         public final Building build;
         public final @Nullable Unit unit;
@@ -633,7 +718,7 @@ public class EventType{
     }
 
     /** Called right before a block is destroyed.
-     * The tile entity of the tile in this event cannot be null when this happens.*/
+     * The building of the tile in this event cannot be null when this happens.*/
     public static class BlockDestroyEvent{
         public final Tile tile;
 
@@ -882,6 +967,34 @@ public class EventType{
             this.player = player;
             this.other = other;
             this.action = action;
+        }
+    }
+
+    /** FD: group unit move/attack command. */
+    public static class UnitCommandPositionEvent{
+        public final Player player;
+        public final int[] unitIds;
+        public final @Nullable Vec2 pos;
+        public final @Nullable Teamc target;
+
+        public UnitCommandPositionEvent(Player player, int[] unitIds, @Nullable Vec2 pos, @Nullable Teamc target){
+            this.player = player;
+            this.unitIds = unitIds;
+            this.pos = pos;
+            this.target = target;
+        }
+    }
+
+    /** FD: unit command/stance change. */
+    public static class UnitStateChangeEvent{
+        public final Player player;
+        public final int[] unitIds;
+        public final UnitCommand command;
+
+        public UnitStateChangeEvent(Player player, int[] unitIds, UnitCommand command){
+            this.player = player;
+            this.unitIds = unitIds;
+            this.command = command;
         }
     }
 

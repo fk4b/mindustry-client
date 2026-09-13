@@ -44,20 +44,22 @@ class CommandTransmission : Transmission {
         STOP_PATH(false, {
             val cert = Main.keyStorage.findTrusted(BigInteger(it.certSN))!!
             if (Navigation.currentlyFollowing != null) {
-                lastStopTime = Time.millis()
                 val oldPath = Navigation.currentlyFollowing
                 if (Main.keyStorage.builtInCerts.contains(cert)) {
                     val dialog = BaseDialog("@client.stoppath.stopped")
                     dialog.cont.add(Core.bundle.format("client.stoppath.bydev", cert.readableName))
                     dialog.buttons.button("@close", Icon.menu) { dialog.hide() }
                         .size(210f, 64f)
-                } else if (Time.timeSinceMillis(lastStopTime) > Time.toMinutes * (1 + numStopIgnores)) {
+                    dialog.show()
+                } else if (Time.timeSinceMillis(lastStopTime) > Time.toMinutes.toLong() * (1 + numStopIgnores)) {
+                    numStopIgnores -= Math.min(numStopIgnores, (Time.timeSinceMillis(lastStopTime) / Time.toMinutes.toLong()).toInt() - numStopIgnores - 1)
                     Vars.ui.showCustomConfirm("@client.stoppath.stopped",
                         Core.bundle.format("client.stoppath.by", Main.keyStorage.aliasOrName(cert)),
                         Core.bundle.get("client.stoppath.continue"), Core.bundle.get("client.stoppath.stop"),
                         { Navigation.follow(oldPath); numStopIgnores ++; }, {}
                     )
                 }
+                lastStopTime = Time.millis()
                 Navigation.stopFollowing()
             }
         }),
@@ -65,14 +67,13 @@ class CommandTransmission : Transmission {
         UPDATE(true, {
             if (!isDeveloper()) {
                 val cert = Main.keyStorage.findTrusted(BigInteger(it.certSN))!!
-                Vars.becontrol.checkUpdate({ Vars.becontrol.actuallyDownload(Main.keyStorage.aliasOrName(cert)) }, "mindustry-antigrief/mindustry-client-v7-builds")
+                Vars.becontrol.checkUpdate({ Vars.becontrol.actuallyDownload(Main.keyStorage.aliasOrName(cert)) }, "mindustry-antigrief/mindustry-client-v8-builds")
             }
         })
     }
 
     override var id: Long
 
-    @OptIn(ExperimentalStdlibApi::class)
     constructor(input: ByteArray, id: Long, @Suppress("UNUSED_PARAMETER") senderID: Int) {
         val buf = input.buffer()
         type = Commands.entries.getOrNull(buf.int)
@@ -96,7 +97,7 @@ class CommandTransmission : Transmission {
     fun verify(): Boolean {
         if (destination != Vars.player.id) return false
         type ?: return false
-        if (timestamp.age() > Signatures.SIGNATURE_EXPIRY_SECONDS) return false  // replay attacks are bad
+        if (timestamp.ageNTP() > Signatures.SIGNATURE_EXPIRY_SECONDS) return false  // replay attacks are bad
         val res = Main.signatures.verify(toSignable(), signature, certSN)
         if (type.builtinOnly) {
             res.second ?: return false

@@ -133,6 +133,11 @@ public class MinersFDAI {
     private static final ObjectMap<Integer, Long> lastExclusiveSentAt = new ObjectMap<>();
     private static final ObjectMap<Long, IntSeq> pendingMoveIds = new ObjectMap<>();
     private static final ObjectMap<Long, Vec2> pendingMovePos = new ObjectMap<>();
+    /** Pulsar/quasar boost while we are steering them (they cannot fly without it). */
+    private static final IntSet routingBoosted = new IntSet();
+    private static final IntSeq pendingBoost = new IntSeq();
+    /** Finished a safe route to ore; waiting for mine command to stick. Not a player override. */
+    private static final IntSet pendingMineHandoff = new IntSet();
 
     /** Ores this AI can assign (order used for display / fallback). */
     private static final Item[] MINE_ITEMS = {
@@ -238,6 +243,7 @@ public class MinersFDAI {
         packetWindowStart = 0;
         pendingMoveIds.clear();
         pendingMovePos.clear();
+        pendingMineHandoff.clear();
         clearSafeRouting();
         notifiedUnsafeOres.clear();
     }
@@ -484,7 +490,7 @@ public class MinersFDAI {
 
     /** Drop stale ids so reused unit ids do not inherit manual/AI state. */
     private static void pruneDeadUnitIds() {
-        if (manualUnits.isEmpty() && assistingUnits.isEmpty() && lastAiCommand.isEmpty() && routingUnits.isEmpty()) return;
+        if (manualUnits.isEmpty() && assistingUnits.isEmpty() && lastAiCommand.isEmpty() && routingUnits.isEmpty() && pendingMineHandoff.isEmpty()) return;
 
         IntSet alive = new IntSet();
         for (Unit u : Groups.unit) {
@@ -496,6 +502,8 @@ public class MinersFDAI {
         pruneSet(healingUnits, alive);
         pruneSet(routingUnits, alive);
         pruneSet(routingToCore, alive);
+        pruneSet(routingBoosted, alive);
+        pruneSet(pendingMineHandoff, alive);
         pruneRoutingMaps(alive);
 
         // ObjectMap has no removeIf on keys in older Arc — collect then remove
@@ -1317,12 +1325,15 @@ public class MinersFDAI {
             IntSeq need = new IntSeq();
             for (int i = 0; i < entry.value.size; i++) {
                 int id = entry.value.get(i);
-                if (recentlySentExclusive(id, item)) continue;
                 Unit u = Groups.unit.getByID(id);
                 if (u == null) continue;
-                if (!needsExclusiveOreStance(u, item)) {
+                boolean notMining = !(u.controller() instanceof CommandAI cai && cai.command == UnitCommand.mineCommand);
+                // Exclusive cooldown must not skip a move→mine handoff after a safe route
+                if (!notMining && recentlySentExclusive(id, item)) continue;
+                if (!notMining && !needsExclusiveOreStance(u, item)) {
                     lastAiCommand.put(id, UnitCommand.mineCommand);
                     lastAiItem.put(id, item);
+                    pendingMineHandoff.remove(id);
                     continue;
                 }
                 need.add(id);
@@ -1376,12 +1387,15 @@ public class MinersFDAI {
         Item expectedItem = lastAiItem.get(u.id);
         Item currentItem = getMiningItem(u, null);
 
-        // Self-heal trip uses moveCommand — never treat as player override
-        if (healingUnits.contains(u.id) || routingUnits.contains(u.id)) {
+        // Self-heal / safe-route uses moveCommand — never treat as player override
+        if (healingUnits.contains(u.id) || routingUnits.contains(u.id) || pendingMineHandoff.contains(u.id)) {
             return false;
         }
+        // Stale AI move after routing/heal ended without a mine packet — reclaim
         if (expected == UnitCommand.moveCommand && current == UnitCommand.moveCommand) {
-            // stale move after heal ended — reclaim to mine below via commandDiff if needed
+            toForceRestore.add(u.id);
+            manualUnits.remove(u.id);
+            return false;
         }
 
         // Mega default / leftover heal while auto-heal is OFF is never a "manual" choice —
@@ -1504,6 +1518,9 @@ public class MinersFDAI {
         anyRed = false;
         pendingMoveIds.clear();
         pendingMovePos.clear();
+        routingBoosted.clear();
+        pendingBoost.clear();
+        pendingMineHandoff.clear();
     }
 
     private static void pruneRoutingMaps(IntSet alive) {
@@ -1775,20 +1792,81 @@ public class MinersFDAI {
         }
     }
 
+    /** True if the unit is already on mine command and can (or soon will) dig this dest. */
+    private static boolean isActivelyMining(Unit u, Tile dest) {
+        if (u == null || !(u.controller() instanceof CommandAI cai)) return false;
+        if (cai.command != UnitCommand.mineCommand) return false;
+        if (u.mineTile != null && !isTileDangerous(u.mineTile) && u.validMine(u.mineTile)
+                && u.within(u.mineTile, Math.max(u.type.mineRange, 24f))) {
+            return true;
+        }
+        return dest != null && u.within(dest, Math.max(u.type.mineRange, 32f));
+    }
+
+    private static boolean needsMineHandoff(Unit u) {
+        if (u == null) return false;
+        if (!(u.controller() instanceof CommandAI cai)) return true;
+        return cai.command != UnitCommand.mineCommand;
+    }
+
+    /** Retry mine command for units that arrived at ore but are still on move. */
+    private static void collectPendingMineHandoffs(IntSeq arrived) {
+        if (pendingMineHandoff.isEmpty()) return;
+        IntSeq done = new IntSeq();
+        pendingMineHandoff.each(id -> {
+            Unit u = Groups.unit.getByID(id);
+            if (u == null || !u.isValid()) {
+                done.add(id);
+                return;
+            }
+            if (!needsMineHandoff(u)) {
+                done.add(id);
+                return;
+            }
+            arrived.add(id);
+        });
+        for (int i = 0; i < done.size; i++) pendingMineHandoff.remove(done.get(i));
+    }
+
+    private static void takeLocalMineControl(Unit u, Item item, Tile ore) {
+        if (u == null) return;
+        if (u.controller() instanceof CommandAI ai) {
+            if (ai.command != UnitCommand.mineCommand) {
+                ai.command(UnitCommand.mineCommand);
+            }
+            if (item != null) {
+                UnitStance want = ItemUnitStance.getByItem(item);
+                if (want != null && !ai.hasStance(want)) {
+                    ai.setStance(want, true);
+                }
+                if (ai.hasStance(UnitStance.mineAuto)) {
+                    ai.setStance(UnitStance.mineAuto, false);
+                }
+            }
+            ai.targetPos = null;
+        }
+        lastAiCommand.put(u.id, UnitCommand.mineCommand);
+        if (item != null) lastAiItem.put(u.id, item);
+        if (ore != null && !isTileDangerous(ore)
+                && u.within(ore, Math.max(u.type.mineRange, 24f)) && u.validMine(ore)) {
+            u.mineTile = ore;
+        }
+    }
+
     private static void handleSafeMining() {
         if (player == null || player.team() == null) return;
         ensureRedScan(false);
 
         if (!anyRed) {
-            if (!routingUnits.isEmpty()) {
-                IntSeq done = new IntSeq();
-                routingUnits.each(done::add);
-                finishRoutingBatch(done);
-            }
+            IntSeq done = new IntSeq();
+            routingUnits.each(done::add);
+            pendingMineHandoff.each(done::add);
+            if (done.size > 0) finishRoutingBatch(done);
             return;
         }
 
         IntSeq arrived = new IntSeq();
+        collectPendingMineHandoffs(arrived);
 
         for (Unit u : Groups.unit) {
             if (u.team != player.team() || !u.isCommandable() || !u.isValid()) continue;
@@ -1802,8 +1880,10 @@ public class MinersFDAI {
                 continue;
             }
 
+            if (pendingMineHandoff.contains(u.id)) continue;
+
             if (isPosDangerous(u.x, u.y)) {
-                extractFromRed(u, depositing);
+                extractFromRed(u, depositing, arrived);
                 continue;
             }
 
@@ -1828,8 +1908,8 @@ public class MinersFDAI {
                 continue;
             }
 
-            if (u.mineTile != null && !isTileDangerous(u.mineTile)
-                    && u.within(u.mineTile, Math.max(u.type.mineRange, 24f))) {
+            if (isActivelyMining(u, dest)) {
+                pendingMineHandoff.remove(u.id);
                 continue;
             }
 
@@ -1856,10 +1936,16 @@ public class MinersFDAI {
                 } catch (Throwable ignored) {}
             }
 
-            if (vanillaSafe && !headingBad) continue;
-            if (u.within(dest, Math.max(u.type.mineRange, 32f))) continue;
+            boolean atDest = u.within(dest, Math.max(u.type.mineRange, 32f));
+            if (atDest || (vanillaSafe && !headingBad)) {
+                if (needsMineHandoff(u)) {
+                    routingOre.put(u.id, dest);
+                    arrived.add(u.id);
+                }
+                continue;
+            }
 
-            startRouteToOre(u, dest);
+            startRouteToOre(u, dest, arrived);
         }
 
         flushPendingMoves();
@@ -1869,7 +1955,7 @@ public class MinersFDAI {
     }
 
     /** Pull a unit out of the red zone to the nearest safe ore (or a non-red tile). Never command into red. */
-    private static void extractFromRed(Unit u, boolean depositing) {
+    private static void extractFromRed(Unit u, boolean depositing, IntSeq arrived) {
         if (depositing) {
             Building core = u.closestCore();
             if (core != null) startRouteToCore(u, core);
@@ -1887,17 +1973,25 @@ public class MinersFDAI {
             }
         }
         if (dest != null) {
-            startRouteToOre(u, dest);
+            startRouteToOre(u, dest, arrived);
             return;
         }
         Tile escape = nearestNonRed(world.toTile(u.x), world.toTile(u.y));
         if (escape != null && !isTileDangerous(escape)) {
-            commandMove(u, escape.worldx(), escape.worldy());
+            Seq<Vec2> path = new Seq<>();
+            path.add(new Vec2(escape.worldx(), escape.worldy()));
+            beginRoute(u, path);
         }
     }
 
-    private static void startRouteToOre(Unit u, Tile ore) {
+    private static void startRouteToOre(Unit u, Tile ore, IntSeq arrived) {
         if (ore == null || isTileDangerous(ore)) return;
+        if (u.within(ore, Math.max(u.type.mineRange, 32f))) {
+            routingOre.put(u.id, ore);
+            routingToCore.remove(u.id);
+            if (arrived != null) arrived.add(u.id);
+            return;
+        }
         Seq<Vec2> path = new Seq<>();
         appendSafePath(path, u.x, u.y, ore.worldx(), ore.worldy());
         if (path.isEmpty()) return;
@@ -1927,7 +2021,24 @@ public class MinersFDAI {
         if (path == null || path.isEmpty() || player == null) return;
         routingUnits.add(u.id);
         routingPaths.put(u.id, path);
+        // Leave mine AI immediately so MinerAI does not keep walking them on foot
+        if (u.controller() instanceof CommandAI ai) {
+            ai.command(UnitCommand.moveCommand);
+            ai.commandPosition(new Vec2(path.first().x, path.first().y));
+        }
+        requestBoostForRoute(u);
         commandMove(u, path.first().x, path.first().y);
+    }
+
+    /** Pulsar/quasar cannot fly unless boost is on — set it locally and send to the server. */
+    private static void requestBoostForRoute(Unit u) {
+        if (!shouldBoostForHeal(u) || UnitStance.boost == null) return;
+        routingBoosted.add(u.id);
+        if (u.controller() instanceof CommandAI ai) {
+            ai.setStance(UnitStance.boost, true);
+        }
+        u.updateBoosting(true, true);
+        pendingBoost.add(u.id);
     }
 
     private static void advanceRouting(Unit u, IntSeq arrived) {
@@ -1936,8 +2047,22 @@ public class MinersFDAI {
             arrived.add(u.id);
             return;
         }
+        // Re-apply boost each tick: commandUnits/mine AI can drop them back to walking
+        if (shouldBoostForHeal(u) && !u.isFlying()) {
+            requestBoostForRoute(u);
+        }
+        Tile ore = routingOre.get(u.id);
+        if (ore != null && !routingToCore.contains(u.id)
+                && !isPosDangerous(u.x, u.y)
+                && u.within(ore, Math.max(u.type.mineRange, 32f))) {
+            arrived.add(u.id);
+            return;
+        }
         Vec2 wp = path.first();
         float arrive = Math.max(24f, u.hitSize * 1.2f);
+        if (ore != null && !routingToCore.contains(u.id) && path.size == 1) {
+            arrive = Math.max(arrive, Math.max(u.type.mineRange * 0.75f, 32f));
+        }
         if (u.within(wp.x, wp.y, arrive)) {
             path.remove(0);
             if (path.isEmpty()) {
@@ -1958,7 +2083,7 @@ public class MinersFDAI {
         }
         if (isPosDangerous(u.x, u.y)) {
             boolean depositing = routingToCore.contains(u.id) || u.stack.amount >= Math.max(1, u.itemCapacity()) * 0.85f;
-            extractFromRed(u, depositing);
+            extractFromRed(u, depositing, arrived);
         }
     }
 
@@ -1966,8 +2091,19 @@ public class MinersFDAI {
     private static void finishRoutingBatch(IntSeq arrived) {
         if (arrived == null || arrived.size == 0 || player == null) return;
 
+        IntSet uniq = new IntSet();
+        IntSeq unique = new IntSeq();
+        for (int i = 0; i < arrived.size; i++) {
+            int id = arrived.get(i);
+            if (uniq.add(id)) unique.add(id);
+        }
+        arrived = unique;
+
         IntSeq leftover = new IntSeq();
+        IntSeq leftoverBoost = new IntSeq();
+        IntSeq takeLocal = new IntSeq();
         ObjectMap<Item, IntSeq> byOre = new ObjectMap<>();
+        IntMap<Tile> arrivedOre = new IntMap<>();
         boolean reassign = false;
 
         for (int i = 0; i < arrived.size; i++) {
@@ -1979,14 +2115,23 @@ public class MinersFDAI {
             Unit u = Groups.unit.getByID(id);
             if (u == null) continue;
 
+            if (routingBoosted.remove(id) && shouldBoostForHeal(u) && UnitStance.boost != null) {
+                leftoverBoost.add(id);
+            }
+
             lastAiCommand.put(id, UnitCommand.mineCommand);
+            lastExclusiveSentAt.remove(id);
             if (ore != null && isTileDangerous(ore)) {
+                pendingMineHandoff.remove(id);
                 continue;
             }
             Item item = lastAiItem.get(id);
             if (item == null && ore != null) {
                 item = ore.drop() != null ? ore.drop() : ore.wallDrop();
             }
+            pendingMineHandoff.add(id);
+            takeLocal.add(id);
+            if (ore != null) arrivedOre.put(id, ore);
             if (item != null) {
                 if (!byOre.containsKey(item)) byOre.put(item, new IntSeq());
                 byOre.get(item).add(id);
@@ -1996,11 +2141,19 @@ public class MinersFDAI {
             if (toCore) reassign = true;
         }
 
+        if (leftoverBoost.size > 0) {
+            queueSetStance(leftoverBoost.toArray(), UnitStance.boost, false);
+        }
         if (!byOre.isEmpty()) {
             sendOreStances(byOre);
         }
         if (leftover.size > 0) {
             queueSetCommand(leftover.toArray(), UnitCommand.mineCommand);
+        }
+        for (int i = 0; i < takeLocal.size; i++) {
+            int id = takeLocal.get(i);
+            Unit u = Groups.unit.getByID(id);
+            takeLocalMineControl(u, lastAiItem.get(id), arrivedOre.get(id));
         }
         if (reassign) forceAssignNext = true;
     }
@@ -2031,14 +2184,33 @@ public class MinersFDAI {
     }
 
     private static void flushPendingMoves() {
-        if (pendingMoveIds.isEmpty()) return;
-        for (var e : pendingMoveIds.entries()) {
-            Vec2 pos = pendingMovePos.get(e.key);
-            if (pos == null || e.value.size == 0) continue;
-            queueCommandUnits(e.value.toArray(), pos.x, pos.y);
+        int[] boostIds = null;
+        if (pendingBoost.size > 0 && UnitStance.boost != null && player != null) {
+            IntSet seen = new IntSet();
+            IntSeq unique = new IntSeq();
+            for (int i = 0; i < pendingBoost.size; i++) {
+                int id = pendingBoost.get(i);
+                if (seen.add(id)) unique.add(id);
+            }
+            pendingBoost.clear();
+            if (unique.size > 0) {
+                boostIds = unique.toArray();
+                Call.setUnitStance(player, boostIds, UnitStance.boost, true);
+            }
         }
-        pendingMoveIds.clear();
-        pendingMovePos.clear();
+        if (!pendingMoveIds.isEmpty() && player != null) {
+            for (var e : pendingMoveIds.entries()) {
+                Vec2 pos = pendingMovePos.get(e.key);
+                if (pos == null || e.value.size == 0) continue;
+                Call.commandUnits(player, e.value.toArray(), null, null, new Vec2(pos.x, pos.y), false, true);
+            }
+            pendingMoveIds.clear();
+            pendingMovePos.clear();
+        }
+        // Move order can land before stance on the server — send boost again after
+        if (boostIds != null) {
+            Call.setUnitStance(player, boostIds, UnitStance.boost, true);
+        }
     }
 
     /** Writes waypoints that stay outside the red zone. Adds nothing if no safe path exists. */

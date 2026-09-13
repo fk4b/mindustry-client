@@ -3,6 +3,7 @@ package mindustry.logic;
 import arc.*;
 import arc.func.*;
 import arc.graphics.*;
+import arc.input.*;
 import arc.scene.actions.*;
 import arc.scene.ui.*;
 import arc.scene.ui.TextButton.*;
@@ -18,6 +19,9 @@ import mindustry.logic.LExecutor.*;
 import mindustry.logic.LStatements.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
+import mindustry.world.blocks.logic.*;
+
+import java.util.*;
 
 import static mindustry.Vars.*;
 import static mindustry.logic.LCanvas.*;
@@ -27,6 +31,8 @@ public class LogicDialog extends BaseDialog{
     Cons<String> consumer = s -> {};
     boolean privileged;
     @Nullable LExecutor executor;
+    GlobalVarsDialog globalsDialog = new GlobalVarsDialog();
+    boolean wasRows, wasPortrait, forceRestart;
 
     public LogicDialog(){
         super("logic");
@@ -39,21 +45,35 @@ public class LogicDialog extends BaseDialog{
         addCloseListener();
 
         shown(this::setup);
-        hidden(() -> { // If the executor is null, theres a very big problem.
-            if (!Core.input.shift() && (executor.team == player.team() || !net.client())) consumer.get(canvas.save());
+        shown(() -> {
+            wasRows = LCanvas.isCompact();
+            wasPortrait = Core.graphics.isPortrait();
+        });
+        hidden(() -> {
+            if (executor != null && !Core.input.shift() && (executor.team == player.team() || !net.client())) consumer.get(canvas.save());
         });
         onResize(() -> {
-            setup();
-            canvas.rebuild();
+            if(wasRows != LCanvas.isCompact() || wasPortrait != Core.graphics.isPortrait()){
+                setup();
+                canvas.rebuild();
+                wasPortrait = Core.graphics.isPortrait();
+                wasRows = LCanvas.isCompact();
+            }
         });
 
+        //show add instruction on shift+enter
+        keyDown(KeyCode.enter, () -> {
+            if(Core.input.shift()){
+                showAddDialog(canvas.statements.getChildren().size);
+            }
+        });
 
         add(canvas).grow().name("canvas");
         row();
         add(buttons).growX().name("canvas");
     }
 
-    private Color typeColor(Var s, Color color){
+    public static Color typeColor(LVar s, Color color){
         return color.set(
             !s.isobj ? Pal.place :
             s.objval == null ? Color.darkGray :
@@ -67,7 +87,7 @@ public class LogicDialog extends BaseDialog{
         );
     }
 
-    private String typeName(Var s){
+    public static String typeName(LVar s){
         return
             !s.isobj ? "number" :
             s.objval == null ? "null" :
@@ -93,50 +113,82 @@ public class LogicDialog extends BaseDialog{
                     TextButtonStyle style = Styles.flatt;
                     t.defaults().size(280f, 60f).left();
 
-                    t.button("@schematic.copy", Icon.copy, style, () -> {
+                    if(privileged && executor != null && executor.build != null && !ui.editor.isShown()){
+                        t.button("@editor.worldprocessors.editname", Icon.edit, style, () -> {
+                            ui.showTextInput("", "@editor.name", LogicBlock.maxNameLength, executor.build.tag == null ? "" : executor.build.tag, tag -> {
+                                if(privileged && executor != null && executor.build != null){
+                                    executor.build.configure(tag);
+                                    //just in case of privilege shenanigans...
+                                    executor.build.tag = tag;
+                                }
+                            });
+                            dialog.hide();
+                        }).marginLeft(12f).row();
+                    }
+
+                    t.button("@clear", Icon.cancel, style, () -> {
+                        ui.showConfirm("@logic.clear.confirm", () -> canvas.clearStatements());
+                        dialog.hide();
+                    }).marginLeft(12f).row();
+
+                    t.button("@copy.clipboard", Icon.copy, style, () -> {
                         dialog.hide();
                         Core.app.setClipboardText(canvas.save());
-                    }).marginLeft(12f);
-                    t.row();
-                    t.button("@schematic.copy.import", Icon.download, style, () -> {
+                    }).marginLeft(12f).row();
+
+                    t.button("@load.clipboard", Icon.download, style, () -> {
                         dialog.hide();
                         try{
-                            canvas.load(Core.app.getClipboardText().replace("\r\n", "\n"));
+                            canvas.load(Core.app.getClipboardText());
                         }catch(Throwable e){
                             ui.showException(e);
                         }
-                    }).marginLeft(12f).disabled(b -> Core.app.getClipboardText() == null);
+                    }).marginLeft(12f).disabled(b -> Core.app.getClipboardText() == null).row();
+
+                    t.button("@logic.restart", Icon.refresh, style, () -> {
+                        forceRestart = true;
+                        dialog.hide();
+                        hide();
+                    }).marginLeft(12f);
+
                 });
             });
 
             dialog.addCloseButton();
             dialog.show();
-        }).name("edit").disabled(t -> executor.team != player.team() && net.client() && !state.isEditor());
+        }).name("edit").disabled(t -> executor != null && executor.team != player.team() && net.client() && !state.isEditor());
 
         buttons.button("@client.setupcomms", () -> {
             ui.showConfirm("@client.setupcomms.confirm", () -> {
                 canvas.load(BlockCommunicationSystem.LOGIC_PREFIX);
                 hide();
             });
-        }).disabled(t -> executor.team != player.team() && net.client() && !state.isEditor());
+        }).disabled(t -> executor != null && executor.team != player.team() && net.client() && !state.isEditor());
 
         if(Core.graphics.isPortrait()) buttons.row();
 
         buttons.button("@variables", Icon.menu, () -> {
+            //in the editor, it should display the global variables only (the button text is different)
+            if(!shouldShowVariables()){
+                globalsDialog.show();
+                return;
+            }
+
             BaseDialog dialog = new BaseDialog("@variables");
             dialog.hidden(() -> {
-                if(!wasPaused && !net.active()){
+                if(!wasPaused && !net.active() && !state.isMenu()){
                     state.set(State.paused);
                 }
             });
 
             dialog.shown(() -> {
-                if(!wasPaused && !net.active()){
+                if(!wasPaused && !net.active() && !state.isMenu()){
                     state.set(State.playing);
                 }
             });
 
             dialog.cont.pane(p -> {
+
                 p.margin(10f).marginRight(16f);
                 p.table(Tex.button, t -> {
                     t.defaults().fillX().height(45f);
@@ -158,7 +210,7 @@ public class LogicDialog extends BaseDialog{
                             Label label = out.add("").style(Styles.outlineLabel).padLeft(4).padRight(4).width(140f).wrap().get();
                             label.update(() -> {
                                 if(counter[0] < 0 || (counter[0] += Time.delta) >= period){
-                                    String text = s.isobj ? PrintI.toString(s.objval) : Math.abs(s.numval - (long)s.numval) < 0.00001 ? (long)s.numval + "" : s.numval + "";
+                                    String text = s.isobj ? PrintI.toString(s.objval) : Math.abs(s.numval - Math.round(s.numval)) < 0.00001 ? Math.round(s.numval) + "" : s.numval + "";
                                     if(!label.textEquals(text)){
                                         label.setText(text);
                                         if(counter[0] >= 0f){
@@ -177,7 +229,7 @@ public class LogicDialog extends BaseDialog{
                             update(() -> setColor(typeColor(s, color)));
                         }}, new Label(() -> " " + typeName(s) + " "){{
                             setStyle(Styles.outlineLabel);
-                        }});
+                        }}).minWidth(120f);
 
                         t.row();
 
@@ -187,17 +239,126 @@ public class LogicDialog extends BaseDialog{
             });
 
             dialog.addCloseButton();
-            dialog.show();
-        }).name("variables").disabled(b -> executor == null || executor.vars.length == 0);
+            dialog.buttons.button("@logic.globals", Icon.list, () -> globalsDialog.show()).size(210f, 64f);
 
-        buttons.button("@add", Icon.add, () -> addDialog(canvas.statements.getChildren().size))
-            .disabled(t -> (executor.team != player.team() && net.client() && !state.isEditor()) || canvas.statements.getChildren().size >= LExecutor.maxInstructions);
+            dialog.show();
+        }).name("variables").update(b -> {
+            if(shouldShowVariables()){
+                b.setText("@variables");
+            }else{
+                b.setText("@logic.globals");
+            }
+        });
+
+        buttons.button("@add", Icon.add, () -> showAddDialog(canvas.statements.getChildren().size))
+            .disabled(t -> (executor != null && executor.team != player.team() && net.client() && !state.isEditor()) || canvas.statements.getChildren().size >= LExecutor.maxInstructions);
+    }
+
+    public boolean shouldShowVariables(){
+        return executor != null && executor.vars.length > 0 && !state.isMenu();
+    }
+
+    public void showAddDialog(){
+        showAddDialog(-1);
+    }
+
+    public void showAddDialog(int at){
+        BaseDialog dialog = new BaseDialog("@add");
+        dialog.cont.table(table -> {
+            String[] searchText = {""};
+            Prov[] matched = {null};
+            Runnable[] rebuild = {() -> {}};
+
+            table.background(Tex.button);
+
+            table.table(s -> {
+                s.image(Icon.zoom).padRight(8);
+                var search = s.field(null, text -> {
+                    searchText[0] = text;
+                    rebuild[0].run();
+                }).growX().get();
+                search.setMessageText("@players.search");
+
+                //auto add first match on enter key
+                if(!mobile){
+
+                    //don't focus on mobile (it may cause issues with a popup keyboard)
+                    Core.app.post(search::requestKeyboard);
+
+                    search.keyDown(KeyCode.enter, () -> {
+                        if(!searchText[0].isEmpty() && matched[0] != null){
+                            canvas.addAt(at == -1 ? canvas.statements.getChildren().size : at, (LStatement)matched[0].get());
+                            dialog.hide();
+                        }
+                    });
+                }
+            }).growX().padBottom(4).row();
+
+            table.pane(t -> {
+                rebuild[0] = () -> {
+                    t.clear();
+
+                    var text = searchText[0].toLowerCase();
+
+                    matched[0] = null;
+
+                    for(Prov<LStatement> prov : LogicIO.allStatements){
+                        LStatement example = prov.get();
+                        if(example instanceof InvalidStatement || example.hidden() || (example.privileged() && !privileged) || (example.nonPrivileged() && privileged) ||
+                            (!text.isEmpty() && !example.localizedName().toLowerCase(Locale.ROOT).contains(text) && !example.typeName().toLowerCase(Locale.ROOT).contains(text)) ||
+                            (!privileged && !state.rules.logicUnitControl && example.category() == LCategory.unit)) continue;
+
+                        if(matched[0] == null){
+                            matched[0] = prov;
+                        }
+
+                        LCategory category = example.category();
+                        Table cat = t.find(category.name);
+                        if(cat == null){
+                            t.table(s -> {
+                                if(category.icon != null){
+                                    s.image(category.icon, Pal.darkishGray).left().size(15f).padRight(10f);
+                                }
+                                s.add(category.localized()).color(Pal.darkishGray).left().tooltip(category.description());
+                                s.image(Tex.whiteui, Pal.darkishGray).left().height(5f).growX().padLeft(10f);
+                            }).growX().pad(5f).padTop(10f);
+
+                            t.row();
+
+                            cat = t.table(c -> {
+                                c.top().left();
+                            }).name(category.name).top().left().growX().fillY().get();
+                            t.row();
+                        }
+
+                        TextButtonStyle style = new TextButtonStyle(Styles.flatt);
+                        style.fontColor = category.color;
+                        style.font = Fonts.outline;
+
+                        cat.button(example.localizedName(), style, () -> {
+                            canvas.addAt(at == -1 ? canvas.statements.getChildren().size : at, prov.get());
+                            dialog.hide();
+                            canvas.layout();
+                            canvas.recalculate();
+                        }).size(130f, 50f).self(c -> tooltip(c, "lst." + example.statementKey())).top().left();
+
+                        if(cat.getChildren().size % 3 == 0) cat.row();
+                    }
+                };
+
+                rebuild[0].run();
+            }).grow();
+        }).fill().maxHeight(Core.graphics.getHeight() * 0.8f);
+        dialog.addCloseButton();
+        dialog.show();
     }
 
     public void show(String code, LExecutor executor, boolean privileged, Cons<String> modified){
         this.executor = executor;
         this.privileged = privileged;
+        this.forceRestart = false;
         canvas.statements.clearChildren();
+        canvas.pane.setScrollYForce(0f);
         canvas.rebuild();
         canvas.privileged = privileged;
         try{
@@ -207,58 +368,11 @@ public class LogicDialog extends BaseDialog{
             canvas.load("");
         }
         this.consumer = result -> {
-            if(!result.equals(code)){
+            if(forceRestart || !result.equals(code)){
                 modified.get(result);
             }
         };
 
         show();
-    }
-
-    public void addDialog(int at) {
-        BaseDialog dialog = new BaseDialog("@add");
-        dialog.cont.table(table -> {
-            table.background(Tex.button);
-            table.pane(t -> {
-                for(Prov<LStatement> prov : LogicIO.allStatements){
-                    LStatement example = prov.get();
-                    if(example instanceof InvalidStatement || example.hidden() || (example.privileged() && !privileged) || (example.nonPrivileged() && privileged)) continue;
-
-                    LCategory category = example.category();
-                    Table cat = t.find(category.name);
-                    if(cat == null){
-                        t.table(s -> {
-                            if(category.icon != null){
-                                s.image(category.icon, Pal.darkishGray).left().size(15f).padRight(10f);
-                            }
-                            s.add(category.localized()).color(Pal.darkishGray).left().tooltip(category.description());
-                            s.image(Tex.whiteui, Pal.darkishGray).left().height(5f).growX().padLeft(10f);
-                        }).growX().pad(5f).padTop(10f);
-
-                        t.row();
-
-                        cat = t.table(c -> {
-                            c.top().left();
-                        }).name(category.name).top().left().growX().fillY().get();
-                        t.row();
-                    }
-
-                    TextButtonStyle style = new TextButtonStyle(Styles.flatt);
-                    style.fontColor = category.color;
-                    style.font = Fonts.outline;
-
-                    cat.button(example.name(), style, () -> {
-                        canvas.addAt(at, prov.get());
-                        dialog.hide();
-                        canvas.layout();
-                        canvas.recalculate();
-                    }).size(130f, 50f).self(c -> tooltip(c, "lst." + example.name())).top().left();
-
-                    if(cat.getChildren().size % 3 == 0) cat.row();
-                }
-            }).grow();
-        }).fill().maxHeight(Core.graphics.getHeight() * 0.8f);
-        dialog.addCloseButton();
-        dialog.show();
     }
 }

@@ -1,5 +1,6 @@
 package mindustry.entities.abilities;
 
+import arc.audio.*;
 import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
@@ -9,34 +10,109 @@ import arc.scene.ui.layout.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
+import mindustry.entities.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
-import mindustry.type.*;
 import mindustry.ui.*;
-import mindustry.world.meta.*;
 
 public class ShieldArcAbility extends Ability{
+
     private static Unit paramUnit;
     private static ShieldArcAbility paramField;
     private static Vec2 paramPos = new Vec2();
     private static final Cons<Bullet> shieldConsumer = b -> {
         if(b.team != paramUnit.team && b.type.absorbable && paramField.data > 0 &&
-            !paramPos.within(b, paramField.radius + paramField.width/2f) &&
-            Tmp.v1.set(b).add(b.vel).within(paramPos, paramField.radius + paramField.width/2f) &&
-            Angles.within(paramPos.angleTo(b), paramUnit.rotation + paramField.angleOffset, paramField.angle / 2f)){
+            !(b.within(paramPos, paramField.radius - paramField.width) && paramPos.within(b.x - b.deltaX, b.y - b.deltaY, paramField.radius - paramField.width)) &&
+            (Tmp.v1.set(b).add(b.deltaX, b.deltaY).within(paramPos, paramField.radius + paramField.width) || b.within(paramPos, paramField.radius + paramField.width)) &&
+            (Angles.within(paramPos.angleTo(b), paramUnit.rotation + paramField.angleOffset, paramField.angle / 2f) || Angles.within(paramPos.angleTo(b.x + b.deltaX, b.y + b.deltaY), paramUnit.rotation + paramField.angleOffset, paramField.angle / 2f))){
 
-            b.absorb();
-            Fx.absorb.at(b);
+            if(paramField.chanceDeflect > 0f && b.vel.len() >= 0.1f && b.type.reflectable && Mathf.chance(paramField.chanceDeflect)){
 
-            //break shield
+                //make sound
+                paramField.deflectSound.at(paramPos, Mathf.random(0.9f, 1.1f));
+
+                //translate bullet back to where it was upon collision
+                b.trns(-b.vel.x, -b.vel.y);
+
+                float nx = b.x - paramPos.x, ny = b.y - paramPos.y;
+                float nlen = Mathf.len(nx, ny);
+                if(nlen > 0.0001f){
+                    nx /= nlen;
+                    ny /= nlen;
+                }
+
+                float dot = b.vel.x * nx + b.vel.y * ny;
+                float rx = b.vel.x - 2f * dot * nx;
+                float ry = b.vel.y - 2f * dot * ny;
+                float outDot = rx * nx + ry * ny;
+                float normalX = outDot * nx, normalY = outDot * ny;
+                float tangX = rx - normalX, tangY = ry - normalY;
+
+                b.vel.set(normalX + tangX * paramField.reflectVel, normalY + tangY * paramField.reflectVel);
+
+                b.owner = paramUnit;
+                b.team = paramUnit.team;
+                b.time = b.lifetime * paramField.reflectTime;
+                if(paramField.reflectBuildingDamage > 0f){
+                    b.buildingDamageMultiplier = paramField.reflectBuildingDamage;
+                }
+
+            }else{
+                b.absorb();
+                Fx.absorb.at(b);
+
+                paramField.hitSound.at(b.x, b.y, 1f + Mathf.range(0.1f), paramField.hitSoundVolume);
+            }
+
+            // break shield
             if(paramField.data <= b.damage()){
                 paramField.data -= paramField.cooldown * paramField.regen;
 
-                //TODO fx
+                Fx.arcShieldBreak.at(paramPos.x, paramPos.y, 0, paramField.color == null ? paramUnit.type.shieldColor(paramUnit) : paramField.color, paramUnit);
+
+                paramField.breakSound.at(paramPos.x, paramPos.y);
             }
 
-            paramField.data -= b.damage();
+            // shieldDamage for consistency
+            paramField.data -= b.type.shieldDamage(b);
             paramField.alpha = 1f;
+        }
+    };
+
+    protected static final Cons<Unit> unitConsumer = unit -> {
+        // ignore core units
+        if(paramField.data > 0 && unit.targetable(paramUnit.team) &&
+            !(unit.within(paramPos, paramField.radius - paramField.width) && paramPos.within(unit.x - unit.deltaX, unit.y - unit.deltaY, paramField.radius - paramField.width)) &&
+            (Tmp.v1.set(unit).add(unit.deltaX, unit.deltaY).within(paramPos, paramField.radius + paramField.width) || unit.within(paramPos, paramField.radius + paramField.width)) &&
+            (Angles.within(paramPos.angleTo(unit), paramUnit.rotation + paramField.angleOffset, paramField.angle / 2f) || Angles.within(paramPos.angleTo(unit.x + unit.deltaX, unit.y + unit.deltaY), paramUnit.rotation + paramField.angleOffset, paramField.angle / 2f))){
+
+            if(unit.isMissile() && paramField.missileUnitMultiplier >= 0f){
+                Call.unitSafeDeath(unit);
+                Fx.absorb.at(unit);
+                paramField.pushEffect.at(unit.x, unit.y,paramUnit.team.color);
+
+                // consider missile hp and gamerule to damage the shield
+                paramField.data -= unit.health() * paramField.missileUnitMultiplier * Vars.state.rules.unitDamage(unit.team);
+                paramField.alpha = 1f;
+
+            }else if(paramField.pushUnits && (paramField.pushDiffLayer || paramUnit.isFlying() == unit.isFlying())){
+
+                float reach = paramField.radius + paramField.width;
+                float overlapDst = reach - unit.dst(paramPos);
+
+                if(overlapDst > 0){
+                    //only nullify velocity if it's heading towards the shield
+                    if(Angles.angleDist(unit.angleTo(paramPos), unit.vel.angle()) < 90f){
+                        unit.vel.setZero();
+                    }
+                    // get out
+                    unit.move(Tmp.v1.set(unit).sub(paramPos).setLength(overlapDst + 0.01f));
+
+                    if(Mathf.chanceDelta(0.3f * Time.delta)){
+                        paramField.pushEffect.at(unit.x, unit.y, paramUnit.team.color);
+                    }
+                }
+            }
         }
     };
 
@@ -56,30 +132,61 @@ public class ShieldArcAbility extends Ability{
     public boolean whenShooting = true;
     /** Width of shield line. */
     public float width = 6f;
+    /** Bullet deflection chance. -1 to disable */
+    public float chanceDeflect = -1f;
+    /** Multiplier for reflected bullet building damage. -1 to disable */
+    public float reflectBuildingDamage = 1f;
+    /** Velocity multiplier for reflected bullets on the opposite axis. Negative values = concave, positive values = convex */
+    public float reflectVel = 1f;
+    /** Time multiplier for reflected bullets. */
+    public float reflectTime = 1f - 0.5f;
+    /** Deflection sound. */
+    public Sound deflectSound = Sounds.none;
+    public Sound breakSound = Sounds.shieldBreakSmall;
+    public Sound hitSound = Sounds.shieldHit;
+    public float hitSoundVolume = 0.12f;
+    /** Multiplier for shield damage taken from missile units. */
+    public float missileUnitMultiplier = 2f;
 
     /** Whether to draw the arc line. */
     public boolean drawArc = true;
     /** If not null, will be drawn on top. */
     public @Nullable String region;
+    /** Color override of the shield. Uses unit shield colour by default. */
+    public @Nullable Color color;
     /** If true, sprite position will be influenced by x/y. */
     public boolean offsetRegion = false;
+    /** If true, enemy units are pushed out. */
+    public boolean pushUnits = true;
+    /** If pushUnits is true, allow ground units to push air or air units to push ground */
+    public boolean pushDiffLayer = true;
+    public Effect pushEffect = Fx.circleColorSpark;
 
     /** State. */
     protected float widthScale, alpha;
 
+    public float scaledMax(Unit unit){
+        return max * Vars.state.rules.unitHealth(unit.team);
+    }
+
     @Override
     public void addStats(Table t){
-        t.add("[lightgray]" + Stat.health.localized() + ": [white]" + Math.round(max));
+        super.addStats(t);
+        t.add(abilityStat("shield", Strings.autoFixed(max, 2)));
         t.row();
-        t.add("[lightgray]" + Stat.repairSpeed.localized() + ": [white]" + Strings.autoFixed(regen * 60f, 2) + StatUnit.perSecond.localized());
+        t.add(abilityStat("repairspeed", Strings.autoFixed(regen * 60f, 2)));
         t.row();
-        t.add("[lightgray]" + Stat.cooldownTime.localized() + ": [white]" + Strings.autoFixed(cooldown / 60f, 2) + " " + StatUnit.seconds.localized());
-        t.row();
+        t.add(abilityStat("cooldown", Strings.autoFixed(cooldown / 60f, 2)));
+        if(chanceDeflect > 0f){
+            t.row();
+            t.add(abilityStat("deflectchance", Strings.autoFixed(chanceDeflect *100f, 2)));
+        }
     }
 
     @Override
     public void update(Unit unit){
-        if(data < max){
+
+        if(data < scaledMax(unit)){
             data += Time.delta * regen;
         }
 
@@ -92,24 +199,25 @@ public class ShieldArcAbility extends Ability{
             paramField = this;
             paramPos.set(x, y).rotate(unit.rotation - 90f).add(unit);
 
-            Groups.bullet.intersect(unit.x - radius, unit.y - radius, radius * 2f, radius * 2f, shieldConsumer);
+            float reach = radius + width;
+            Groups.bullet.intersect(paramPos.x - reach, paramPos.y - reach, reach * 2f, reach * 2f, shieldConsumer);
+            Units.nearbyEnemies(paramUnit.team, paramPos.x - reach, paramPos.y - reach, reach * 2f, reach * 2f, unitConsumer);
         }else{
             widthScale = Mathf.lerpDelta(widthScale, 0f, 0.11f);
         }
     }
 
     @Override
-    public void init(UnitType type){
-        data = max;
+    public void created(Unit unit){
+        data = scaledMax(unit);
     }
 
     @Override
     public void draw(Unit unit){
-
         if(widthScale > 0.001f){
             Draw.z(Layer.shields);
 
-            Draw.color(unit.team.color, Color.white, Mathf.clamp(alpha));
+            Draw.color(color == null ? unit.type.shieldColor(unit) : color, Color.white, Mathf.clamp(alpha));
             var pos = paramPos.set(x, y).rotate(unit.rotation - 90f).add(unit);
 
             if(!Vars.renderer.animateShields){
@@ -133,6 +241,6 @@ public class ShieldArcAbility extends Ability{
 
     @Override
     public void displayBars(Unit unit, Table bars){
-        bars.add(new Bar("stat.shieldhealth", Pal.accent, () -> data / max)).row();
+        bars.add(new Bar("stat.shieldhealth", Pal.accent, () -> data / scaledMax(unit))).row();
     }
 }

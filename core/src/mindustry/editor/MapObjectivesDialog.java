@@ -1,7 +1,10 @@
 package mindustry.editor;
 
+import arc.*;
 import arc.func.*;
 import arc.graphics.*;
+import arc.input.*;
+import arc.math.*;
 import arc.math.geom.*;
 import arc.scene.event.*;
 import arc.scene.ui.*;
@@ -16,6 +19,7 @@ import mindustry.game.MapObjectives.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.io.*;
+import mindustry.logic.*;
 import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
@@ -44,7 +48,11 @@ public class MapObjectivesDialog extends BaseDialog{
             name(cont, name, remover, indexer);
 
             if(field != null && field.isAnnotationPresent(Multiline.class)){
-                cont.area(get.get(), set).height(85f).growX();
+                cont.area(get.get(), set).height(100f).growX();
+            }else if(field != null && field.isAnnotationPresent(LogicCode.class)){
+                cont.button(b -> b.image(Icon.pencil).size(iconSmall), () -> {
+                    ui.logic.show(get.get(), null, true, set::get);
+                }).pad(4f);
             }else{
                 cont.field(get.get(), set).growX();
             }
@@ -91,7 +99,7 @@ public class MapObjectivesDialog extends BaseDialog{
             cont.field(Float.toString(get.get() / mult), str -> set.get(Strings.parseFloat(str) * mult))
                 .growX().fillY()
                 .valid(Strings::canParseFloat)
-                .get().setFilter(TextFieldFilter.floatsOnly);
+                .get().setFilter((f, c) -> Character.isDigit(c) || ((!f.getText().contains(".")) && c == '.') || (!f.getText().contains("-") && c == '-'));
         });
 
         setProvider(UnlockableContent.class, (type, cons) -> cons.get(Blocks.coreShard));
@@ -135,6 +143,7 @@ public class MapObjectivesDialog extends BaseDialog{
             name(cont, name, remover, indexer);
             cont.table(t -> t.left().button(
                 b -> b.image(Tex.whiteui).size(iconSmall).update(i -> i.setColor(get.get().color)),
+                Styles.squarei,
                 () -> showTeamSelect(set)
             ).fill().pad(4f)).growX().fillY();
         });
@@ -246,6 +255,52 @@ public class MapObjectivesDialog extends BaseDialog{
             show();
         }});
 
+        setInterpreter(Vertices.class, float[].class, (cont, name, type, field, remover, indexer, get, set) -> cont.table(main -> {
+            float[] data = get.get();
+
+            name(cont, name, remover, indexer);
+            cont.table(t -> {
+                t.left().defaults().left();
+
+                String[] names = {"x", "y", "color", "u", "v"};
+                int stride = 6;
+                int vertices = data.length / stride;
+
+                for(int i = 0; i < vertices; i++){
+                    int offset = i * stride;
+
+                    t.table(row -> {
+                        for(int j = 0; j < names.length; j++){
+                            int index = offset + j;
+
+                            if("color".equals(names[j])) {
+                                getInterpreter(Color.class).build(row, names[j], new TypeInfo(Color.class), null, null, null, () -> new Color().abgr8888(data[index]), value -> data[index] = value.toFloatBits());
+                            }else{
+                                float scale = j <= 1 ? tilesize : 1;
+                                getInterpreter(float.class).build(row, names[j], new TypeInfo(float.class), null, null, null, () -> data[index] / scale, value -> data[index] = value * scale);
+                            }
+
+                            row.add().pad(4);
+                        }
+                    }).row();
+                }
+            });
+        }));
+
+        setInterpreter(Alignment.class, int.class, (cont, name, type, field, remover, indexer, get, set) -> {
+            Alignment align = field.getAnnotation(Alignment.class);
+            name(cont, name, remover, indexer);
+            cont.button(b -> {
+                b.label(() -> LStatement.alignToName.get(get.get(), "center"));
+                b.clicked(() -> LStatement.showAlignSelect(b, get.get(), set::get, align.hor(), align.ver()));
+            }, () -> {});
+        });
+
+        setInterpreter(TextureHolder.class, (cont, name, type, field, remover, indexer, get, set) -> {
+            name(cont, name, remover, indexer);
+            cont.field(String.valueOf(get.get().value), s -> get.get().value = s).growX();
+        });
+
         // Types that use the default interpreter. It would be nice if all types could use it, but I don't know how to reliably prevent classes like [? extends Content] from using it.
         for(var obj : MapObjectives.allObjectiveTypes) setInterpreter(obj.get().getClass(), defaultInterpreter());
         for(var mark : MapObjectives.allMarkerTypes) setInterpreter(mark.get().getClass(), defaultInterpreter());
@@ -269,6 +324,11 @@ public class MapObjectivesDialog extends BaseDialog{
             }).growX().fillY();
         });
 
+
+        setInterpreter(IndexBool.class, int.class, (cont, name, type, field, remover, indexer, get, set) -> {
+            getInterpreter(Boolean.class).build(cont, name, type, field, remover, indexer, () -> get.get() != -1, v -> set.get(v ? +1 : -1));
+        });
+
         // Special data structure interpreters.
         // Instantiate default `Seq`s with a reflectively allocated array.
         setProvider(Seq.class, (type, cons) -> cons.get(new Seq<>(type.element.raw)));
@@ -290,10 +350,12 @@ public class MapObjectivesDialog extends BaseDialog{
                     t.button(Icon.downOpen, Styles.emptyi, () -> indexer.get(false)).fill().padRight(4f);
                 }
 
-                t.button(Icon.add, Styles.emptyi, () -> getProvider(type.element.raw).get(type.element, res -> {
-                    arr.add(res);
-                    rebuild[0].run();
-                })).fill();
+                if(!field.isAnnotationPresent(Immutable.class)) {
+                    t.button(Icon.add, Styles.emptyi, () -> getProvider(type.element.raw).get(type.element, res -> {
+                        arr.add(res);
+                        rebuild[0].run();
+                    })).fill();
+                }
             }).growX().height(46f).pad(0f, -10f, 0f, -10f).get();
 
             main.row().table(Tex.button, t -> rebuild[0] = () -> {
@@ -312,10 +374,10 @@ public class MapObjectivesDialog extends BaseDialog{
 
                     getInterpreter((Class<Object>)arr.get(index).getClass()).build(
                         t, "", new TypeInfo(arr.get(index).getClass()),
-                        field, () -> {
+                        field, field == null || !field.isAnnotationPresent(Immutable.class) ? () -> {
                             arr.remove(index);
                             rebuild[0].run();
-                        }, field == null || !field.isAnnotationPresent(Unordered.class) ? in -> {
+                        } : null, field == null || !field.isAnnotationPresent(Unordered.class) ? in -> {
                             if(in && index > 0){
                                 arr.swap(index, index - 1);
                                 rebuild[0].run();
@@ -359,7 +421,7 @@ public class MapObjectivesDialog extends BaseDialog{
                 t.left();
                 t.margin(10f);
 
-                if(name.length() > 0) t.add(name + ":").color(Pal.accent);
+                if(name.length() > 0) t.add(name).color(Pal.accent);
                 t.add().growX();
 
                 Cell<ImageButton> remove = null;
@@ -431,10 +493,42 @@ public class MapObjectivesDialog extends BaseDialog{
                 buttons.defaults().size(160f, 64f).pad(2f);
                 buttons.button("@back", Icon.left, MapObjectivesDialog.this::hide);
                 buttons.button("@add", Icon.add, () -> getProvider(MapObjective.class).get(new TypeInfo(MapObjective.class), canvas::query));
+                buttons.button("@edit.menu", Icon.edit, () -> {
+                    BaseDialog dialog = new BaseDialog("@edit.menu");
+                    dialog.addCloseButton();
+                    dialog.setFillParent(false);
+                    dialog.cont.table(Tex.button, t -> {
+                        var style = Styles.cleart;
+                        t.defaults().size(280f, 64f).pad(2f);
+
+                        t.button("@copy.clipboard", Icon.copy, style, () -> {
+                            ui.showInfoFade("@copied");
+                            Core.app.setClipboardText(JsonIO.write(new MapObjectives(canvas.objectives)));
+                            dialog.hide();
+                        }).disabled(b -> canvas.objectives.isEmpty()).marginLeft(12f).row();
+
+                        t.button("@load.clipboard", Icon.download, style, () -> {
+                            try{
+                                rebuildObjectives(new Seq<>(JsonIO.read(MapObjectives.class, Core.app.getClipboardText()).all));
+                            }catch(Exception e){
+                                Log.err(e);
+                                ui.showErrorMessage("@waves.invalid");
+                            }
+                            dialog.hide();
+                        }).disabled(Core.app.getClipboardText() == null || !Core.app.getClipboardText().startsWith("[")).marginLeft(12f).row();
+
+                        t.button("@clear", Icon.none, style, () -> ui.showConfirm("@confirm", "@settings.clear.confirm", () -> {
+                            rebuildObjectives(new Seq<>());
+                            dialog.hide();
+                        })).marginLeft(12f).row();
+                    });
+
+                    dialog.show();
+                });
 
                 if(mobile){
-                    buttons.button("@cancel", Icon.cancel, canvas::stopQuery).disabled(b -> !canvas.isQuerying());
-                    buttons.button("@ok", Icon.ok, canvas::placeQuery).disabled(b -> !canvas.isQuerying());
+                    buttons.button("@cancel", Icon.cancel, canvas::stopQuery).visible(() -> canvas.isQuerying());
+                    buttons.button("@ok", Icon.ok, canvas::placeQuery).visible(() -> canvas.isQuerying());
                 }
 
                 setFillParent(true);
@@ -451,27 +545,71 @@ public class MapObjectivesDialog extends BaseDialog{
             out.get(canvas.objectives);
             out = arr -> {};
         });
+
+        update(() -> {
+            if(hasKeyboard()){
+                doInput();
+            }
+        });
+    }
+
+    private void doInput(){
+        if(Core.input.ctrl() && Core.input.keyTap(KeyCode.c)){
+            Vec2 pos = screenToLocalCoordinates(Core.input.mouse());
+            int pasteX = Mathf.round((pos.x - objWidth * canvas.unitSize / 2f) / canvas.unitSize);
+            int pasteY = Mathf.floor((pos.y - canvas.unitSize) / canvas.unitSize);
+            Tmp.r1.set(pasteX, pasteY, 1, 1).grow(-0.001f);
+            for(var obj : canvas.objectives){
+                if(Tmp.r2.set(obj.editorX - 2, obj.editorY - 1, objWidth, objHeight).overlaps(Tmp.r1)){
+                    Core.app.setClipboardText(JsonIO.json.toJson(obj, Object.class));
+                    break;
+                }
+            }
+        }
+
+        if(Core.input.ctrl() && Core.input.keyTap(KeyCode.v)){
+            String text = Core.app.getClipboardText();
+            if(text == null) return;
+
+            try{
+                MapObjective obj = JsonIO.read(MapObjective.class, text);
+                Vec2 pos = screenToLocalCoordinates(Core.input.mouse());
+                int tx = Mathf.round((pos.x - objWidth * canvas.unitSize / 2f) / canvas.unitSize);
+                int ty = Mathf.floor((pos.y - canvas.unitSize) / canvas.unitSize);
+                if(obj != null && canvas.tilemap.validPlace(tx, ty, null)){
+                    obj.editorX = tx;
+                    obj.editorY = ty;
+                    canvas.tilemap.createTile(tx, ty, obj, true);
+                    canvas.objectives.add(obj);
+                }
+            }catch(Exception e){ //in case serialization fails
+            }
+        }
     }
 
     public void show(Seq<MapObjective> objectives, Cons<Seq<MapObjective>> out){
         this.out = out;
 
+        rebuildObjectives(objectives);
+        show();
+    }
+
+    public void rebuildObjectives(Seq<MapObjective> objectives){
         canvas.clearObjectives();
+        objectives.each(MapObjective::validate);
+
         if(
-            objectives.any() && (
-            // If the objectives were previously programmatically made...
-            objectives.contains(obj -> obj.editorX == -1 || obj.editorY == -1) ||
-            // ... or some idiot somehow made it not work...
-            objectives.contains(obj -> !canvas.tilemap.createTile(obj))
-        )){
+        objectives.any() && (
+        // If the objectives were previously programmatically made...
+        objectives.contains(obj -> obj.editorX == -999 || obj.editorY == -999))){
             // ... then rebuild the structure.
             canvas.clearObjectives();
 
             // This is definitely NOT a good way to do it, but only insane people or people from the distant past would actually encounter this anyway.
             int w = objWidth + 2,
-                len = objectives.size * w,
-                columns = objectives.size,
-                rows = 1;
+            len = objectives.size * w,
+            columns = objectives.size,
+            rows = 1;
 
             if(len > bounds){
                 rows = len / bounds;
@@ -488,10 +626,11 @@ public class MapObjectivesDialog extends BaseDialog{
                     if(i >= objectives.size) break loop;
                 }
             }
+        }else{
+            objectives.each(o -> canvas.tilemap.createTile(o.editorX, o.editorY, o, true));
         }
 
         canvas.objectives.set(objectives);
-        show();
     }
 
     public static <T extends UnlockableContent> void showContentSelect(@Nullable ContentType type, Cons<T> cons, Boolf<T> check){
@@ -521,9 +660,23 @@ public class MapObjectivesDialog extends BaseDialog{
     }
 
     public static void showTeamSelect(Cons<Team> cons){
+        showTeamSelect(false, cons);
+    }
+
+    public static void showTeamSelect(boolean allowNull, Cons<Team> cons){
         BaseDialog dialog = new BaseDialog("");
+
+        dialog.cont.defaults().size(40f).pad(4f);
+
+        if(allowNull){
+            dialog.cont.button(Icon.cancel, Styles.emptyi, () -> {
+                cons.get(null);
+                dialog.hide();
+            }).tooltip("@none");
+        }
+
         for(var team : Team.baseTeams){
-            dialog.cont.image(Tex.whiteui).size(iconMed).color(team.color).pad(4)
+            dialog.cont.image(Tex.whiteui).color(team.color)
                 .with(i -> i.addListener(new HandCursorListener()))
                 .tooltip(team.localized()).get().clicked(() -> {
                     cons.get(team);

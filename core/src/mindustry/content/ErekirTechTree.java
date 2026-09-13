@@ -95,7 +95,9 @@ public class ErekirTechTree{
                     });
 
                     node(reinforcedMessage, Seq.with(new OnSector(aegis)), () -> {
-                        node(canvas);
+                        node(canvas, () -> {
+                            node(largeCanvas);
+                        });
                     });
                 });
 
@@ -137,6 +139,10 @@ public class ErekirTechTree{
                         node(eruptionDrill, Seq.with(new OnSector(stronghold)), () -> {
 
                         });
+
+                        node(largeCliffCrusher, Seq.with(new OnSector(stronghold)), () -> {
+
+                        });
                     });
                 });
             });
@@ -156,7 +162,9 @@ public class ErekirTechTree{
                     });
 
                     node(beamTower, Seq.with(new OnSector(peaks)), () -> {
+                        node(beamLink, Seq.with(new OnSector(crossroads)), () -> {
 
+                        });
                     });
 
 
@@ -220,7 +228,9 @@ public class ErekirTechTree{
                                         });
 
                                         node(heatRouter, () -> {
+                                            node(smallHeatRedirector, () -> {
 
+                                            });
                                         });
                                     });
                                 });
@@ -323,7 +333,6 @@ public class ErekirTechTree{
                                 node(shipRefabricator, Seq.with(new OnSector(peaks)), () -> {
                                     node(UnitTypes.avert);
 
-                                    //TODO
                                     node(primeRefabricator, Seq.with(new OnSector(stronghold)), () -> {
                                         node(UnitTypes.precept);
                                         node(UnitTypes.anthicus);
@@ -380,7 +389,7 @@ public class ErekirTechTree{
                             node(basin, Seq.with(new SectorComplete(atlas)), () -> {
                                 node(marsh, Seq.with(new SectorComplete(basin)), () -> {
                                     node(ravine, Seq.with(new SectorComplete(marsh), new Research(Liquids.slag)), () -> {
-                                        node(caldera, Seq.with(new SectorComplete(peaks), new Research(heatRedirector)), () -> {
+                                        node(caldera, Seq.with(new SectorComplete(peaks), new SectorComplete(ravine), new Research(heatRedirector)), () -> {
                                             node(stronghold, Seq.with(new SectorComplete(caldera), new Research(coreCitadel)), () -> {
                                                 node(crevice, Seq.with(new SectorComplete(stronghold)), () -> {
                                                     node(siege, Seq.with(new SectorComplete(crevice)), () -> {
@@ -447,11 +456,11 @@ public class ErekirTechTree{
 
                                 //nodeProduce(Liquids.gallium, () -> {});
                             });
+                        });
 
-                            nodeProduce(Items.surgeAlloy, () -> {
-                                nodeProduce(Items.phaseFabric, () -> {
+                        nodeProduce(Items.surgeAlloy, () -> {
+                            nodeProduce(Items.phaseFabric, () -> {
 
-                                });
                             });
                         });
                     });

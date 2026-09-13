@@ -19,15 +19,20 @@ public class Objectives{
 
         @Override
         public boolean complete(){
-            return content.unlocked();
+            return content.unlockedHost();
         }
 
         @Override
         public String display(){
             return Core.bundle.format("requirement.research",
                 //TODO broken for multi tech nodes.
-                (content.techNode == null || content.techNode.parent == null || content.techNode.parent.content.unlocked()) ?
+                (content.techNode == null || content.techNode.parent == null || content.techNode.parent.content.unlockedHost()) ?
                     (content.emoji() + " " + content.localizedName) : "???");
+        }
+
+        @Override
+        public String toString(){
+            return "research: " + content;
         }
     }
 
@@ -42,13 +47,18 @@ public class Objectives{
 
         @Override
         public boolean complete(){
-            return content.unlocked();
+            return content.unlockedHost();
         }
 
         @Override
         public String display(){
             return Core.bundle.format("requirement.produce",
-                content.unlocked() ? (content.emoji() + " " + content.localizedName) : "???");
+                content.unlockedHost() ? (content.emoji() + " " + content.localizedName) : "???");
+        }
+
+        @Override
+        public String toString(){
+            return "produce: " + content;
         }
     }
 
@@ -70,6 +80,11 @@ public class Objectives{
         public String display(){
             return Core.bundle.format("requirement.capture", preset.localizedName);
         }
+
+        @Override
+        public String toString(){
+            return "sectorComplete: " + preset;
+        }
     }
 
     public static class OnSector implements Objective{
@@ -90,6 +105,11 @@ public class Objectives{
         public String display(){
             return Core.bundle.format("requirement.onsector", preset.localizedName);
         }
+
+        @Override
+        public String toString(){
+            return "onSector: " + preset;
+        }
     }
 
     public static class OnPlanet implements Objective{
@@ -109,6 +129,11 @@ public class Objectives{
         @Override
         public String display(){
             return Core.bundle.format("requirement.onplanet", planet.localizedName);
+        }
+
+        @Override
+        public String toString(){
+            return "onPlanet: " + planet;
         }
     }
 

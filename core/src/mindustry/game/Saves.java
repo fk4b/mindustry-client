@@ -8,12 +8,15 @@ import arc.graphics.g2d.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.client.*;
+import mindustry.content.*;
 import mindustry.core.GameState.*;
 import mindustry.game.EventType.*;
 import mindustry.io.*;
 import mindustry.io.SaveIO.*;
 import mindustry.maps.Map;
 import mindustry.type.*;
+import mindustry.world.*;
 
 import java.io.*;
 import java.text.*;
@@ -34,12 +37,28 @@ public class Saves{
     public boolean hasLoaded;
 
     /** Whether we are currently loading or cancelling loading */
-    private boolean loading, cancelling;
+    public boolean loading, cancelling;
 
     long totalPlaytime;
     private long lastTimestamp;
 
-    private final LinkedBlockingDeque<Runnable> previewQueue = new LinkedBlockingDeque<>();
+    private SaveSlot createPreviewFor;
+    private final BackgroundTask<Runnable> previewTask = new BackgroundTask<>() {
+        @Override
+        public boolean processStep() {
+            if (!units.isEmpty()) units.removeFirst().run(); // Load previews
+
+            var createPreviews = Core.settings.getBool("createmissingsavepreviews");
+            if (createPreviewFor != null && createPreviews) { // Create missing save previews
+                doExpensiveStep(50, () -> {
+                    createPreview(createPreviewFor);
+                    createPreviewFor = null;
+                });
+            }
+
+            return units.isEmpty() && (createPreviewFor == null || !createPreviews);
+        }
+    };
 
     public Saves(){
         Events.on(StateChangeEvent.class, event -> {
@@ -48,6 +67,20 @@ public class Saves{
                 lastTimestamp = 0;
                 current = null;
             }
+        });
+    }
+
+    private void clearOldMegabaseSectors(){
+        IntSet serpuloRemoval = IntSet.with(27, 245, 244, 243, 242, 247, 246, 237, 150, 157, 138, 251, 103);
+
+        //clear old megabase sectors from the beta period
+        saves.removeAll(s -> {
+            if(s.getSector() != null && s.getSector().planet == Planets.serpulo && serpuloRemoval.contains(s.getSector().id) && s.meta.build < 157 && s.meta.build > 146){
+                s.getSector().clearInfo();
+                s.file.delete();
+                return true;
+            }
+            return false;
         });
     }
 
@@ -66,8 +99,8 @@ public class Saves{
     public void load(boolean sectorsOnly, Cons<SaveSlot> cons){
         hasLoaded = false;
         Log.debug("Loading saves");
-        unload(); // Clear saves (prevents loading two sets of saves at once)
         var start = Time.nanos();
+        unload(); // Clear saves (prevents loading two sets of saves at once)
         Time.mark();
 
         class FiTi{
@@ -79,6 +112,7 @@ public class Saves{
                 this.ti = ti;
             }
         }
+
         var tasks = new Seq<Future<SaveSlot>>();
         var files = new Seq<FiTi>();
         saveDirectory.walk(file -> {
@@ -93,6 +127,9 @@ public class Saves{
             files.each(f -> tasks.add(mainExecutor.submit(callableFor(f.fi))));
         }
 
+        Seq<Remap> remaps = new Seq<>();
+        ObjectSet<Sector> remapped = new ObjectSet<>();
+
         var queued = Time.elapsed();
         var blocked = Time.nanos();
         saves.ensureCapacity(tasks.size);
@@ -104,51 +141,67 @@ public class Saves{
                 long wait = Time.nanos();
                 var s = Threads.await(task);
                 waited += Time.nanos() - wait;
-                if(s != null) processSave(s);
+                if(s != null) processSave(s, remaps, remapped);
             }
+            clearOldMegabaseSectors();
+            processRemaps(remaps, remapped);
             saves.shrink();
             Log.debug("Queued saves in: @ms | Blocked for: @/@ms | Loaded @ saves in: @ms", queued, waited/(float)Time.nanosPerMilli, Time.millisSinceNanos(blocked), saves.size, Time.millisSinceNanos(start));
             hasLoaded = true;
         }else if(!loading){ // Non-blocking async
             cancelling = false;
             loading = true;
-            int i = 0;
-            for(; i < tasks.size; i++){ // Run sync until at least one save is added (very horrid)
-                var s = Threads.await(tasks.get(i));
-                if(s != null){
-                    processSave(s);
-                    cons.get(s);
-                    i++;
-                    break;
-                }
-            }
-            for(; i < tasks.size; i++){
-                var task = tasks.get(i);
-                previewQueue.add(() -> {
-                    if(cancelling){
-                        previewQueue.pop().run(); // Saves were cleared before loading finished, cancel all loading tasks now (jank)
-                        return;
-                    }
+            for(var task : tasks){
+                previewTask.addUnit(() -> {
                     var s = Threads.await(task);
                     if(s != null){
-                        processSave(s);
+                        processSave(s, remaps, remapped);
                         cons.get(s);
                     }
                 });
             }
-            previewQueue.add(() -> { // Signifies that loading has completed
+            previewTask.addUnit(() -> { // Signifies that loading has completed
                 if(cancelling){
                     hasLoaded = false;
-                    Log.debug("Cancelled loading | Size: @", saves.size);
+                    Log.debug("Cancelled loading saves | Size: @", saves.size);
                     unload();
-                    Log.debug("Cancelled loading after | Size: @", saves.size);
+                    Log.debug("Cancelled loading saves (after unload) | Size: @", saves.size);
                 }else{
-                    Log.info("Loading finished");
+                    clearOldMegabaseSectors();
+                    processRemaps(remaps, remapped);
+                    saves.shrink();
+                    Log.info("Loading saves asynchronously finished in @ms", Time.millisSinceNanos(start));
                     hasLoaded = true;
                     cons.get(null);
                 }
                 loading = false;
             });
+        }
+    }
+
+    private void processRemaps(Seq<Remap> remaps, ObjectSet<Sector> remapped) {
+        //process remaps later to allow swaps of sectors
+        for(var remap : remaps){
+            if(remap.sourceSector.planet == Planets.serpulo) Vars.hadSerpuloRemaps = true;
+            var remapTarget = remap.destSector;
+
+            //overwrite the target sector's info with the save's info
+            Core.settings.putJson(remapTarget.planet.name + "-s-" + remapTarget.id + "-info", remap.sourceInfo);
+            remapTarget.loadInfo();
+
+            remapTarget.save = remap.slot;
+            try{
+                //move file from tmp directory back into the correct location
+                remap.sourceFile.moveTo(remap.destFile);
+                remap.slot.file = remap.destFile;
+            }catch(Exception e){
+                Log.err("Failed to move back sector files when remapping: " + remap.sourceSector.id + " -> " + remapTarget.id, e);
+            }
+
+            //clear the info, assuming it wasn't a sector that got mapped to
+            if(!remapped.contains(remap.sourceSector)){
+                remap.sourceSector.clearInfo();
+            }
         }
     }
 
@@ -168,13 +221,58 @@ public class Saves{
             }
         };
     }
-    private void processSave(SaveSlot s){
+
+    private void processSave(SaveSlot s, Seq<Remap> remaps, ObjectSet<Sector> remapped){
         saves.add(s);
         var sector = s.getSector();
         if(sector != null){
             if(lastSectorSave == null && s.getName().equals(Core.settings.getString("last-sector-save", "<none>"))) lastSectorSave = s;
-            if(sector.save != null) Log.warn("Sector @ has two corresponding saves: @ and @", sector, sector.save.file, s.file);
-            else sector.save = s;
+
+            String name = s.meta.tags.get("sectorPreset");
+            Sector remapTarget = null;
+
+            if(name != null){
+                if(!name.isEmpty()){ //if this save had a preset defined...
+                    SectorPreset preset = content.sector(name);
+                    //...place it in the right sector according to its preset
+                    if(preset != null && preset.sector != sector && preset.requireUnlock){
+                        remapTarget = preset.sector;
+                    }
+                }
+            }else{ //there was no sector preset in the meta at all, which means this is a legacy save that may need mapping
+                SectorPreset target = content.sectors().find(se -> se.planet == sector.planet && se.originalPosition == sector.id);
+                if(target != null && target.sector != sector && target.requireUnlock){ //there is indeed a sector preset that used to have this ID, and it needs remapping!
+                    remapTarget = target.sector;
+                }
+            }
+
+            if(remapTarget != null){
+                //if the file name matches the destination of the remap, assume it has already been remapped, and skip the file movement procedure
+                if(!s.file.equals(getSectorFile(remapTarget))){
+                    Log.info("Remapping sector: @ -> @ (@)", sector.id, remapTarget.id, remapTarget.preset);
+
+                    try{
+                        SectorInfo info = Core.settings.getJson(sector.planet.name + "-s-" + sector.id + "-info", SectorInfo.class, SectorInfo::new);
+                        Fi tmpRemapFile = saveDirectory.child("remap_" + sector.planet.name + "_" + sector.id + "." + saveExtension);
+                        s.file.moveTo(tmpRemapFile);
+
+                        remaps.add(new Remap(s, tmpRemapFile, sector, info, getSectorFile(remapTarget), remapTarget));
+                        remapped.add(remapTarget);
+                    }catch(Exception e){
+                        Log.err("Failed to move sector files when remapping: " + sector.id + " -> " + remapTarget.id, e);
+                    }
+                }
+
+                remapTarget.save = s;
+                s.meta.rules.sector = remapTarget;
+
+            }else{
+                if(sector.save != null){
+                    Log.warn("Sector @ has two corresponding saves: @ and @", sector, sector.save.file, s.file);
+                }else{
+                    sector.save = s;
+                }
+            }
         }
     }
 
@@ -182,8 +280,50 @@ public class Saves{
     public void unload(){
         Log.debug("Unloading saves");
         cancelling = true;
+        previewTask.block();
+        previewTask.addUnit(() -> saves.each(SaveSlot::unloadTexture));
         saves.each(SaveSlot::unloadTexture);
         saves.clear().shrink(); // Don't want all of this stuff in memory
+        createPreviewFor = null;
+    }
+
+    /** Doesn't attempt to recreate existing broken previews Vars.control.saves.createMissingPreviews() */
+    public void createMissingPreviews(){
+        load(); // reload saves to ensure we have them all loaded
+        var missing = saves.select(s -> !s.previewFile().exists()).reverse();
+        var originallyMissing = missing.size;
+        Runnable[] next = {null};
+        next[0] = () -> {
+            var s = Time.millis();
+            do{
+                if(missing.isEmpty()){
+                    ui.loadfrag.hide();
+                    return;
+                }
+                var save = missing.pop();
+                if(save.previewFile().exists()) continue; // Preview was already created by createPreviewFor (this is jank but whatever, it works and is better than creating the preview again as thats slow)
+                createPreview(save);
+            }while(Time.timeSinceMillis(s) < 1000);
+            ui.loadfrag.setText(Core.bundle.format("client.save.createpreviews.progress", originallyMissing - missing.size, originallyMissing));
+            ui.loadfrag.setProgress((originallyMissing - missing.size) / (float) originallyMissing);
+            ui.loadfrag.snapProgress();
+            Core.app.post(next[0]);
+        };
+        ui.loadfrag.show("[accent]" + Core.bundle.format("client.save.createpreviews.progress", 0, originallyMissing)); // Why does show() not add accent but setText() does smh
+        ui.loadfrag.setButton(missing::clear);
+        Time.runTask(7, next[0]); // Let the loading screen appear first
+    }
+
+    private void createPreview(SaveSlot slot){
+        try{
+            var pix = SaveIO.generatePreview(slot); // Very slow and expensive
+            // The three methods below are intentionally not threaded as that can cause race conditions (even when posting slot.unloadTexture back to the main thread)
+            slot.previewFile().writePng(pix);
+            pix.dispose();
+            slot.unloadTexture(); // Force the preview to be loaded from disk next frame (this is horrible and will cause unneeded reads, but it's super easy, so I'm doing it anyway)
+        }catch(Throwable t){
+            Log.err(t);
+        }
     }
 
     public @Nullable SaveSlot getLastSector(){
@@ -198,19 +338,18 @@ public class Saves{
         if(current != null && state.isGame()
         && !(state.isPaused() && Core.scene.hasDialog())){
             if(lastTimestamp != 0){
-                totalPlaytime += Time.timeSinceMillis(lastTimestamp);
+                long change = Time.timeSinceMillis(lastTimestamp);
+                totalPlaytime += change;
+                if(state.isCampaign()){
+                    state.getPlanet().stats().playtime += change;
+                }
             }
             lastTimestamp = Time.millis();
         }
 
-        var start = Time.millis();
-        while(previewQueue.size() > 0 && Time.timeSinceMillis(start) < 15){
-            previewQueue.pop().run();
-        }
-
         if(state.isGame() && !state.gameOver && current != null && current.isAutosave()){
             time += Time.delta;
-            if(time > Core.settings.getInt("saveinterval") * 60){
+            if(time > Core.settings.getInt("saveinterval") * 60 && !Vars.disableSave){
                 saving = true;
 
                 try{
@@ -226,6 +365,8 @@ public class Saves{
         }else{
             time = 0;
         }
+
+        createPreviewFor = null; // If we enable the creation of previews we need to run the task again, this is an easy way to do so.
     }
 
     public long getTotalPlaytime(){
@@ -307,8 +448,32 @@ public class Saves{
         if(needsLoad) unload(); // Unload if we just loaded
     }
 
+    private static class Remap{
+        //file in the temp folder
+        Fi sourceFile;
+        //slot of source sector to move file for
+        SaveSlot slot;
+        Sector sourceSector;
+        //sector info from source sector to move into
+        SectorInfo sourceInfo;
+
+        //file to copy to
+        Fi destFile;
+        //destination sector to move to
+        Sector destSector;
+
+        Remap(SaveSlot slot, Fi sourceFile, Sector sourceSector, SectorInfo sourceInfo, Fi destFile, Sector destSector){
+            this.slot = slot;
+            this.sourceFile = sourceFile;
+            this.sourceSector = sourceSector;
+            this.sourceInfo = sourceInfo;
+            this.destFile = destFile;
+            this.destSector = destSector;
+        }
+    }
+
     public class SaveSlot{
-        public final Fi file;
+        public Fi file;
         private volatile TextureRegion preview;
         public SaveMeta meta;
 
@@ -322,8 +487,12 @@ public class Saves{
         }
 
         public void load() throws SaveException{
+            load(world.context);
+        }
+
+        public void load(WorldContext context) throws SaveException{
             try{
-                SaveIO.load(file);
+                SaveIO.load(file, context);
                 meta = SaveIO.getMeta(file);
                 current = this;
                 totalPlaytime = meta.timePlayed;
@@ -347,10 +516,10 @@ public class Saves{
         }
 
         private void savePreview(){
-            mainExecutor.submit(() -> {
+            mainExecutor.execute(() -> {
                 try{
                     previewFile().writePng(renderer.minimap.getPixmap());
-                    previewQueue.add(this::unloadTexture);
+                    previewTask.addUnit(this::unloadTexture);
                 }catch(Throwable t){
                     Log.err(t);
                 }
@@ -367,11 +536,9 @@ public class Saves{
                         try {
                             var data = TextureData.load(previewFile(), false);
                             data.prepare();
-                            previewQueue.add(() -> {
+                            previewTask.addUnit(() -> {
                                 if (preview == null) { // By the time the pixmap finished loading, we no longer needed it, so we don't create a texture.
                                     data.consumePixmap().dispose(); // Since we don't create a texture, we need to manually dispose the pixmap.
-                                    var next = previewQueue.poll(); // Saves were cleared before loading finished, cancel all loading tasks now (jank)
-                                    if(next != null) next.run();
                                     return;
                                 }
                                 preview = new TextureRegion(new Texture(data));
@@ -382,6 +549,9 @@ public class Saves{
                         }
                     });
                 }
+            }else if(createPreviewFor == null && preview == Core.atlas.find("nomap") && !previewFile().exists()){ // Doesn't have the default
+                createPreviewFor = this;
+                previewTask.submit(); // preview creation uses the previewTask
             }
             return preview;
         }
@@ -443,6 +613,7 @@ public class Saves{
         }
 
         public @Nullable Sector getSector(){
+            //TODO remap sectors
             return meta == null || meta.rules == null ? null : meta.rules.sector;
         }
 
@@ -470,6 +641,14 @@ public class Saves{
             Core.settings.put("save-" + index() + "-autosave", save);
         }
 
+        public boolean isBeingPlayed(){
+            return getCurrent() == this;
+        }
+
+        public boolean hasExternalAssets(){
+            return meta.tags.getBool("hasExternalAssets");
+        }
+
         public void importFile(Fi from) throws IOException{
             try{
                 from.copyTo(file);
@@ -484,7 +663,13 @@ public class Saves{
 
         public void exportFile(Fi to) throws IOException{
             try{
-                file.copyTo(to);
+                if(isBeingPlayed() && hasExternalAssets()){
+                    SaveIO.write(to, new SaveOptions(){{
+                        embedAssets = true;
+                    }});
+                }else{
+                    file.copyTo(to);
+                }
             }catch(Exception e){
                 throw new IOException(e);
             }

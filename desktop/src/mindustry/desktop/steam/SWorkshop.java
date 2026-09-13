@@ -6,17 +6,18 @@ import arc.func.*;
 import arc.scene.ui.*;
 import arc.struct.*;
 import arc.util.*;
-import com.codedisaster.steamworks.*;
-import com.codedisaster.steamworks.SteamRemoteStorage.*;
-import com.codedisaster.steamworks.SteamUGC.*;
 import mindustry.game.*;
 import mindustry.gen.*;
+import mindustry.graphics.*;
 import mindustry.maps.*;
 import mindustry.mod.*;
 import mindustry.mod.Mods.*;
 import mindustry.service.*;
 import mindustry.type.*;
 import mindustry.ui.dialogs.*;
+import steamworks.*;
+import steamworks.SteamRemoteStorage.*;
+import steamworks.SteamUGC.*;
 
 import static mindustry.Vars.*;
 
@@ -75,6 +76,7 @@ public class SWorkshop implements SteamUGCCallback{
 
     /** Fetches info for an item, checking to make sure that it exists.*/
     public void viewListing(Publishable p){
+        if(p.getSteamID() == null) return;
         long handle = Strings.parseLong(p.getSteamID(), -1);
         SteamPublishedFileID id = new SteamPublishedFileID(handle);
         Log.info("Handle = " + handle);
@@ -218,9 +220,9 @@ public class SWorkshop implements SteamUGCCallback{
 
             ui.loadfrag.setProgress(() -> {
                 ItemUpdateStatus status = ugc.getItemUpdateProgress(h, info);
-                ui.loadfrag.setText("@" + status.name().toLowerCase());
+                ui.loadfrag.setText("@" + status.name().toLowerCase(), Pal.accent);
                 if(status == ItemUpdateStatus.Invalid){
-                    ui.loadfrag.setText("@done");
+                    ui.loadfrag.setText("@done", Pal.accent);
                     return 1f;
                 }
                 return (float)status.ordinal() / (float)ItemUpdateStatus.values().length;

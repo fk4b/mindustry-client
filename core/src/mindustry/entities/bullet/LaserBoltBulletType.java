@@ -17,6 +17,7 @@ public class LaserBoltBulletType extends BasicBulletType{
         despawnEffect = Fx.hitLaser;
         hittable = false;
         reflectable = false;
+        laserBullet = true;
         lightColor = Pal.heal;
         lightOpacity = 0.6f;
     }
@@ -27,7 +28,6 @@ public class LaserBoltBulletType extends BasicBulletType{
 
     @Override
     public void draw(Bullet b){
-        if (UnitType.alpha == 0) return;
         super.draw(b);
         Draw.color(backColor);
         Lines.stroke(width);

@@ -4,6 +4,7 @@ import arc.*;
 import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
+import arc.input.*;
 import arc.math.*;
 import arc.scene.*;
 import arc.scene.actions.*;
@@ -15,7 +16,7 @@ import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import kotlin.collections.*;
-import mindustry.Vars;
+import mindustry.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.client.*;
 import mindustry.client.antigrief.*;
@@ -35,19 +36,24 @@ import mindustry.input.*;
 import mindustry.net.Packets.*;
 import mindustry.type.*;
 import mindustry.ui.*;
+import mindustry.world.*;
+import mindustry.world.blocks.environment.*;
+import mindustry.world.meta.*;
 
-import static mindustry.client.ClientVars.*;
+import java.lang.reflect.*;
+
 import static mindustry.Vars.*;
+import static mindustry.client.ClientVars.*;
 import static mindustry.gen.Tex.*;
 
 public class HudFragment{
     private static final float dsize = 78f, pauseHeight = 36f;
 
-    public final PlacementFragment blockfrag = new PlacementFragment();
+    public PlacementFragment blockfrag = new PlacementFragment();
+    public CoreItemsDisplay coreItems = new CoreItemsDisplay();
     public boolean shown = true;
 
     private ImageButton flip;
-    private final CoreItemsDisplay coreItems = new CoreItemsDisplay();
 
     private String hudText = "";
     private boolean showHudText;
@@ -55,10 +61,194 @@ public class HudFragment{
     private Table lastUnlockTable;
     private Table lastUnlockLayout;
     private long lastToast;
+    private float pauseDisableDur;
+
+    // Foo's additions
     private long lastWarn, lastWarnClick;
 
-    public void build(Group parent){
+    private Seq<Block> blocksOut = new Seq<>();
+    private Table hudLabel;
+    private float coreAttackTime;
 
+    private static ObjectSet<String> favoriteBlocks = new ObjectSet<>();
+    private static String lastFavorited = null;
+
+    private void addBlockSelection(Table cont){
+        Table blockSelection = new Table();
+        var pane = new ScrollPane(blockSelection, Styles.smallPane);
+        pane.setFadeScrollBars(false);
+        Planet[] last = {state.rules.planet};
+        pane.update(() -> {
+            if(pane.hasScroll()){
+                Element result = Core.scene.getHoverElement();
+                if(result == null || !result.isDescendantOf(pane)){
+                    Core.scene.setScrollFocus(null);
+                }
+            }
+
+            if(state.rules.planet != last[0]){
+                last[0] = state.rules.planet;
+                rebuildBlockSelection(blockSelection, "");
+            }
+        });
+
+        Table[] configTable = {null};
+        Block[] lastBlock = {null};
+
+        cont.table(search -> {
+            search.image(Icon.zoom).padRight(8);
+            search.field("", text -> rebuildBlockSelection(blockSelection, text)).growX()
+            .name("editor/search").maxTextLength(maxNameLength).get().setMessageText("@players.search");
+        }).growX().pad(-2).padLeft(6f);
+        cont.row();
+        cont.collapser(t -> {
+            configTable[0] = t;
+        }, () -> control.input.block != null && control.input.block.editorConfigurable).with(c -> c.setEnforceMinSize(true)).update(col -> {
+
+            if(lastBlock[0] != control.input.block){
+                configTable[0].clear();
+                if(control.input.block != null){
+                    control.input.block.buildEditorConfig(configTable[0]);
+                    col.invalidateHierarchy();
+                }
+                lastBlock[0] = control.input.block;
+            }
+        }).growX().row();
+        cont.add(pane).expandY().top().left();
+
+        rebuildBlockSelection(blockSelection, "");
+    }
+
+    private static void loadFavorites(){
+        favoriteBlocks = Core.settings.getJson("editor-block-favorites", ObjectSet.class, String.class, ObjectSet::new);
+    }
+
+    private static void saveFavorites(){
+        Core.settings.putJson("editor-block-favorites", String.class, favoriteBlocks);
+    }
+
+    private static boolean isFavorite(Block block){
+        return favoriteBlocks.contains(block.name);
+    }
+
+    private static void toggleFavorite(Block block){
+        boolean isFav = favoriteBlocks.contains(block.name);
+        if(isFav){
+            favoriteBlocks.remove(block.name);
+            Sounds.uiFavorite.play(0.35f, 0.67f, 0f);
+        }else{
+            favoriteBlocks.add(block.name);
+            lastFavorited = block.name;
+            Sounds.uiFavorite.play(0.6f, 2.0f, 0f);
+        }
+        saveFavorites();
+    }
+
+    private void rebuildBlockSelection(Table blockSelection, String searchText){
+        blockSelection.clear();
+
+        blocksOut.clear();
+        // Favorites first
+        for(Block block : Vars.content.blocks()){
+            if(isFavorite(block)){
+                blocksOut.add(block);
+            }
+        }
+
+        for(Block block : Vars.content.blocks()){
+            if(!isFavorite(block)){
+                blocksOut.add(block);
+            }
+        }
+        blocksOut.sort((b1, b2) -> {
+            // These two block should stay at the top
+            if(b1 == Blocks.removeOre || b1 == Blocks.removeWall) return -1;
+            if(b2 == Blocks.removeOre || b2 == Blocks.removeWall) return 1;
+            int fav = Boolean.compare(isFavorite(b2), isFavorite(b1));
+            if(fav != 0) return fav;
+            int synth = Boolean.compare(b1.synthetic(), b2.synthetic());
+            if(synth != 0) return synth;
+            int ore = Boolean.compare(b1 instanceof OverlayFloor && b1 != Blocks.removeOre, b2 instanceof OverlayFloor && b2 != Blocks.removeOre);
+            if(ore != 0) return ore;
+            return Integer.compare(b1.id, b2.id);
+        });
+
+        int i = 0;
+
+        for(Block block : blocksOut){
+            TextureRegion region = block.uiIcon;
+
+            if(!Core.atlas.isFound(region)
+            || (!block.inEditor && !(block instanceof RemoveWall) && !(block instanceof RemoveOre))
+            || !block.isOnPlanet(state.rules.planet)
+            || block.buildVisibility == BuildVisibility.debugOnly
+            || (!searchText.isEmpty() && !(block == Blocks.removeOre || block == Blocks.removeWall) && !block.localizedName.toLowerCase().contains(searchText.trim().replaceAll(" +", " ").toLowerCase()))
+            ) continue;
+
+            ImageButton button = new ImageButton(Tex.whiteui, Styles.clearNoneTogglei);
+            button.getStyle().imageUp = new TextureRegionDrawable(region);
+            button.clicked(() -> control.input.block = block);
+            // Pc input for favorites
+            button.clicked(KeyCode.mouseRight, () -> {
+                if(block == Blocks.removeOre || block == Blocks.removeWall) return;
+                toggleFavorite(block);
+                rebuildBlockSelection(blockSelection, searchText);
+                control.input.block = block;
+            });
+            // Mobile double-click for favorites
+            button.addListener(new ClickListener(){
+                @Override
+                public void clicked(InputEvent event, float x, float y){
+                    if(mobile && getTapCount() == 2){
+                        if(block == Blocks.removeOre || block == Blocks.removeWall) return;
+                        toggleFavorite(block);
+                        rebuildBlockSelection(blockSelection, searchText);
+                        control.input.block = block;
+                    }
+                }
+            });
+            button.resizeImage(8 * 4f);
+            button.update(() -> button.setChecked(control.input.block == block));
+
+            Stack stack = new Stack();
+            stack.add(button);
+            if(isFavorite(block)){
+                Image favIcon = new Image(Icon.star);
+                favIcon.setColor(Color.gold);
+                favIcon.setOrigin(Align.center);
+
+                if(block.name.equals(lastFavorited)){
+                    favIcon.color.a = 0f;
+                    favIcon.setScale(0f);
+                    favIcon.addAction(Actions.parallel(
+                        Actions.scaleTo(0.7f, 0.7f, 0.2f),
+                        Actions.alpha(1f, 0.2f),
+                        Actions.run(() -> lastFavorited = null)
+                    ));
+                }else{
+                    favIcon.setScale(0.7f);
+                }
+
+                Table overlay = new Table().align(Align.topRight);
+                overlay.touchable = Touchable.disabled;
+                overlay.add(favIcon).size(2f).pad(12f);
+
+                stack.add(overlay);
+            }
+            blockSelection.add(stack).size(48f).tooltip(block.localizedName);
+
+            if(++i % 6 == 0){
+                blockSelection.row();
+            }
+        }
+
+        if(i == 0){
+            blockSelection.add("@none.found").padLeft(54f).padTop(10f);
+        }
+    }
+
+    public void build(Group parent){
+        loadFavorites();
         //warn about guardian/boss waves
         Events.on(WaveEvent.class, e -> {
             int max = 10;
@@ -81,7 +271,11 @@ public class HudFragment{
         });
 
         Events.on(SectorCaptureEvent.class, e -> {
-            showToast(Core.bundle.format("sector.captured", e.sector.isBeingPlayed() ? "" : e.sector.name() + " "));
+            if(e.sector.isBeingPlayed()){
+                ui.announce("@sector.capture.current", 5f);
+            }else{
+                showToast(Core.bundle.format("sector.capture", e.sector.name()));
+            }
         });
 
         Events.on(SectorLoseEvent.class, e -> {
@@ -95,27 +289,64 @@ public class HudFragment{
         Events.on(ResetEvent.class, e -> {
             coreItems.resetUsed();
             coreItems.clear();
+            if(hudLabel != null){
+                hudLabel.color.a = 0f;
+            }
+            showHudText = false;
         });
 
         //paused table
         parent.fill(t -> {
+            float sidePad = dsize * 5 + 4f;
             t.name = "paused";
-            t.top().visible(() -> state.isPaused() && shown && !netServer.isWaitingForPlayers()).touchable = Touchable.disabled;
-            t.table(Styles.black6, top -> top.label(() -> state.gameOver && state.isCampaign() ? "@sector.curlost" : "@paused")
-                .style(Styles.outlineLabel).pad(8f)).height(pauseHeight).growX();
-            //.padLeft(dsize * 5 + 4f) to prevent alpha overlap on left
+            t.top().visible(() -> state.isPaused() && shown() && !netServer.isWaitingForPlayers() && !(mobile && Core.graphics.isPortrait())).touchable = Touchable.disabled;
+            t.table(Styles.black6, top -> {
+                top.label(() -> state.gameOver && state.isCampaign() ? "@sector.curlost" : "@paused")
+                .style(Styles.outlineLabel).pad(8f);
+                top.spacerX(() -> sidePad + Core.scene.marginLeft - Core.scene.marginRight);
+            }).height(pauseHeight).growX()
+            .padLeft(sidePad);
+        });
+
+        //pause disabled table
+        parent.fill(t -> {
+            t.name = "pause-disabled";
+            t.top().visible(() -> pauseDisableDur > 0f && shown() && !mobile && !netServer.isWaitingForPlayers() && !state.isPaused() && !(state.gameOver && state.isCampaign())).touchable = Touchable.disabled;
+            t.update(() -> {
+                t.color.a = t.color.a > 0f && pauseDisableDur > 0f ? t.color.a - Time.delta / pauseDisableDur : 1f;
+                if(t.color.a <= 0f){
+                    pauseDisableDur = 0f;
+                }
+            });
+            t.table(Styles.black6, top -> top.label(() -> "@pause.disabled").style(Styles.outlineLabel).pad(8f)).height(pauseHeight).growX();
+        });
+
+        //left/right gutter areas
+        parent.fill((x, y, w, h) -> {
+            x = 0f;
+            y = 0f;
+            w = Core.graphics.getWidth();
+            h = Core.graphics.getHeight();
+            Draw.color();
+            if(Core.scene.marginLeft > 0){
+                paneRight.draw(x, y, Core.scene.marginLeft, h);
+            }
+
+            if(Core.scene.marginRight > 0){
+                paneLeft.draw(x + w - Core.scene.marginRight, y, Core.scene.marginRight, h);
+            }
         });
 
         //"waiting for players"
         parent.fill(t -> {
             t.name = "waiting";
-            t.visible(() -> netServer.isWaitingForPlayers() && state.isPaused() && shown).touchable = Touchable.disabled;
+            t.visible(() -> netServer.isWaitingForPlayers() && state.isPaused() && shown()).touchable = Touchable.disabled;
             t.table(Styles.black6, top -> top.add("@waiting.players").style(Styles.outlineLabel).pad(18f));
         });
 
         //minimap + position
         parent.fill(t -> {
-            t.visible(() -> shown && Core.settings.getBool(("minimap"))); // FINISHME: Only hide minimap when doing so, use a collapser to shrink it maybe? Idk
+            t.visible(() -> shown() && Core.settings.getBool("minimap")); // FINISHME: Only hide minimap when doing so, use a collapser to shrink it maybe? Idk
             t.name = "minimap/position";
             //tile hud
             t.add(new TileInfoFragment()).name("tilehud").top();
@@ -143,19 +374,43 @@ public class HudFragment{
                 //for better inset visuals
                 cont.rect((x, y, w, h) -> {
                     if(Core.scene.marginTop > 0){
+                        Draw.color();
                         Tex.paneRight.draw(x, y, w, Core.scene.marginTop);
                     }
                 }).fillX().row();
+
+                //paused in portrait mode
+                cont.label(() -> state.gameOver && state.isCampaign() ? "@sector.curlost" : "@paused")
+                .style(Styles.outlineLabel)
+                .labelAlign(Align.center)
+                .visible(() -> state.isPaused() && shown && !netServer.isWaitingForPlayers() && Core.graphics.isPortrait())
+                .touchable(Touchable.disabled).height(20f).padTop(-40f).fillX();
+
+                cont.row();
 
                 cont.table(select -> {
                     select.name = "mobile buttons";
                     select.left();
                     select.defaults().size(dsize).left();
+                    select.background(Styles.black6);
 
-                    ImageButtonStyle style = Styles.cleari;
+                    ImageButtonStyle style = Styles.clearNonei;
 
                     select.button(Icon.menu, style, ui.paused::show).name("menu");
-                    flip = select.button(Icon.upOpen, style, this::toggleMenus).get();
+                    flip = select.button(Icon.upOpen, style, () -> {
+                        if(Core.settings.getBool("console")){
+                            ui.consolefrag.toggleMobile();
+                        }else{
+                            toggleMenus();
+                        }
+                    }).update(i -> {
+                        if(Core.settings.getBool("console")){
+                            i.getStyle().imageUp = Icon.terminal;
+                            shown = true; //force shown when console is enabled, because there is no other way to show/hide
+                        }else{
+                            i.getStyle().imageUp = shown ? Icon.downOpen : Icon.upOpen;
+                        }
+                    }).get();
                     flip.name = "flip";
 
                     select.button(Icon.paste, style, ui.schematics::show)
@@ -164,14 +419,15 @@ public class HudFragment{
                     select.button(Icon.pause, style, () -> {
                         if(net.active()){
                             ui.listfrag.toggle();
-                        }else{
+                        }else if(!state.rules.pauseDisabled){
                             state.set(state.isPaused() ? State.playing : State.paused);
                         }
                     }).name("pause").update(i -> {
                         if(net.active()){
+                            i.setDisabled(false);
                             i.getStyle().imageUp = Icon.players;
                         }else{
-                            i.setDisabled(false);
+                            i.setDisabled(state.rules.pauseDisabled || (state.isCampaign() && state.afterGameOver));
                             i.getStyle().imageUp = state.isPaused() ? Icon.play : Icon.pause;
                         }
                     });
@@ -199,7 +455,8 @@ public class HudFragment{
                     });
 
                     select.image().color(Pal.gray).width(4f).fillY();
-                });
+                    //there is no back button on iOS, so the menu has to be shown at all times.
+                }).visible(() -> OS.isIos || !control.input.logicHideHud);
 
                 cont.row();
                 cont.image().height(4f).color(Pal.gray).fillX();
@@ -207,20 +464,39 @@ public class HudFragment{
             }
 
             cont.update(() -> {
-                if(Core.input.keyTap(Binding.toggle_menus) && !ui.chatfrag.shown() && !Core.scene.hasDialog() && !Core.scene.hasField()){
+                if(Core.input.keyTap(Binding.toggleMenus) && !ui.chatfrag.shown() && !Core.scene.hasDialog() && !Core.scene.hasField() && !Core.input.alt() && !Core.input.shift() && !Core.input.ctrl()){
                     Core.settings.getBoolOnce("ui-hidden", () -> {
-                        ui.announce(Core.bundle.format("showui",  Core.keybinds.get(Binding.toggle_menus).key.toString(), 11));
+                        ui.announce(Core.bundle.format("showui",  Binding.toggleMenus.value.key.toString(), 11));
                     });
                     toggleMenus();
+                }
+
+                if(Core.input.keyTap(Binding.skipWave) && canSkipWave() && !Core.scene.hasDialog() && !Core.scene.hasField()){
+                    if(net.client() && player.admin){
+                        Call.adminRequest(player, AdminAction.wave, null);
+                    }else{
+                        logic.skipWave();
+                    }
                 }
             });
 
             Table wavesMain, editorMain;
 
-            cont.stack(wavesMain = new Table(), editorMain = new Table()).height(wavesMain.getPrefHeight())
-            .name("waves/editor");
+            cont.stack(wavesMain = new Table(), editorMain = new Table(), new Element(){
+                //this may seem insane, but adding an empty element of a specific height to this stack fixes layout issues on mobile.
 
-            wavesMain.visible(() -> shown && !state.isEditor());
+                {
+                    visible = false;
+                    touchable = Touchable.disabled;
+                }
+
+                @Override
+                public float getPrefHeight(){
+                    return Scl.scl(123f);
+                }
+            }).name("waves/editor");
+
+            wavesMain.visible(() -> shown() && !state.isEditor());
             wavesMain.top().left().name = "waves";
 
             wavesMain.table(s -> {
@@ -236,7 +512,7 @@ public class HudFragment{
                 // button to skip wave
                 s.button(Icon.play, rightStyle, 30f, () -> {
                     if(!canSkipWave()) new Toast(1f).add("You tried and that's all that matters.");
-                    else if(net.client() && (player.admin || Server.current.adminui())){
+                    else if(net.client() && Server.current.adminui()){
                         Call.adminRequest(player, AdminAction.wave, null);
                     }else{
                         logic.skipWave();
@@ -244,30 +520,30 @@ public class HudFragment{
                 }).growY().fillX().right().width(40f).name("skip").get().toBack();
             }).width(dsize * 5 + 4f).name("statustable");
 
-            if(Core.settings.getBool("activemodesdisplay", true)){
+            if(Core.settings.getBool("activemodesdisplay")){
                 //Active modes display
                 wavesMain.row();
                 wavesMain.table(Tex.wavepane, st -> {
                     var a = 0.5f;
                     //i dont think there is anything better
-                    modeIcon(st, () -> showingTurrets, () -> showingTurrets ^= true, Icon.turret.tint(1, 0.33f, 0.33f, a), "Showing Turrets", Binding.show_turret_ranges);
-                    modeIcon(st, () -> showingAllyTurrets, () -> showingAllyTurrets ^= true, Icon.turret.tint(0.67f, 1, 0.67f, a), "Showing Ally Turrets", Binding.show_turret_ranges, "Alt");
+                    modeIcon(st, () -> showingTurrets, () -> showingTurrets ^= true, Icon.turret.tint(1, 0.33f, 0.33f, a), "Showing Turrets", Binding.showTurretRanges);
+                    modeIcon(st, () -> showingAllyTurrets, () -> showingAllyTurrets ^= true, Icon.turret.tint(0.67f, 1, 0.67f, a), "Showing Ally Turrets", Binding.showTurretRanges, "Alt");
                     if(Core.settings.getBool("allowinvturrets"))
-                        modeIcon(st, () -> showingInvTurrets, () -> showingInvTurrets ^= true, Icon.turret.tint(1, 0.67f, 0.33f, a), "Inverting Ground/Air", Binding.show_turret_ranges, "Ctrl");
-                    modeIcon(st, () -> hidingUnits, () -> hidingUnits ^= true, new SlashTextureRegionDrawable(Icon.units.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Units", Binding.invisible_units);
-                    modeIcon(st, () -> hidingAirUnits, () -> hidingAirUnits ^= true, new SlashTextureRegionDrawable(Icon.planeOutline.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Air Units", Binding.invisible_units, "Shift");
-                    modeIcon(st, () -> hidingBlocks, () -> hidingBlocks ^= true, new SlashTextureRegionDrawable(Icon.layers.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Blocks", Binding.hide_blocks);
-                    modeIcon(st, () -> hidingPlans, () -> hidingPlans ^= true, new SlashTextureRegionDrawable(Icon.effect.getRegion(), new Color(0.5f, 0.5f, 0.5f, a)), "Hiding Plans", Binding.hide_blocks, "Shift");
-                    modeIcon(st, () -> showingMassDrivers, () -> showingMassDrivers ^= true, new TextureRegionDrawable(Blocks.massDriver.region), "Showing Massdriver Links", Binding.show_massdriver_configs);
-                    modeIcon(st, () -> showingOverdrives, () -> showingOverdrives ^= true, new TextureRegionDrawable(Blocks.overdriveProjector.region), "Showing Overdrive Ranges", Binding.show_turret_ranges);
-                    modeIcon(st, () -> Core.settings.getBool("showdomes"), () -> Core.settings.put("showdomes", !Core.settings.getBool("showdomes")), Icon.commandRally, "Showing Dome Ranges", Binding.show_reactor_and_dome_ranges);
+                        modeIcon(st, () -> showingInvTurrets, () -> showingInvTurrets ^= true, Icon.turret.tint(1, 0.67f, 0.33f, a), "Inverting Ground/Air", Binding.showTurretRanges, "Ctrl");
+                    modeIcon(st, () -> hidingUnits, () -> hidingUnits ^= true, new SlashTextureRegionDrawable(Icon.units.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Units", Binding.invisibleUnits);
+                    modeIcon(st, () -> hidingAirUnits, () -> hidingAirUnits ^= true, new SlashTextureRegionDrawable(Icon.planeOutline.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Air Units", Binding.invisibleUnits, "Shift");
+                    modeIcon(st, () -> hidingBlocks, () -> hidingBlocks ^= true, new SlashTextureRegionDrawable(Icon.layers.getRegion(), new Color(1f, 1f, 1f, a)), "Hiding Blocks", Binding.hideBlocks);
+                    modeIcon(st, () -> hidingPlans, () -> hidingPlans ^= true, new SlashTextureRegionDrawable(Icon.effect.getRegion(), new Color(0.5f, 0.5f, 0.5f, a)), "Hiding Plans", Binding.hideBlocks, "Shift");
+                    modeIcon(st, () -> showingMassDrivers, () -> showingMassDrivers ^= true, new TextureRegionDrawable(Blocks.massDriver.region), "Showing Massdriver Links", Binding.showMassdriverConfigs);
+                    modeIcon(st, () -> showingOverdrives, () -> showingOverdrives ^= true, new TextureRegionDrawable(Blocks.overdriveProjector.region), "Showing Overdrive Ranges", Binding.showTurretRanges);
+                    modeIcon(st, () -> Core.settings.getBool("showdomes"), () -> Core.settings.put("showdomes", !Core.settings.getBool("showdomes")), Icon.commandRally, "Showing Dome Ranges", Binding.showReactorAndDomeRanges);
                     st.row();
-                    modeIcon(st, () -> !Vars.control.input.isBuilding, () -> Vars.control.input.isBuilding ^= true, Icon.pause.tint(1, 0.33f, 0.33f, a), "Paused Building", Binding.pause_building);
-                    modeIcon(st, () -> control.input.isFreezeQueueing, () -> control.input.isFreezeQueueing ^= true, Icon.pause.tint(0.33f, 0.33f, 1, a), "Freeze Queuing", Binding.pause_building, "Shift");
-                    modeIcon(st, () -> Core.settings.getBool("autotarget"), () -> Core.settings.put("autotarget", !Core.settings.getBool("autotarget")), Icon.modeAttack.tint(1f, 0.33f, 0.33f, a), "Auto Target", Binding.toggle_auto_target);
-                    modeIcon(st, () -> AutoTransfer.enabled, () -> AutoTransfer.enabled ^= true, Icon.resize.tint(1, 0.33f, 1, a), "Auto Transfer", Binding.toggle_auto_target, "Shift");
-                    modeIcon(st, () -> dispatchingBuildPlans, () -> dispatchingBuildPlans ^= true, Icon.tree.tint(1, 1, 1, a), "Sending Build Plans", Binding.send_build_queue);
-                    modeIcon(st, () -> Navigation.currentlyFollowing != null, Navigation::stopFollowing, Icon.android.tint(Color.cyan.cpy().a(a)), "Navigating", Binding.stop_following_path);
+                    modeIcon(st, () -> !Vars.control.input.isBuilding, () -> Vars.control.input.isBuilding ^= true, Icon.pause.tint(1, 0.33f, 0.33f, a), "Paused Building", Binding.pauseBuilding);
+                    modeIcon(st, () -> control.input.isFreezeQueueing, () -> control.input.isFreezeQueueing ^= true, Icon.pause.tint(0.33f, 0.33f, 1, a), "Freeze Queuing", Binding.pauseBuilding, "Shift");
+                    modeIcon(st, () -> Core.settings.getBool("autotarget"), () -> Core.settings.put("autotarget", !Core.settings.getBool("autotarget")), Icon.modeAttack.tint(1f, 0.33f, 0.33f, a), "Auto Target", Binding.toggleAutoTarget);
+                    modeIcon(st, () -> AutoTransfer.enabled, () -> AutoTransfer.enabled ^= true, Icon.resize.tint(1, 0.33f, 1, a), "Auto Transfer", Binding.toggleAutoTarget, "Shift");
+                    modeIcon(st, () -> dispatchingBuildPlans, () -> dispatchingBuildPlans ^= true, Icon.tree.tint(1, 1, 1, a), "Sending Build Plans", Binding.sendBuildQueue);
+                    modeIcon(st, () -> Navigation.currentlyFollowing != null, Navigation::stopFollowing, Icon.android.tint(Color.cyan.cpy().a(a)), "Navigating", Binding.stopFollowingPath);
                 }).marginTop(3).marginBottom(3).growX().get();
             }
 
@@ -282,38 +558,49 @@ public class HudFragment{
                 }
                 addInfoTable(st.table().growX().get());
             }).marginTop(6).marginBottom(3).growX().get();
-            powPayStat.visible(() -> powerInfo || player.unit() instanceof Payloadc p && p.payloadUsed() > 0 || player.unit().statusBits() != null && !player.unit().statusBits().isEmpty());
+            powPayStat.visible(() -> powerInfo || !player.dead() && (player.unit() instanceof Payloadc p && p.payloadUsed() > 0 || player.unit().statusBits() != null && !player.unit().statusBits().isEmpty()));
 
             editorMain.name = "editor";
 
             editorMain.table(Tex.buttonEdge4, t -> {
-                //t.margin(0f);
                 t.name = "teams";
-                t.add("@editor.teams").growX().left();
-                t.row();
-                t.table(teams -> {
+
+                t.top().table(teams -> {
                     teams.left();
-                    int i = 0;
                     for(Team team : Team.baseTeams){
-                        ImageButton button = teams.button(Tex.whiteui, Styles.clearNoneTogglei, 40f, () -> Call.setPlayerTeamEditor(player, team))
-                        .size(50f).margin(6f).get();
+                        ImageButton button = teams.button(Tex.whiteui, Styles.clearNoneTogglei, 33f, () -> Call.setPlayerTeamEditor(player, team))
+                        .size(45f).margin(6f).get();
                         button.getImageCell().grow();
                         button.getStyle().imageUpColor = team.color;
                         button.update(() -> button.setChecked(player.team() == team));
-
-                        if(++i % 3 == 0){
-                            teams.row();
-                        }
                     }
-                }).left();
-            }).width(dsize * 5 + 4f);
-            editorMain.visible(() -> shown && state.isEditor());
+
+                    teams.button(Icon.downOpen, Styles.emptyi, () -> Core.settings.put("editor-blocks-shown", !Core.settings.getBool("editor-blocks-shown")))
+                    .size(45f).update(m -> m.getStyle().imageUp = (Core.settings.getBool("editor-blocks-shown") ? Icon.upOpen : Icon.downOpen));
+                }).top().left().row();
+
+                t.collapser(this::addBlockSelection, () -> Core.settings.getBool("editor-blocks-shown"));
+
+            }).width(dsize * 5 + 4f).top();
+            if(mobile){
+                editorMain.row().spacerY(() -> {
+                    if(control.input instanceof MobileInput mob && Core.settings.getBool("editor-blocks-shown")){
+                        if(Core.graphics.isPortrait()) return Core.graphics.getHeight() / 2f / Scl.scl(1f);
+                        if(mob.hasSchematic()) return 156f;
+                        if(mob.showCancel()) return 50f;
+                    }
+                    return 0f;
+                });
+            }
+
+            editorMain.row().add().growY();
+            editorMain.visible(() -> shown() && state.isEditor());
 
             //fps display
             cont.table(info -> {
                 info.name = "fps/ping";
                 info.touchable = Touchable.disabled;
-                info.top().left().margin(4).visible(() -> Core.settings.getBool("fps") && shown);
+                info.top().left().margin(4).visible(() -> Core.settings.getBool("fps") && shown());
                 IntFormat fps = new IntFormat("fps");
                 IntFormat ping = new IntFormat("ping");
                 IntFormat tps = new IntFormat("tps");
@@ -321,22 +608,44 @@ public class HudFragment{
                 IntFormat memnative = new IntFormat("memory2");
                 IntFormat players = new IntFormat("client.players");
                 IntFormat plans = new IntFormat("client.plans");
+                IntFormat configs = new IntFormat("client.configs");
+                IntFormat ratelimit = new IntFormat("client.ratelimit");
 
                 if(android){
                     info.label(() -> memnative.get((int)(Core.app.getJavaHeap() / 1024 / 1024), (int)(Core.app.getNativeHeap() / 1024 / 1024))).left().style(Styles.outlineLabel).name("memory2");
                 }else{
-                    info.label(() -> mem.get((int)(Core.app.getJavaHeap() / 1024 / 1024), (int)((Runtime.getRuntime().maxMemory() - Core.app.getJavaHeap()) / 1024 / 1024))).left().style(Styles.outlineLabel).name("memory");
+                    Object[] memBean = {null};
+                    Method[] getNonHeapUsage = {null};
+                    try{
+                        if(Core.settings.getBool("offheapmemorydisplay")){ // FINISHME: This is very much a work in progress
+                            memBean[0] = Class.forName("java.lang.management.ManagementFactory").getMethod("getMemoryMXBean").invoke(null);
+                            getNonHeapUsage[0] = Class.forName("java.lang.management.MemoryMXBean").getMethod("getNonHeapMemoryUsage");
+                        }
+                    } catch (ClassNotFoundException | InvocationTargetException | IllegalAccessException | NoSuchMethodException e) {
+                        Log.warn("Failed to get memBean", e);
+                    }
+                    info.label(() -> {
+                        try {
+                            return mem.get((int)(Core.app.getJavaHeap() / 1024 / 1024), (int)((Runtime.getRuntime().maxMemory() - Core.app.getJavaHeap()) / 1024 / 1024)) + (memBean[0] == null ? "" : " | Off-heap: " + Reflect.<Long>invoke(getNonHeapUsage[0].invoke(memBean[0]), "getUsed") / 1024 / 1024  + " mb");
+                        } catch (IllegalAccessException | InvocationTargetException e) {
+                            throw new RuntimeException(e);
+                        }
+                    }).left().style(Styles.outlineLabel).name("memory");
                 }
                 info.row();
 
                 info.label(() -> fps.get(Core.graphics.getFramesPerSecond())).left().style(Styles.outlineLabel).name("fps");
                 info.row();
 
-                info.label(() -> plans.get(player.unit().plans.size, ClientVars.frozenPlans.size)).left() // Buildplan count
+                info.label(() -> plans.get(player.dead() ? 0 : player.unit().plans.size, ClientVars.frozenPlans.size)).left() // Buildplan count
                 .style(Styles.outlineLabel).name("plans");
                 info.row();
 
-                info.label(() -> "Rate Limit: " + ClientVars.ratelimitRemaining).left().style(Styles.outlineLabel).row();
+                info.label(() -> configs.get(ClientVars.configs.size())).left().style(Styles.outlineLabel).name("configs");
+                info.row();
+
+                info.label(() -> ratelimit.get(ClientVars.ratelimitRemaining)).left().style(Styles.outlineLabel).name("ratelimit");
+                info.row();
 
                 info.label(() -> players.get(Groups.player.size(), ui.join.lastHost == null ? 0 : ui.join.lastHost.playerLimit)).visible(net::active).left() // Player count
                 .style(Styles.outlineLabel).name("players");
@@ -354,49 +663,59 @@ public class HudFragment{
         parent.fill(t -> {
             t.top();
 
-            if(Core.settings.getBool("macnotch") ){
+            if(Core.settings.getBool("macnotch")){
                 t.margin(macNotchHeight);
             }
 
-            t.visible(() -> shown);
+            t.visible(this::shown);
 
             t.name = "coreinfo";
 
-            t.collapser(v -> v.add().height(pauseHeight), () -> state.isPaused() && !netServer.isWaitingForPlayers()).row();
+            t.collapser(v -> v.add().height(pauseHeight), () -> !netServer.isWaitingForPlayers() && (state.isPaused() || pauseDisableDur > 0f)).row();
 
             t.table(c -> {
                 //core items
-                c.top().collapser(coreItems, () -> Core.settings.getBool("coreitems") && shown).fillX().row();
+                c.top().collapser(coreItems, () -> Core.settings.getBool("coreitems") && shown()).fillX().row();
 
                 float notifDuration = 240f;
-                float[] coreAttackTime = {0};
 
                 Events.on(TeamCoreDamage.class, event -> {
                     if (Time.timeSinceMillis(lastWarn) > 30_000) { // Prevent chat flooding
                         NetClient.findCoords(ui.chatfrag.addMsg(Strings.format("[scarlet]Core under attack: (@, @)", event.core.x, event.core.y)));
                     }
                     lastWarn = Time.millis(); // Reset timer so that it sends 30s after the last core damage rather than every 30s FINISHME: Better way to do this?
-                    coreAttackTime[0] = notifDuration;
-                    ClientVars.lastCorePos.set(event.core.x, event.core.y);
+                    coreAttackTime = notifDuration;
+                    ClientVars.lastWarnPos.set(event.core.x, event.core.y);
+                });
+                Events.on(ResetEvent.class, e -> {
+                    coreAttackTime = 0f;
                 });
 
                 //'core is under attack' table
                 c.collapser(top -> top.background(Styles.black6).add("@coreattack").pad(8)
+                .with(co -> {
+                    co.tapped(() -> {
+                        if(control.lastDamagedCore != null){
+                            control.input.panCamera(Tmp.v1.set(control.lastDamagedCore));
+                        }
+                    });
+                    co.addListener(new HandCursorListener());
+                })
                 .update(label -> label.color.set(Color.orange).lerp(Color.scarlet, Mathf.absin(Time.time, 2f, 1f))), true,
                 () -> {
-                    if(!shown || state.isPaused()) return false;
                     if(state.isMenu() || !player.team().data().hasCore()){
-                        coreAttackTime[0] = 0f;
+                        coreAttackTime = 0f;
                         return false;
                     }
+                    if(!shown() || state.isPaused()) return false;
 
-                    return (coreAttackTime[0] -= Time.delta) > 0;
+                    return (coreAttackTime -= Time.delta) > 0;
                 })
                 .touchable(Touchable.disabled)
                 .fillX()
                 .get().clicked(() -> {
-                    if (Time.timeSinceMillis(lastWarnClick) < 400)  Navigation.navigateTo(ClientVars.lastCorePos.cpy().scl(tilesize));
-                    else Spectate.INSTANCE.spectate(ClientVars.lastCorePos.cpy().scl(tilesize));
+                    if (Time.timeSinceMillis(lastWarnClick) < 400)  Navigation.navigateTo(ClientVars.lastWarnPos.cpy().scl(tilesize));
+                    else Spectate.INSTANCE.spectate(ClientVars.lastWarnPos.cpy().scl(tilesize));
                     lastWarnClick = Time.millis();
                 });
             }).row();
@@ -428,15 +747,8 @@ public class HudFragment{
             }).blink(Color.white).outline(new Color(0, 0, 0, 0.6f), 7f)).grow())
             .fillX().width(320f).height(60f).name("boss").visible(() -> state.rules.waves && state.boss() != null && !(mobile && Core.graphics.isPortrait())).padTop(7).row();
 
-            t.table(Styles.black3, p -> p.margin(4).label(() -> hudText).style(Styles.outlineLabel)).touchable(Touchable.disabled).with(p -> p.visible(() -> {
-                p.color.a = Mathf.lerpDelta(p.color.a, Mathf.num(showHudText), 0.2f);
-                if(state.isMenu()){
-                    p.color.a = 0f;
-                    showHudText = false;
-                }
-
-                return p.color.a >= 0.001f;
-            }));
+            t.table(Styles.black3, p -> p.margin(4).label(() -> hudText).style(Styles.outlineLabel)).touchable(Touchable.disabled).with(p -> hudLabel = p)
+                .with(p -> p.visible(() -> (p.color.a = Mathf.lerpDelta(p.color.a, Mathf.num(showHudText), 0.2f)) >= 0.001f));
         });
 
         //spawner warning
@@ -498,18 +810,26 @@ public class HudFragment{
         blockfrag.build(parent);
     }
 
-    public void modeIcon(Table table, Boolp cond, Runnable toggle, Drawable icon, String text, Binding binding){
+    public void modeIcon(Table table, Boolp cond, Runnable toggle, Drawable icon, String text, KeyBind binding){
         modeIcon(table, cond, toggle, icon, text, binding, null);
     }
 
-    public void modeIcon(Table table, Boolp cond, Runnable toggle, Drawable icon, String text, Binding binding, String modifier){
+    public void modeIcon(Table table, Boolp cond, Runnable toggle, Drawable icon, String text, KeyBind binding, String modifier){
         var tooltipText = modifier != null
-            ? Strings.format("@ [yellow](@ + @)", text, modifier, Core.keybinds.get(binding).key.toString())
-            : Strings.format("@ [yellow](@)", text, Core.keybinds.get(binding).key.toString());
+            ? Strings.format("@ [yellow](@ + @)", text, modifier, binding.value.key.toString())
+            : Strings.format("@ [yellow](@)", text, binding.value.key.toString());
         var clicklayer = new Label("");
         clicklayer.clicked(toggle);
-        var wrapper = table.stack(
+        Color gray = new Color(0.4f, 0.4f, 0.4f, 0.4f);
+        var disabledIcon = icon instanceof SlashTextureRegionDrawable s ? new SlashTextureRegionDrawable(s.getRegion(), gray) {{
+            slashColor = gray;
+            slashColorBack = gray;
+        }}
+            : icon instanceof TextureRegionDrawable d ? d.tint(gray)
+            : null;
+        table.stack(
             new Image(icon).visible(cond),
+            new Image(disabledIcon).visible(() -> !cond.get()),
             clicklayer
         ).size(25f).padRight(8f).padBottom(2f)
         .tooltip(t ->
@@ -561,11 +881,11 @@ public class HudFragment{
         if(state.isMenu()) return;
 
         scheduleToast(() -> {
-            Sounds.message.play();
+            Sounds.uiNotify.play();
 
             Table table = new Table(Tex.button);
             table.update(() -> {
-                if(state.isMenu() || !ui.hudfrag.shown){
+                if(state.isMenu() || !ui.hudfrag.shown()){
                     table.remove();
                 }
             });
@@ -585,13 +905,17 @@ public class HudFragment{
         });
     }
 
+    public void showPauseDisabled(){
+        pauseDisableDur = 60f;
+    }
+
     /** Show unlock notification for a new recipe. */
     public void showUnlock(UnlockableContent content){
         //some content may not have icons... yet
         //also don't play in the tutorial to prevent confusion
         if(state.isMenu()) return;
 
-        Sounds.message.play();
+        Sounds.uiNotify.play();
 
         //if there's currently no unlock notification...
         if(lastUnlockTable == null){
@@ -675,45 +999,7 @@ public class HudFragment{
         }
     }
 
-    public void showLaunch(){
-        float margin = 30f;
-
-        Image image = new Image();
-        image.color.a = 0f;
-        image.touchable = Touchable.disabled;
-        image.setFillParent(true);
-        image.actions(Actions.delay((coreLandDuration - margin) / 60f), Actions.fadeIn(margin / 60f, Interp.pow2In), Actions.delay(6f / 60f), Actions.remove());
-        image.update(() -> {
-            image.toFront();
-            ui.loadfrag.toFront();
-            if(state.isMenu()){
-                image.remove();
-            }
-        });
-        Core.scene.add(image);
-    }
-
-    public void showLand(){
-        Image image = new Image();
-        image.color.a = 1f;
-        image.touchable = Touchable.disabled;
-        image.setFillParent(true);
-        image.actions(Actions.fadeOut(35f / 60f), Actions.remove());
-        image.update(() -> {
-            image.toFront();
-            ui.loadfrag.toFront();
-            if(state.isMenu()){
-                image.remove();
-            }
-        });
-        Core.scene.add(image);
-    }
-
     private void toggleMenus(){
-        if(flip != null){
-            flip.getStyle().imageUp = shown ? Icon.downOpen : Icon.upOpen;
-        }
-
         shown = !shown;
     }
 
@@ -729,6 +1015,7 @@ public class HudFragment{
         enemiesf = new IntFormat("wave.enemies"),
         enemycf = new IntFormat("wave.enemycore"),
         enemycsf = new IntFormat("wave.enemycores"),
+
         waitingf = new IntFormat("wave.waiting", i -> {
             ibuild.setLength(0);
             int m = i/60;
@@ -752,19 +1039,24 @@ public class HudFragment{
         table.marginTop(0).marginBottom(4).marginLeft(4);
 
         class SideBar extends Element{
-            public final Floatp amount;
-            public final boolean flip;
-            public final Boolp flash;
+            public Floatp amount;
+            public boolean flip, drawBack;
+            public Boolp flash;
             public float lineWidth = 1; // Width as a percent, 0-1
 
             float last, blink, value;
 
-            public SideBar(Floatp amount, Boolp flash, boolean flip){
+            public SideBar(Floatp amount, Boolp flash, boolean flip, boolean drawBack, Color color){
                 this.amount = amount;
                 this.flip = flip;
                 this.flash = flash;
+                this.drawBack = drawBack;
 
-                setColor(Pal.health);
+                setColor(color);
+            }
+
+            public SideBar(Floatp amount, Boolp flash, boolean flip){
+                this(amount, flash, flip, true, Pal.health);
             }
 
             public SideBar(Floatp amount, Boolp flash, boolean flip, float lineWidth){
@@ -792,7 +1084,7 @@ public class HudFragment{
 
                 if(Float.isNaN(value) || Float.isInfinite(value)) value = 1f;
 
-                drawInner(Pal.darkishGray, 1f);
+                if(drawBack) drawInner(Pal.darkishGray, 1f);
                 drawInner(Tmp.c1.set(color).lerp(Color.white, blink), value);
             }
 
@@ -858,37 +1150,51 @@ public class HudFragment{
                     Call.unitClear(player);
                     control.input.recentRespawnTimer = 1f;
                     control.input.controlledType = null;
+                    control.input.droppingItem = false;
                 }
             });
 
-            float[] maxShield = {0};
+            float[] shield = {0}, shieldMax = {0};
+            t.addListener(new Tooltip(tooltip ->
+                tooltip.background(Styles.black6).margin(4f).label(() ->
+                    player.dead() ? Strings.format("@: N/A", Core.bundle.get("stat.health")) :
+                        shieldMax[0] > 0 || shield[0] > 0 ?
+                            Strings.format("@: (@ + @)/@", Core.bundle.get("stat.health"), Mathf.round(player.unit().health, 0.1f), Mathf.round(shield[0], 0.1f), player.unit().maxHealth)
+                        : Strings.format("@: @/@", Core.bundle.get("stat.health"), Mathf.round(player.unit().health, 0.1f), player.unit().maxHealth)
+                ).style(Styles.outlineLabel)
+            ));
             t.stack(
-                new Table(tt ->
-                    tt.add(new SideBar(() -> player.unit().healthf(), () -> true, true))
-                    .tooltip(tooltip ->
-                        tooltip.background(Styles.black6).margin(4f)
-                        .label(() ->
-                            player.unit().shield > 0
-                            ? Strings.format("@: (@ + @)/@", Core.bundle.get("stat.health"), Mathf.round(player.unit().health, 0.1f), Mathf.round(player.unit().shield, 0.1f), player.unit().maxHealth)
-                            : Strings.format("@: @/@", Core.bundle.get("stat.health"), Mathf.round(player.unit().health, 0.1f), player.unit().maxHealth)
-                        ).style(Styles.outlineLabel)
-                    )
+                new Table(tt -> // Health
+                    tt.add(new SideBar(() -> player.dead() ? 0f : player.unit().healthf(), () -> true, true))
                     .width(bw).growY().padRight(pad)
-                ), // Health
-                new Table(tt ->
-                    tt.add(new SideBar(() -> player.unit().shield / maxShield[0], () -> true, true, 1/4f))
+                ),
+                new Table(tt -> // Shield
+                    tt.add(new SideBar(() -> player.dead() ? 0 : shield[0]/shieldMax[0], () -> true, true, 1/4f))
                     .width(bw).growY().padRight(pad).color(Pal.accent)
-                    .visible(() -> { // Ammo
-                        var ff = ArraysKt.firstOrNull(player.unit().abilities, a -> a instanceof ForceFieldAbility);
-
-                        maxShield[0] = ff == null ? 0f : ((ForceFieldAbility)ff).max;
-                        return maxShield[0] > 0;
+                    .visible(() -> {
+                        if(player.dead()) return false;
+                        var ab = Structs.find(player.unit().abilities, a -> a instanceof ForceFieldAbility || a instanceof ShieldArcAbility);
+                        if(ab instanceof ForceFieldAbility ff){
+                            shield[0] = player.unit().shield;
+                            shieldMax[0] = ff.max;
+                        } else if(ab instanceof ShieldArcAbility sa){
+                            shield[0] = sa.data;
+                            shieldMax[0] = sa.max;
+                        } else {
+                            shield[0] = player.unit().shield;
+                            shieldMax[0] = 0;
+                        }
+                        return shieldMax[0] > 0;
                     })
                 )
             ).fillY();
             t.image(() -> player.icon()).scaling(Scaling.bounded).grow().maxWidth(54f);
-            t.add(new SideBar(() -> player.dead() ? 0f : player.displayAmmo() ? player.unit().ammof() : player.unit().healthf(), () -> !player.displayAmmo(), false)).width(bw).growY().padLeft(pad).update(b -> {
-                b.color.set(player.displayAmmo() ? player.dead() || player.unit() instanceof BlockUnitc ? Pal.ammo : player.unit().type.ammoType.color() : Pal.health);
+
+            Boolp playerHasPayloads = () -> player.unit() instanceof Payloadc pay && !pay.payloads().isEmpty();
+            Floatp playerPayloadCapacityUsed = () -> player.unit() instanceof Payloadc pay ? pay.payloadUsed() / player.unit().type().payloadCapacity : 0f;
+
+            t.add(new SideBar(() -> player.dead() ? 0f : player.displayAmmo() ? player.unit().ammof() : playerHasPayloads.get() ? playerPayloadCapacityUsed.get() : player.unit().healthf(), () -> !(player.displayAmmo() || playerHasPayloads.get()), false)).width(bw).growY().padLeft(pad).update(b -> {
+                b.color.set(player.displayAmmo() ? Pal.ammo : playerHasPayloads.get() ? Pal.items : Pal.health);
             });
 
             t.getChildren().get(1).toFront();
@@ -908,7 +1214,6 @@ public class HudFragment{
 //                    lcell[0].padRight(-42f);
 //                }
 //                table.invalidateHierarchy();
-//                table.pack();
 //                couldSkip[0] = can;
 //            }
 
@@ -924,12 +1229,12 @@ public class HudFragment{
             if(state.rules.objectives.any()){
                 boolean first = true;
                 for(var obj : state.rules.objectives){
-                    if(!obj.qualified()) continue;
+                    if(!obj.qualified() || obj.hidden) continue;
 
                     String text = obj.text();
                     if(text != null && !text.isEmpty()){
-                        if(!first) builder.append("\n[white]");
-                        builder.append(text);
+                        if(!first) builder.append("\n\n[white]");
+                        builder.append(UI.formatIcons(text));
 
                         first = false;
                     }
@@ -941,9 +1246,18 @@ public class HudFragment{
                 }
             }
 
+            if(!player.team().activateUnitFactories()){
+                builder.append("[lightgray]").append(Core.bundle.format("rules.unitfactoryactivation.objective", "[accent]" + UI.formatTime((float)Math.max(state.rules.unitActivationDelay(player.team()) - state.tick, 0f)))).append("[white]\n");
+            }
+
             if(!state.rules.waves && state.rules.attackMode){
                 int sum = Math.max(state.teams.present.sum(t -> t.team != player.team() ? t.cores.size : 0), 1);
                 builder.append(sum > 1 ? enemycsf.get(sum) : enemycf.get(sum));
+                return builder;
+            }
+
+            //do not show status after game over
+            if(state.afterGameOver && state.isCampaign()){
                 return builder;
             }
 
@@ -1022,6 +1336,7 @@ public class HudFragment{
         table.table().update(t -> {
             if(player.unit() instanceof Payloadc payload){
                 if(count[0] != payload.payloadUsed()){
+                    t.clear();
                     payload.contentInfo(t, 8 * 2, 275f);
                     count[0] = payload.payloadUsed();
                 }
@@ -1029,33 +1344,43 @@ public class HudFragment{
                 count[0] = -1;
                 t.clear();
             }
-        }).growX().visible(() -> player.unit() instanceof Payloadc p && p.payloadUsed() > 0);
+        }).growX().visible(() -> {
+            boolean result = player.unit() instanceof Payloadc p && p.payloadUsed() > 0;
+            if(!result) count[0] = -1f;
+            return result;
+        });
         table.row();
 
         Bits statuses = new Bits();
 
         table.table().update(t -> {
-            Bits applied = player.unit().statusBits();
+            Bits applied = player.dead() ? null : player.unit().statusBits();
             if(!statuses.equals(applied)){
                 t.clear();
 
                 if(applied != null){
                     for(StatusEffect effect : content.statusEffects()){
-                        if(applied.get(effect.id) && !effect.isHidden()){
-                            t.image(effect.uiIcon).size(iconMed).get()
+                        if(applied.get(effect.id)){
+                            t.image(effect.uiIcon).scaling(Scaling.fit).size(iconMed).get()
                             .addListener(new Tooltip(l -> l.label(() ->
-                                effect.localizedName + " [lightgray]" + UI.formatTime(player.unit().getDuration(effect))).style(Styles.outlineLabel)));
+                                player.dead() ? "" : effect.localizedName + " [lightgray]" + (player.unit().getDuration(effect) >= Float.MAX_VALUE ? "∞" : UI.formatTime(player.unit().getDuration(effect)))).style(Styles.outlineLabel)));
                         }
                     }
 
                     statuses.set(applied);
+                }else{
+                    statuses.clear();
                 }
             }
         }).growX();
     }
 
     private boolean canSkipWave(){
-        return state.rules.waves && (state.rules.winWave <= 0 || state.wave < state.rules.winWave) && (net.server() || player.admin || !net.active() || Server.current.adminui()) /* && state.enemies == 0 && !spawner.isSpawning() */;
+        return state.rules.waves && (state.rules.winWave <= 0 || state.wave < state.rules.winWave) && (net.server() || !net.active() || Server.current.adminui()) /* && state.enemies == 0 && !spawner.isSpawning() */;
+    }
+
+    public boolean shown() {
+        return shown && !control.input.logicHideHud;
     }
 
 }

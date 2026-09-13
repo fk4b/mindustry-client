@@ -12,7 +12,66 @@ import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.payloads.*;
 import mindustry.world.Build;
 
+import java.util.*;
+
 import static mindustry.Vars.*;
+
+interface BridgePlacer{
+    boolean unlockedNow();
+
+    boolean positionsValid(int x1, int y1, int x2, int y2);
+
+    void applyToPlans(BuildPlan cur, BuildPlan other);
+}
+
+class ItemBridgePlacer implements BridgePlacer{
+    private final ItemBridge bridge;
+
+    ItemBridgePlacer(ItemBridge bridge){
+        this.bridge = bridge;
+    }
+
+    @Override
+    public boolean unlockedNow(){
+        return bridge.unlockedNow();
+    }
+
+    @Override
+    public boolean positionsValid(int x1, int y1, int x2, int y2){
+        return bridge.positionsValid(x1, y1, x2, y2);
+    }
+
+    @Override
+    public void applyToPlans(BuildPlan cur, BuildPlan other){
+        cur.block = bridge;
+        other.block = bridge;
+        other.config = new Point2(cur.x - other.x, cur.y - other.y);
+    }
+}
+
+class DirectionBridgePlacer implements BridgePlacer{
+    private final DirectionBridge bridge;
+
+    DirectionBridgePlacer(DirectionBridge bridge){
+        this.bridge = bridge;
+    }
+
+    @Override
+    public boolean unlockedNow(){
+        return bridge.unlockedNow();
+    }
+
+    @Override
+    public boolean positionsValid(int x1, int y1, int x2, int y2){
+        return bridge.positionsValid(x1, y1, x2, y2);
+    }
+
+    @Override
+    public void applyToPlans(BuildPlan cur, BuildPlan other){
+        cur.block = bridge;
+        other.block = bridge;
+    }
+}
 
 public class Placement{
     private static final Seq<BuildPlan> plans1 = new Seq<>();
@@ -21,6 +80,7 @@ public class Placement{
     private static final NormalizeDrawResult drawResult = new NormalizeDrawResult();
     private static final Bresenham2 bres = new Bresenham2();
     private static final Seq<Point2> points = new Seq<>();
+    private static final IntSeq tmpInts = new IntSeq(), tmpInts2 = new IntSeq();
 
     //for pathfinding
     private static final IntFloatMap costs = new IntFloatMap();
@@ -475,22 +535,19 @@ public class Placement{
         return points;
     }
 
-    /** Rectangle placement points (used when block.allowRectanglePlacement). */
+    /** Normalize two points into a rectangle. */
     public static Seq<Point2> normalizeRectangle(int startX, int startY, int endX, int endY, int blockSize){
         Pools.freeAll(points);
         points.clear();
-        int minX = Math.min(startX, endX);
-        int minY = Math.min(startY, endY);
-        int maxX = Math.max(startX, endX);
-        int maxY = Math.max(startY, endY);
+
+        int minX = Math.min(startX, endX), minY = Math.min(startY, endY), maxX = Math.max(startX, endX), maxY = Math.max(startY, endY);
+
         for(int y = 0; y <= maxY - minY; y += blockSize){
             for(int x = 0; x <= maxX - minX; x += blockSize){
-                points.add(Pools.obtain(Point2.class, Point2::new).set(
-                    startX + x * Mathf.sign(endX - startX),
-                    startY + y * Mathf.sign(endY - startY)
-                ));
+                points.add(Pools.obtain(Point2.class, Point2::new).set(startX + x * Mathf.sign(endX - startX), startY + y * Mathf.sign(endY - startY)));
             }
         }
+
         return points;
     }
 
@@ -517,7 +574,7 @@ public class Placement{
         boolean addedLast = false;
 
         outer:
-        for(int i = 0; i < base.size;){
+        for(int i = 0; i < base.size; ){
             var point = base.get(i);
             result.add(point);
             if(i == base.size - 1) addedLast = true;
@@ -535,7 +592,7 @@ public class Placement{
             }
 
             //if it got here, that means nothing was found. try to proceed to the next node anyway
-            i ++;
+            i++;
         }
 
         if(!addedLast && !base.isEmpty()) result.add(base.peek());
@@ -549,8 +606,123 @@ public class Placement{
     }
 
     public static void calculateBridges(Seq<BuildPlan> plans, ItemBridge bridge){
-        // jar Conveyor may call the 4-arg overload; 2-arg is a thin wrapper
         calculateBridges(plans, bridge, false, t -> false);
+    }
+
+    private static void calculateBridges(Seq<BuildPlan> plans, BridgePlacer bridge, boolean hasJunction, Boolf<Block> avoid){
+        //common checks
+        if(isSidePlace(plans) || plans.size == 0) return;
+
+        //check for orthogonal placement + unlocked state
+        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()){
+            return;
+        }
+
+        smartCalculateBridges(plans, bridge, hasJunction, avoid);
+    }
+
+    private static void smartCalculateBridges(Seq<BuildPlan> plans, BridgePlacer bridge, boolean hasJunction, Boolf<Block> avoid){
+        Boolf<BuildPlan> placeable = plan ->
+        (plan.placeable(player.team()) || (plan.tile() != null && plan.tile().block() == plan.block && plan.tile().interactable(player.team()))) &&  //don't count the same block as inaccessible
+        !(plan != plans.first() && plan.build() != null && plan.build().rotation != plan.rotation && avoid.get(plan.tile().block()));
+
+        var result = plans1.clear();
+
+        // Use DP for smarter bridge placement
+        final int conveyorCost = 3;
+        final int junctionCost = 30;
+        final int bridgeCost = 200;
+        final int bridgeOverEmptyPenalty = 5;
+        final int infCost = Integer.MAX_VALUE / 2; // Avoid overflow when adding
+
+        int N = plans.size;
+        var dp = tmpInts.setSize(2 * N);
+        var parent = tmpInts2.setSize(2 * N);
+        Arrays.fill(dp, 0, 2 * N, infCost);
+        Arrays.fill(parent, 0, 2 * N, -1);
+        dp[0] = 0;
+        dp[N] = bridgeCost;
+
+        for(int i = 1; i < N; i++){
+            var cur = plans.get(i);
+            boolean canPlace = placeable.get(cur);
+            boolean needJunction = hasJunction && (cur.tile() == null || avoid.get(cur.tile().block()));
+
+            if(!canPlace && !needJunction){
+                continue;
+            }
+
+            if(canPlace){
+                dp[i] = dp[i - 1] + conveyorCost;
+            }else{
+                dp[i] = dp[i - 1] + junctionCost;
+            }
+            parent[i] = i - 1;
+
+            if(dp[i] < infCost && canPlace){
+                dp[N + i] = dp[i] + bridgeCost;
+                parent[N + i] = i - 1;
+            }
+
+            // Consider bridges from all previous positions
+            if(i >= 2 && canPlace){
+                int emptyPenalty = 0;
+                if(placeable.get(plans.get(i - 1))){
+                    emptyPenalty += bridgeOverEmptyPenalty;
+                }
+
+                for(int j = i - 2; j >= 0; j--){
+                    var other = plans.get(j);
+                    if(!bridge.positionsValid(cur.x, cur.y, other.x, other.y)){
+                        break; // No need to check further back if this one is out of range
+                    }
+
+                    if(placeable.get(other)){
+                        int cost = dp[N + j] + bridgeCost + emptyPenalty;
+                        if(dp[N + i] > cost){
+                            dp[N + i] = cost;
+                            parent[N + i] = j;
+                        }
+                        emptyPenalty += bridgeOverEmptyPenalty;
+                    }
+                }
+            }
+
+            if(dp[N + i] < dp[i]){
+                dp[i] = dp[N + i];
+                parent[i] = parent[N + i];
+            }
+
+            if(canPlace && dp[i] >= infCost){
+                // Unable to connect, restart a new segment
+                dp[i] = 0;
+                dp[N + i] = bridgeCost;
+            }
+        }
+
+        // Backtrack to assign bridges
+        int bridgeMode = 0;
+        for(int i = N - 1; i >= 0; ){
+            var cur = plans.get(i);
+            int p = parent[bridgeMode + i];
+
+            if(p == -1 || p == i - 1){
+                // No connection, connected by conveyor, or junction, no bridge needed
+                result.add(cur);
+                bridgeMode = 0;
+                i--;
+            }else{
+                // Connected by bridge, assign it
+                var other = plans.get(p);
+                bridge.applyToPlans(cur, other);
+                result.add(cur);
+                i = p;
+                bridgeMode = N;
+            }
+        }
+
+        result.reverse();
+        plans.set(result);
     }
 
     /**
@@ -558,135 +730,20 @@ public class Placement{
      * Signature must stay: (Seq, ItemBridge, boolean, Boolf) — see Conveyor.handlePlacementLine.
      */
     public static void calculateBridges(Seq<BuildPlan> plans, ItemBridge bridge, boolean hasJunction, Boolf<Block> avoid){
-        if(isSidePlace(plans) || plans.size == 0) return;
-        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()) return;
-
-        Boolf<BuildPlan> placeable = plan ->
-            (plan.placeable(player.team())
-                || (plan.tile() != null && plan.tile().block() == plan.block && plan.tile().interactable(player.team())))
-            && (plan == plans.first() || plan.build() == null || plan.build().rotation == plan.rotation
-                || plan.tile() == null || !avoid.get(plan.tile().block()));
-
-        var result = plans1.clear();
-        boolean rotated = plans.first().tile() != null
-            && plans.first().tile().absoluteRelativeTo(plans.peek().x, plans.peek().y)
-                == Mathf.mod(plans.first().rotation + 2, 4);
-
-        outer:
-        for(int i = 0; i < plans.size;){
-            var cur = plans.get(i);
-            result.add(cur);
-
-            if(i < plans.size - 1 && placeable.get(cur) && !placeable.get(plans.get(i + 1))){
-                boolean wereSame = true;
-
-                for(int j = i + 1; j < plans.size; j++){
-                    var other = plans.get(j);
-
-                    if(!bridge.positionsValid(cur.x, cur.y, other.x, other.y)){
-                        for(int k = i + 1; k < j; k++){
-                            result.add(plans.get(k));
-                        }
-                        i = j;
-                        continue outer;
-                    }
-
-                    if(placeable.get(other)){
-                        if(wereSame && hasJunction){
-                            i++;
-                            continue outer;
-                        }
-                        cur.block = bridge;
-                        other.block = bridge;
-                        if(rotated){
-                            other.config = new Point2(cur.x - other.x, cur.y - other.y);
-                        }else{
-                            cur.config = new Point2(other.x - cur.x, other.y - cur.y);
-                        }
-                        i = j;
-                        continue outer;
-                    }
-
-                    if(other.tile() != null && (!avoid.get(other.tile().block()) || !other.tile().interactable(player.team()))){
-                        wereSame = false;
-                    }
-                }
-
-                for(int j = i + 1; j < plans.size; j++){
-                    result.add(plans.get(j));
-                }
-                break;
-            }else{
-                i++;
-            }
-        }
-
-        plans.set(result);
+        calculateBridges(plans, new ItemBridgePlacer(bridge), hasJunction, avoid);
     }
 
     public static void calculateBridges(Seq<BuildPlan> plans, DirectionBridge bridge, boolean hasJunction, Boolf<Block> avoid){
-        if(isSidePlace(plans) || plans.size == 0) return;
-        if(!(plans.first().x == plans.peek().x || plans.first().y == plans.peek().y) || !bridge.unlockedNow()) return;
-
-        Boolf<BuildPlan> placeable = plan ->
-            (plan.placeable(player.team()) || (plan.tile() != null && plan.tile().block() == plan.block))
-            && (plan == plans.first() || plan.build() == null || plan.build().rotation == plan.rotation
-                || plan.tile() == null || !avoid.get(plan.tile().block()));
-
-        var result = plans1.clear();
-
-        outer:
-        for(int i = 0; i < plans.size;){
-            var cur = plans.get(i);
-            result.add(cur);
-
-            if(i < plans.size - 1 && placeable.get(cur) && !placeable.get(plans.get(i + 1))){
-                boolean wereSame = true;
-
-                for(int j = i + 1; j < plans.size; j++){
-                    var other = plans.get(j);
-
-                    if(!bridge.positionsValid(cur.x, cur.y, other.x, other.y)){
-                        for(int k = i + 1; k < j; k++){
-                            result.add(plans.get(k));
-                        }
-                        i = j;
-                        continue outer;
-                    }
-
-                    if(placeable.get(other)){
-                        if(wereSame && hasJunction){
-                            i++;
-                            continue outer;
-                        }
-                        cur.block = bridge;
-                        other.block = bridge;
-                        i = j;
-                        continue outer;
-                    }
-
-                    if(other.tile() != null && !avoid.get(other.tile().block())){
-                        wereSame = false;
-                    }
-                }
-
-                for(int j = i + 1; j < plans.size; j++){
-                    result.add(plans.get(j));
-                }
-                break;
-            }else{
-                i++;
-            }
-        }
-
-        plans.set(result);
+        calculateBridges(plans, new DirectionBridgePlacer(bridge), hasJunction, avoid);
     }
 
     private static float tileHeuristic(Tile tile, Tile other){
         Block block = control.input.block;
 
-        if((!other.block().alwaysReplace && !(block != null && block.canReplace(other.block()))) || other.floor().isDeep()){
+        if(!Build.validPlace(block, player.team(), other.x, other.y, -1)){ //-1 to allow placing right-facing conv on right-facing conv
             return 20;
+            //why is this 20? I forgot how A* works but isn't that a bit low? Pathfinder uses 6000 right?
+            //the planner seems to work fine anyway
         }else{
             if(parents.containsKey(tile.pos())){
                 Tile prev = world.tile(parents.get(tile.pos(), 0));

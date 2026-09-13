@@ -29,7 +29,6 @@ import static mindustry.Vars.*;
 import static mindustry.game.SpawnGroup.*;
 
 public class WaveInfoDialog extends BaseDialog{
-    private int start = 0, displayed = 20;
     Seq<SpawnGroup> groups = new Seq<>();
     private @Nullable SpawnGroup expandedGroup;
 
@@ -38,7 +37,6 @@ public class WaveInfoDialog extends BaseDialog{
     private @Nullable UnitType filterType;
     private Sort sort = Sort.begin;
     private boolean reverseSort = false;
-    private float updateTimer, updatePeriod = 1f;
     private boolean checkedSpawns;
     private WaveGraph graph = new WaveGraph();
 
@@ -51,29 +49,28 @@ public class WaveInfoDialog extends BaseDialog{
         });
         hidden(() -> state.rules.spawns = groups);
 
-        onResize(this::setup);
         addCloseButton();
 
-        buttons.button("@waves.edit", Icon.edit, () -> {
-            BaseDialog dialog = new BaseDialog("@waves.edit");
+        buttons.button("@edit.menu", Icon.edit, () -> {
+            BaseDialog dialog = new BaseDialog("@edit.menu");
             dialog.addCloseButton();
             dialog.setFillParent(false);
             dialog.cont.table(Tex.button, t -> {
                 var style = Styles.cleart;
                 t.defaults().size(280f, 64f).pad(2f);
 
-                t.button("@waves.copy", Icon.copy, style, () -> {
+                t.button("@copy.clipboard", Icon.copy, style, () -> {
                     ui.showInfoFade("@waves.copied");
                     Core.app.setClipboardText(maps.writeWaves(groups));
                     dialog.hide();
                 }).disabled(b -> groups == null || groups.isEmpty()).marginLeft(12f).row();
 
-                t.button("@waves.load", Icon.download, style, () -> {
+                t.button("@load.clipboard", Icon.download, style, () -> {
                     try{
                         groups = maps.readWaves(Core.app.getClipboardText());
                         buildGroups();
                     }catch(Exception e){
-                        e.printStackTrace();
+                        Log.err(e);
                         ui.showErrorMessage("@waves.invalid");
                     }
                     dialog.hide();
@@ -95,75 +92,11 @@ public class WaveInfoDialog extends BaseDialog{
             dialog.show();
         }).size(250f, 64f);
 
-        buttons.defaults().width(60f);
-
-        buttons.button("<", () -> {
-            if(Core.input.shift()) shift(-1);
-        }).update(t -> {
-            if(t.getClickListener().isPressed() && !Core.input.shift()) shift(-1);
-        });
-        buttons.button(">", () -> {
-            if(Core.input.shift()) shift(1);
-        }).update(t -> {
-            if(t.getClickListener().isPressed() && !Core.input.shift()) shift(1);
-        });
-        keyDown(KeyCode.left, () -> {
-            if(Core.input.shift()) shift(-1);
-        });
-        keyDown(KeyCode.right, () -> {
-            if(Core.input.shift()) shift(1);
-        });
-        update(() -> {
-            if(Core.input.keyDown(KeyCode.left) && !Core.input.shift()) shift(-1);
-            if(Core.input.keyDown(KeyCode.right) && !Core.input.shift()) shift(1);
-            if(Core.input.keyDown(KeyCode.minus) && !Core.input.shift()) view(-1);
-            if(Core.input.keyDown(KeyCode.equals) && !Core.input.shift()) view(1);
-        });
-
-        buttons.button("-", () -> {
-            if(Core.input.shift()) view(-1);
-        }).update(t -> {
-            if(t.getClickListener().isPressed() && !Core.input.shift()) view(-1);
-        });
-        buttons.button("+", () -> {
-            if(Core.input.shift()) view(1);
-        }).update(t -> {
-            if(t.getClickListener().isPressed() && !Core.input.shift()) view(1);
-        });
-        keyDown(KeyCode.minus, () -> {
-            if(Core.input.shift()) view(-1);
-        });
-        keyDown(KeyCode.equals, () -> {
-            if(Core.input.shift()) view(1);
-        });
-
-        if(experimental){
-            buttons.button(Core.bundle.get("waves.random"), Icon.refresh, () -> {
-                groups.clear();
-                groups = Waves.generate(1f / 10f);
-                buildGroups();
-            }).width(200f);
-        }
-    }
-
-    void view(int amount){
-        updateTimer += Time.delta;
-        if(updateTimer >= updatePeriod){
-            displayed += amount;
-            if(displayed < 5) displayed = 5;
-            updateTimer = 0f;
-            updateWaves();
-        }
-    }
-
-    void shift(int amount){
-        updateTimer += Time.delta;
-        if(updateTimer >= updatePeriod){
-            start += amount;
-            if(start < 0) start = 0;
-            updateTimer = 0f;
-            updateWaves();
-        }
+        buttons.button(Core.bundle.get("waves.random"), Icon.refresh, () -> {
+            groups.clear();
+            groups = Waves.generate(1f / 10f);
+            buildGroups();
+        }).width(200f);
     }
 
     void setup(){
@@ -176,7 +109,6 @@ public class WaveInfoDialog extends BaseDialog{
                 s.image(Icon.zoom).padRight(8);
                 s.field(search < 0 ? "" : (search + 1) + "", TextFieldFilter.digitsOnly, text -> {
                     search = groups.any() ? Strings.parseInt(text, 0) - 1 : -1;
-                    start = Math.max(search - (displayed / 2) - (displayed % 2), 0);
                     buildGroups();
                 }).growX().maxTextLength(8).get().setMessageText("@waves.search");
                 s.button(Icon.units, Styles.emptyi, () -> showUnits(type -> filterType = type, true)).size(46f).tooltip("@waves.filter")
@@ -242,7 +174,7 @@ public class WaveInfoDialog extends BaseDialog{
                     t.button(b -> {
                         b.left();
                         b.image(group.type.uiIcon).size(32f).padRight(3).scaling(Scaling.fit);
-                        b.add(group.type.localizedName).color(Pal.accent);
+                        b.add(group.type.localizedName).ellipsis(true).width(110f).left().color(Pal.accent);
 
                         b.add().growX();
 
@@ -359,6 +291,13 @@ public class WaveInfoDialog extends BaseDialog{
                         }).padTop(4).update(b -> b.setChecked(group.effect == StatusEffects.boss)).padBottom(8f).row();
 
                         t.table(a -> {
+                            a.add("@waves.team").padRight(8);
+
+                            a.button(b -> b.image(Tex.whiteui).size(iconSmall).update(i -> i.setColor(group.team == null ? Color.clear : group.team.color)), Styles.squarei,
+                            () -> MapObjectivesDialog.showTeamSelect(true, team -> group.team = team)).size(38f);
+                        }).padTop(0).row();
+
+                        t.table(a -> {
                             a.add("@waves.spawn").padRight(8);
 
                             a.button("", () -> {
@@ -376,7 +315,7 @@ public class WaveInfoDialog extends BaseDialog{
                                     int max = 20;
 
                                     if(spawner.getSpawns().size >= max){
-                                        p.add("[lightgray](first " + max + ")").colspan(cols).padBottom(4).row();
+                                        p.add(Core.bundle.format("waves.spawn.first", max)).colspan(cols).padBottom(4).row();
                                     }
 
                                     for(Tile spawn : Seq.<Tile>withArrays(spawner.getSpawns(), spawner.getCoreSpawns())){
@@ -514,8 +453,6 @@ public class WaveInfoDialog extends BaseDialog{
 
     void updateWaves(){
         graph.groups = groups;
-        graph.from = start;
-        graph.to = start + displayed;
         graph.rebuild();
     }
 }

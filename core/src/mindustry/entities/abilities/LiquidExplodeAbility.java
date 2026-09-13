@@ -1,6 +1,7 @@
 package mindustry.entities.abilities;
 
 import arc.math.*;
+import arc.scene.ui.layout.*;
 import arc.util.noise.*;
 import mindustry.content.*;
 import mindustry.entities.*;
@@ -15,6 +16,11 @@ public class LiquidExplodeAbility extends Ability{
     public float amount = 120f;
     public float radAmountScale = 5f, radScale = 1f;
     public float noiseMag = 6.5f, noiseScl = 5f;
+
+    @Override
+    public void addStats(Table t){
+        t.add(amount + " puddles of " + (liquid.hasEmoji() ? liquid.emoji() : "") + "[stat]" + liquid.localizedName);
+    }
 
     @Override
     public void death(Unit unit){

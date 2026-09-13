@@ -2,7 +2,6 @@ package mindustry.entities.units;
 
 import arc.func.*;
 import arc.math.geom.*;
-import arc.struct.*;
 import arc.math.geom.QuadTree.*;
 import arc.util.*;
 import arc.util.pooling.*;
@@ -10,11 +9,8 @@ import mindustry.content.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.world.*;
-import mindustry.world.blocks.distribution.*;
-import mindustry.world.blocks.power.*;
 
 import static mindustry.Vars.*;
-import static mindustry.client.ClientVars.cameraBounds;
 
 /** Class for storing build plans. Can be either a place or remove plan. */
 public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
@@ -28,8 +24,6 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
     public Object config;
     /** Whether the config is to be sent to the server */
     public transient boolean configLocal;
-    /** Original position, only used in schematics.*/
-    public int originalX, originalY, originalWidth, originalHeight;
 
     /** Last progress.*/
     public float progress;
@@ -100,6 +94,12 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
         return tile != null && tile.team() == team && tile.block() == block && tile.build != null && tile.build.rotation != rotation;
     }
 
+    public boolean isDerelictRepair(){
+        if(breaking || !state.rules.derelictRepair) return false;
+        Tile tile = tile();
+        return tile != null && tile.team() == Team.derelict && tile.block() == block && tile.build != null;
+    }
+
     public boolean samePos(BuildPlan other){
         return x == other.x && y == other.y;
     }
@@ -136,8 +136,6 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
         copy.block = block;
         copy.breaking = breaking;
         copy.config = config;
-        copy.originalX = originalX;
-        copy.originalY = originalY;
         copy.progress = progress;
         copy.initialized = initialized;
         copy.animScale = animScale;
@@ -145,12 +143,8 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
         return copy;
     }
 
-    public BuildPlan original(int x, int y, int originalWidth, int originalHeight){
-        originalX = x;
-        originalY = y;
-        this.originalWidth = originalWidth;
-        this.originalHeight = originalHeight;
-        return this;
+    public Rect bounds(Rect rect){
+        return block.bounds(x, y, rect);
     }
 
     public BuildPlan set(int x, int y, int rotation, Block block){
@@ -192,6 +186,17 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
         return y*tilesize + (block == null ? 0 : block.offset);
     }
 
+    public boolean isDone(){
+        Tile tile = world.tile(x, y);
+        if(tile == null) return true;
+        Block tblock = tile.block();
+        if(breaking){
+            return tblock == Blocks.air || tblock == tile.floor();
+        }else{
+            return tblock == block && (tile.build == null || tile.build.rotation == rotation);
+        }
+    }
+
     public @Nullable Tile tile(){
         return world.tile(x, y);
     }
@@ -200,48 +205,12 @@ public class BuildPlan implements Position, Pool.Poolable, QuadTreeObject{
         return world.build(x, y);
     }
 
-    public boolean isDone(){ // FINISHME: Surely most of this is redundant for no reason...
-        Tile tile = world.tile(x, y);
-        if(tile == null) return true;
-        Block tblock = tile.block();
-        if(breaking){
-            return tblock == null || tblock == Blocks.air || tblock == tile.floor();  // covering all the bases
-        }else{
-            return tblock == block && (tile.build == null || tile.build.rotation == rotation);
-        }
-    }
-
-    public boolean isVisible(){
-        final Rect r1 = Tmp.r1;
-        return !worldContext || cameraBounds.overlaps(block.bounds(x, y, r1)) ||
-                (block instanceof ItemBridge b && Tmp.r2.set(cameraBounds).grow(2 * b.range * tilesizeF).overlaps(r1)) ||
-                (block instanceof PowerNode p && Tmp.r2.set(cameraBounds).grow(2 * tilesize * p.laserRange).overlaps(r1));
-    }
-
-    public static void getVisiblePlans(Eachable<BuildPlan> plans, Seq<BuildPlan> output){
-        plans.each(plan -> {
-            if(plan.isVisible()) output.add(plan);
-        });
-    }
-
     @Override
     public void hitbox(Rect out){
         if(block != null){
             out.setCentered(x * tilesize + block.offset, y * tilesize + block.offset, block.size * tilesize);
         }else{
             out.setCentered(x * tilesize, y * tilesize, tilesize);
-        }
-    }
-    
-    public Rect bounds(Rect rect) {
-        return bounds(rect, false);
-    }
-    
-    public Rect bounds(Rect rect, boolean allowBreak){
-        if(breaking && !allowBreak){
-            return rect.set(-100f, -100f, 0f, 0f);
-        }else{
-            return block.bounds(x, y, rect);
         }
     }
 

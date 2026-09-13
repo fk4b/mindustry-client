@@ -1,5 +1,6 @@
 package mindustry.graphics;
 
+import arc.*;
 import arc.graphics.*;
 import arc.graphics.Texture.*;
 import arc.graphics.g2d.*;
@@ -9,17 +10,31 @@ import arc.util.Log.*;
 import mindustry.*;
 
 public class MultiPacker implements Disposable{
-    private PixmapPacker[] packers = new PixmapPacker[PageType.all.length];
+    private PixmapPacker[] packers;
     private ObjectSet<String> outlined = new ObjectSet<>();
 
     public MultiPacker(){
-        for(int i = 0; i < packers.length; i++){
-            packers[i] = new PixmapPacker(Math.min(Vars.maxTextureSize, PageType.all[i].width), Math.min(Vars.maxTextureSize, PageType.all[i].height), 2, true);
+        this(true);
+    }
+
+    public MultiPacker(boolean initialize){
+        if(initialize){
+            packers = new PixmapPacker[PageType.all.length];
+            for(int i = 0; i < packers.length; i++){
+                packers[i] = new PixmapPacker(Math.min(Vars.maxTextureSize, PageType.all[i].width), Math.min(Vars.maxTextureSize, PageType.all[i].height), 2, true);
+            }
         }
     }
 
-    @Nullable
-    public PixmapRegion get(String name){
+    public PixmapRegion get(TextureRegion region){
+        return Core.atlas.getPixmap(region);
+    }
+
+    public PixmapRegion get(String region){
+        return Core.atlas.getPixmap(region);
+    }
+
+    public @Nullable PixmapRegion getPacked(String name){
         for(var packer : packers){
             var region = packer.getRegion(name);
             if(region != null){
@@ -60,7 +75,7 @@ public class MultiPacker implements Disposable{
     public boolean isOutlined(String name){
         return outlined.contains(name);
     }
-
+    
     public PixmapPacker getPacker(PageType type){
         return packers[type.ordinal()];
     }
@@ -100,8 +115,13 @@ public class MultiPacker implements Disposable{
 
     @Override
     public void dispose(){
-        for(PixmapPacker packer : packers){
-            packer.dispose();
+        if(packers == null) return;
+        for(int i = 0; i < PageType.all.length; i ++){
+            var packer = packers[i];
+            //the UI packer's image is later used when merging with the font, don't dispose it
+            if(i != PageType.ui.ordinal()){
+                packer.forceDispose();
+            }
         }
     }
 
@@ -115,9 +135,7 @@ public class MultiPacker implements Disposable{
         //main page can be massive, but 8192 throws GL_OUT_OF_MEMORY on some GPUs and I can't deal with it yet.
         main(4096),
 
-        //TODO stuff like this throws OOM on some devices
-        environment(4096, 2048),
-        editor(4096, 2048),
+        environment(4096),
         rubble(4096, 2048),
         ui(4096);
 

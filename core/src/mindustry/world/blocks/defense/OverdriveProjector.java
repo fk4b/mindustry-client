@@ -22,8 +22,6 @@ import static arc.Core.*;
 import static mindustry.Vars.*;
 
 public class OverdriveProjector extends Block{
-    public final int timerUse = timers++;
-
     public @Load("@-top") TextureRegion topRegion;
     public float reload = 60f;
     public float range = 80f;
@@ -46,6 +44,8 @@ public class OverdriveProjector extends Block{
         emitLight = true;
         lightRadius = 50f;
         envEnabled |= Env.space;
+        ambientSound = Sounds.loopCircuit;
+        ambientSoundVolume = 0.13f;
     }
 
     @Override
@@ -80,10 +80,10 @@ public class OverdriveProjector extends Block{
 
         if(hasBoost && findConsumer(f -> f instanceof ConsumeItems) instanceof ConsumeItems items){
             stats.remove(Stat.booster);
-            stats.add(Stat.booster, StatValues.itemBoosters("+{0}%", stats.timePeriod, speedBoostPhase * 100f, phaseRangeBoost, items.items, this::consumesItem));
+            stats.add(Stat.booster, StatValues.itemBoosters("+{0}%", stats.timePeriod, speedBoostPhase * 100f, phaseRangeBoost, items.items));
         }
     }
-    
+
     @Override
     public void setBars(){
         super.setBars();
@@ -91,7 +91,7 @@ public class OverdriveProjector extends Block{
     }
 
     public class OverdriveBuild extends Building implements Ranged{
-        public float heat, charge = Mathf.random(reload), phaseHeat, smoothEfficiency;
+        public float heat, charge = Mathf.random(reload), phaseHeat, smoothEfficiency, useProgress;
 
         @Override
         public void add() {
@@ -136,8 +136,13 @@ public class OverdriveProjector extends Block{
                 indexer.eachBlock(this, realRange, other -> other.block.canOverdrive, other -> other.applyBoost(realBoost(), reload + 1f));
             }
 
-            if(timer(timerUse, useTime) && efficiency > 0){
+            if(efficiency > 0){
+                useProgress += delta();
+            }
+
+            if(useProgress >= useTime){
                 consume();
+                useProgress %= useTime;
             }
         }
 
@@ -158,12 +163,14 @@ public class OverdriveProjector extends Block{
         public void draw(){
             super.draw();
 
+            if(!Lod.l2) return;
+
             float f = 1f - (Time.time / 100f) % 1f;
 
             Draw.color(baseColor, phaseColor, phaseHeat);
-            Draw.alpha(heat * Mathf.absin(Time.time, 50f / Mathf.PI2, 1f) * 0.5f);
+            Draw.alpha(heat * Mathf.absin(Time.time, 50f / Mathf.PI2, 1f) * 0.5f * Lod.alpha2);
             Draw.rect(topRegion, x, y);
-            Draw.alpha(1f);
+            Draw.alpha(Lod.alpha2);
             Lines.stroke((2f * f + 0.1f) * heat);
 
             float r = Math.max(0f, Mathf.clamp(2f - f * 2f) * size * tilesize / 2f - f - 0.2f), w = Mathf.clamp(0.5f - f) * size * tilesize;

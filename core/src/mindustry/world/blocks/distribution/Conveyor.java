@@ -9,6 +9,7 @@ import arc.util.*;
 import arc.util.io.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.content.*;
+import mindustry.ctype.*;
 import mindustry.entities.*;
 import mindustry.entities.units.*;
 import mindustry.gen.*;
@@ -31,6 +32,7 @@ public class Conveyor extends Block implements Autotiler{
 
     public float speed = 0f;
     public float displayedSpeed = 0f;
+    public boolean pushUnits = true;
 
     public @Nullable Block junctionReplacement, bridgeReplacement;
 
@@ -45,7 +47,7 @@ public class Conveyor extends Block implements Autotiler{
         conveyorPlacement = true;
         underBullets = true;
 
-        ambientSound = Sounds.conveyor;
+        ambientSound = Sounds.loopConveyor;
         ambientSoundVolume = 0.0022f;
         unloadable = false;
         noUpdateDisabled = false;
@@ -54,7 +56,7 @@ public class Conveyor extends Block implements Autotiler{
     @Override
     public void setStats(){
         super.setStats();
-        
+
         //have to add a custom calculated speed, since the actual movement speed is apparently not linear
         stats.add(Stat.itemsMoved, displayedSpeed, StatUnit.itemsSecond);
     }
@@ -64,7 +66,7 @@ public class Conveyor extends Block implements Autotiler{
         super.init();
 
         if(junctionReplacement == null) junctionReplacement = Blocks.junction;
-        if(bridgeReplacement == null || !(bridgeReplacement instanceof ItemBridge)) bridgeReplacement = Blocks.itemBridge;
+        if(bridgeReplacement == null || !(bridgeReplacement instanceof ItemBridge || bridgeReplacement instanceof DuctBridge)) bridgeReplacement = Blocks.itemBridge;
     }
 
     @Override
@@ -92,8 +94,9 @@ public class Conveyor extends Block implements Autotiler{
     @Override
     public void handlePlacementLine(Seq<BuildPlan> plans){
         if(bridgeReplacement == null) return;
-
-        Placement.calculateBridges(plans, (ItemBridge)bridgeReplacement);
+        boolean hasJuntionReplacement = junctionReplacement != null;
+        if(bridgeReplacement instanceof DuctBridge bridge) Placement.calculateBridges(plans, bridge, hasJuntionReplacement, b -> b instanceof Duct || b instanceof Conveyor);
+        if(bridgeReplacement instanceof ItemBridge bridge) Placement.calculateBridges(plans, bridge, hasJuntionReplacement, b -> b instanceof Conveyor);
     }
 
     @Override
@@ -115,6 +118,7 @@ public class Conveyor extends Block implements Autotiler{
             cont.get(Geometry.d4(req.rotation - 2)) &&
             req.tile() != null &&
             req.tile().block() instanceof Conveyor &&
+            (player == null || player.team() == req.tile().build.team) &&
             Mathf.mod(req.tile().build.rotation - req.rotation, 2) == 1 ? junctionReplacement : this;
     }
 
@@ -140,7 +144,7 @@ public class Conveyor extends Block implements Autotiler{
 
         @Override
         public void draw(){
-            int frame = enabled && clogHeat <= 0.5f ? (int)(((Time.time * speed * 8f * timeScale * efficiency)) % 4) : 0;
+            int frame = enabled && clogHeat <= 0.5f && !state.rules.editor ? (int)(((Time.time * speed * 8f * timeScale * efficiency)) % 4) : 0;
 
             //draw extra conveyors facing this one for non-square tiling purposes
             Draw.z(Layer.blockUnder);
@@ -221,7 +225,7 @@ public class Conveyor extends Block implements Autotiler{
 
         @Override
         public void unitOn(Unit unit){
-            if(clogHeat > 0.5f || !enabled) return;
+            if(!pushUnits || clogHeat > 0.5f || !enabled) return;
 
             noSleep();
 
@@ -251,7 +255,7 @@ public class Conveyor extends Block implements Autotiler{
             mid = 0;
 
             //skip updates if possible
-            if(len == 0){
+            if(len == 0 && Mathf.equal(timeScale, 1f)){
                 clogHeat = 0f;
                 sleep();
                 return;
@@ -379,12 +383,19 @@ public class Conveyor extends Block implements Autotiler{
         }
 
         @Override
+        public byte version(){
+            return 1;
+        }
+
+        @Override
         public void write(Writes write){
             super.write(write);
             write.i(len);
 
             for(int i = 0; i < len; i++){
-                write.i(Pack.intBytes((byte)ids[i].id, (byte)(xs[i] * 127), (byte)(ys[i] * 255 - 128), (byte)0));
+                write.s(ids[i].id);
+                write.b((byte)(xs[i] * 127));
+                write.b((byte)(ys[i] * 255 - 128));
             }
         }
 
@@ -395,10 +406,20 @@ public class Conveyor extends Block implements Autotiler{
             len = Math.min(amount, capacity);
 
             for(int i = 0; i < amount; i++){
-                int val = read.i();
-                short id = (short)(((byte)(val >> 24)) & 0xff);
-                float x = (float)((byte)(val >> 16)) / 127f;
-                float y = ((float)((byte)(val >> 8)) + 128f) / 255f;
+                short id;
+                float x, y;
+
+                if(revision == 0){
+                    int val = read.i();
+                    id = (short)(((byte)(val >> 24)) & 0xff);
+                    x = (float)((byte)(val >> 16)) / 127f;
+                    y = ((float)((byte)(val >> 8)) + 128f) / 255f;
+                }else{
+                    id = read.s();
+                    x = (float)read.b() / 127f;
+                    y = ((float)read.b() + 128f) / 255f;
+                }
+
                 if(i < capacity){
                     ids[i] = content.item(id);
                     xs[i] = x;
@@ -411,9 +432,32 @@ public class Conveyor extends Block implements Autotiler{
         }
 
         @Override
+        public double sense(LAccess sensor){
+            if(sensor == LAccess.progress){
+                if(len == 0) return 0;
+                return ys[len - 1];
+            }
+            return super.sense(sensor);
+        }
+
+        @Override
         public Object senseObject(LAccess sensor){
             if(sensor == LAccess.firstItem && len > 0) return ids[len - 1];
             return super.senseObject(sensor);
+        }
+
+        @Override
+        public void setProp(UnlockableContent content, double value){
+            if(content instanceof Item item && items != null){
+                int amount = Math.min((int)value, capacity);
+                if(items.get(item) != amount){
+                    if(items.get(item) < amount){
+                        handleStack(item, amount - items.get(item), null);
+                    }else if(amount >= 0){
+                        removeStack(item, items.get(item) - amount);
+                    }
+                }
+            }else super.setProp(content, value);
         }
 
         public final void add(int o){

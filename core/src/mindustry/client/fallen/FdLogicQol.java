@@ -2,8 +2,10 @@ package mindustry.client.fallen;
 
 import arc.*;
 import arc.func.*;
+import arc.scene.ui.layout.*;
 import arc.struct.*;
 import mindustry.logic.*;
+import mindustry.logic.LExecutor.*;
 import mindustry.logic.LStatements.*;
 
 /**
@@ -92,6 +94,48 @@ public final class FdLogicQol{
             }
             return g;
         });
+    }
+
+    public static class LabelStatement extends LStatement{
+        public String labelName = "label";
+
+        @Override
+        public void build(Table table){
+            table.add("label").padLeft(4);
+            table.field(labelName, v -> labelName = v).growX().pad(4);
+        }
+
+        @Override
+        public LInstruction build(LAssembler builder){
+            return null;
+        }
+
+        @Override
+        public void write(StringBuilder builder){
+            builder.append("label ").append(labelName);
+        }
+    }
+
+    public static class GroupStatement extends LStatement{
+        public String groupName = "group";
+        public boolean collapsed;
+        public int innerCount;
+
+        @Override
+        public void build(Table table){
+            table.add("group").padLeft(4);
+            table.field(groupName, v -> groupName = v).growX().pad(4);
+        }
+
+        @Override
+        public LInstruction build(LAssembler builder){
+            return null;
+        }
+
+        @Override
+        public void write(StringBuilder builder){
+            builder.append("fdgroup ").append(groupName.replace(' ', '_')).append(" ").append(collapsed ? "1" : "0").append(" ").append(innerCount);
+        }
     }
 
     public static class Snippet{

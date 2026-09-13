@@ -15,14 +15,14 @@ public class ArtilleryBulletType extends BasicBulletType{
         collidesAir = false;
         scaleLife = true;
         hitShake = 1f;
-        hitSound = Sounds.explosion;
+        hitSound = Sounds.explosionArtillery;
         hitEffect = Fx.flakExplosion;
         shootEffect = Fx.shootBig;
         trailEffect = Fx.artilleryTrail;
 
         //default settings:
         shrinkX = 0.15f;
-        shrinkY = 0.63f;
+        shrinkY = 0.5f;
         shrinkInterp = Interp.slope;
 
         //for trail:
@@ -53,7 +53,7 @@ public class ArtilleryBulletType extends BasicBulletType{
         super.update(b);
 
         if(b.timer(0, (3 + b.fslope() * 2f) * trailMult)){
-            trailEffect.at(b.x, b.y, b.fslope() * trailSize, backColor);
+            trailEffect.at(b.x, b.y, trailRotation ? b.rotation() : b.fslope() * trailSize, backColor);
         }
     }
 }

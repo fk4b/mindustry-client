@@ -10,19 +10,19 @@ import mindustry.logic.LExecutor.*;
 /** "Compiles" a sequence of statements into instructions. */
 public class LAssembler{
     public static ObjectMap<String, Func<String[], LStatement>> customParsers = new ObjectMap<>();
-    public static final int maxTokenLength = 500;
 
-    private static final int invalidNum = Integer.MIN_VALUE;
+    private static final long invalidNumNegative = Long.MIN_VALUE;
+    private static final long invalidNumPositive = Long.MAX_VALUE;
 
-    private int lastVar;
-    /** Maps names to variable IDs. */
-    public ObjectMap<String, BVar> vars = new ObjectMap<>();
+    public boolean privileged;
+    /** Maps names to variable. */
+    public OrderedMap<String, LVar> vars = new OrderedMap<>();
     /** All instructions to be executed. */
     public LInstruction[] instructions;
 
     public LAssembler(){
         //instruction counter
-        putVar("@counter").value = 0;
+        putVar("@counter").isobj = false;
         //currently controlled unit
         putConst("@unit", null);
         //reference to self
@@ -31,8 +31,9 @@ public class LAssembler{
 
     public static LAssembler assemble(String data, boolean privileged){
         LAssembler asm = new LAssembler();
-
         Seq<LStatement> st = read(data, privileged);
+
+        asm.privileged = privileged;
 
         asm.instructions = st.map(l -> l.build(asm)).retainAll(l -> l != null).toArray(LInstruction.class);
         return asm;
@@ -55,42 +56,77 @@ public class LAssembler{
         return new LParser(text, privileged).parse();
     }
 
-    /** @return a variable ID by name.
-     * This may be a constant variable referring to a number or object. */
-    public int var(String symbol){
-        int constId = Vars.logicVars.get(symbol);
-        if(constId > 0){
-            //global constants are *negated* and stored separately
-            return -constId;
-        }
-
-        symbol = symbol.trim();
+    /**
+     * @return a variable by name. This may be a constant variable referring to a number or object.
+     * @param symbol the string literal, numeric literal, or variable name. Leading or trailing spaces are not allowed.
+     * */
+    public LVar var(String symbol){
+        LVar constVar = Vars.logicVars.get(symbol, privileged);
+        if(constVar != null) return constVar;
 
         //string case
-        if(!symbol.isEmpty() && symbol.charAt(0) == '\"' && symbol.charAt(symbol.length() - 1) == '\"'){
-            return putConst("___" + symbol, symbol.substring(1, symbol.length() - 1).replace("\\n", "\n")).id;
+        if(symbol.length() > 1 && symbol.charAt(0) == '\"' && symbol.charAt(symbol.length() - 1) == '\"'){
+            return putConst("___" + symbol, unescape(symbol.substring(1, symbol.length() - 1)));
         }
 
-        //remove spaces for non-strings
-        symbol = symbol.replace(' ', '_');
-
+        //use a positive invalid number if number might be negative, else use a negative invalid number
         double value = parseDouble(symbol);
 
-        if(value == invalidNum){
-            return putVar(symbol).id;
+        if(Double.isNaN(value)){
+            return putVar(symbol);
         }else{
+            if(Double.isInfinite(value)) value = 0.0;
             //this creates a hidden const variable with the specified value
-            return putConst("___" + value, value).id;
+            return putConst("___" + value, value);
         }
+    }
+
+    /** Decodes \n, \", \\ and uXXXX escape sequences in a string literal's contents (quotes already stripped). */
+    static String unescape(String s){
+        if(s.indexOf('\\') == -1) return s;
+
+        StringBuilder out = new StringBuilder(s.length());
+        for(int i = 0; i < s.length(); i++){
+            char c = s.charAt(i);
+            if(c == '\\' && i + 1 < s.length()){
+                char next = s.charAt(i + 1);
+                if(next == 'n'){
+                    out.append('\n');
+                    i ++;
+                    continue;
+                }else if(next == '"' || next == '\\'){
+                    out.append(next);
+                    i ++;
+                    continue;
+                }else if(next == 'u' && i + 5 < s.length()){
+                    out.append((char)Integer.parseInt(s.substring(i + 2, i + 6), 16));
+                    i += 5;
+                    continue;
+                }
+            }
+            out.append(c);
+        }
+        return out.toString();
     }
 
     double parseDouble(String symbol){
         //parse hex/binary syntax
-        if(symbol.startsWith("0b")) return Strings.parseLong(symbol, 2, 2, symbol.length(), invalidNum);
-        if(symbol.startsWith("0x")) return Strings.parseLong(symbol, 16, 2, symbol.length(), invalidNum);
+        if(symbol.startsWith("0b")) return parseLong(false, symbol, 2, 2, symbol.length());
+        if(symbol.startsWith("+0b")) return parseLong(false, symbol, 2, 3, symbol.length());
+        if(symbol.startsWith("-0b")) return parseLong(true,symbol,  2, 3, symbol.length());
+        if(symbol.startsWith("0x")) return parseLong(false,symbol,  16, 2, symbol.length());
+        if(symbol.startsWith("+0x")) return parseLong(false,symbol,  16, 3, symbol.length());
+        if(symbol.startsWith("-0x")) return parseLong(true,symbol,  16, 3, symbol.length());
+        if(symbol.startsWith("%[") && symbol.endsWith("]") && symbol.length() > 3) return parseNamedColor(symbol);
         if(symbol.startsWith("%") && (symbol.length() == 7 || symbol.length() == 9)) return parseColor(symbol);
 
-        return Strings.parseDouble(symbol, invalidNum);
+        return Strings.parseDouble(symbol, Double.NaN);
+    }
+
+    double parseLong(boolean negative, String s, int radix, int start, int end) {
+        long usedInvalidNum = negative ? invalidNumPositive : invalidNumNegative;
+        long l = Strings.parseLong(s, radix, start, end, usedInvalidNum);
+        return l == usedInvalidNum ? Double.NaN : negative ? -l : l;
     }
 
     double parseColor(String symbol){
@@ -103,49 +139,43 @@ public class LAssembler{
         return Color.toDoubleBits(r, g, b, a);
     }
 
+    double parseNamedColor(String symbol){
+        Color color = Colors.get(symbol.substring(2, symbol.length() - 1));
+
+        return color == null ? Double.NaN : color.toDoubleBits();
+    }
+
     /** Adds a constant value by name. */
-    public BVar putConst(String name, Object value){
-        BVar var = putVar(name);
+    public LVar putConst(String name, Object value){
+        LVar var = putVar(name);
+        if(value instanceof Number number){
+            var.isobj = false;
+            var.numval = number.doubleValue();
+            var.objval = null;
+        }else{
+            var.isobj = true;
+            var.objval = value;
+        }
         var.constant = true;
-        var.value = value;
         return var;
     }
 
     /** Registers a variable name mapping. */
-    public BVar putVar(String name){
+    public LVar putVar(String name){
         if(vars.containsKey(name)){
             return vars.get(name);
         }else{
-            BVar var = new BVar(lastVar++);
+            //variables are null objects by default
+            LVar var = new LVar(name);
+            var.isobj = true;
             vars.put(name, var);
             return var;
         }
     }
 
     @Nullable
-    public BVar getVar(String name){
+    public LVar getVar(String name){
         return vars.get(name);
     }
 
-    /** A variable "builder". */
-    public static class BVar{
-        public int id;
-        public boolean constant;
-        public Object value;
-
-        public BVar(int id){
-            this.id = id;
-        }
-
-        BVar(){}
-
-        @Override
-        public String toString(){
-            return "BVar{" +
-            "id=" + id +
-            ", constant=" + constant +
-            ", value=" + value +
-            '}';
-        }
-    }
 }

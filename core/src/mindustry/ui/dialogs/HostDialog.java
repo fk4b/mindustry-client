@@ -3,13 +3,12 @@ package mindustry.ui.dialogs;
 import arc.*;
 import arc.scene.ui.*;
 import arc.util.*;
-import mindustry.*;
-import mindustry.core.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
+import mindustry.net.*;
 import mindustry.ui.*;
 
-import java.io.*;
+import java.util.*;
 
 import static mindustry.Vars.*;
 
@@ -43,9 +42,22 @@ public class HostDialog extends BaseDialog{
 
             cont.add().width(65f);
 
-            cont.check("@steam.friendsonly", !Core.settings.getBool("steampublichost"), val -> Core.settings.put("steampublichost", !val)).colspan(2).left()
+            cont.check("@steam.friendsonly", !Core.settings.getBool("steampublichost2"), val -> Core.settings.put("steampublichost2", !val)).colspan(2).left()
                 .with(c -> ui.addDescTooltip(c, "@steam.friendsonly.tooltip")).padBottom(15f).row();
         }
+
+        cont.row();
+
+        TextField[] portField = {null};
+
+        cont.table(t -> {
+            t.add("@server.port").padRight(10);
+            portField[0] = t.field(String.valueOf(Core.settings.getInt("port", port)), text -> Core.settings.put("port", Strings.parseInt(text, 6567)))
+            .pad(8).grow().maxTextLength(5).valid(text -> {
+                int port = Strings.parseInt(text);
+                return port >= 1 && port <= 65535;
+            }).get();
+        }).width(w).height(70f).pad(4).colspan(3);
 
         cont.row();
 
@@ -58,7 +70,7 @@ public class HostDialog extends BaseDialog{
             }
 
             runHost();
-        }).width(w).height(70f);
+        }).width(w).height(70f).disabled(b -> !portField[0].isValid());
 
         if(!steam){
             cont.button("?", () -> ui.showInfo("@host.info")).size(65f, 70f).padLeft(6f);
@@ -77,21 +89,15 @@ public class HostDialog extends BaseDialog{
         ui.loadfrag.show("@hosting");
         Time.runTask(5f, () -> {
             try{
-                net.host(Vars.port);
-                player.admin = true;
-                Events.fire(new HostEvent());
-
-                if(steam && Core.settings.getBool("steampublichost")){
-                    if(Version.modifier.contains("beta") || Version.modifier.contains("alpha")){
-                        Core.settings.put("steampublichost", false);
-                        platform.updateLobby();
-                        Core.settings.getBoolOnce("betapublic", () -> ui.showInfo("@public.beta"));
-                    }
+                if(steam){
+                    SteamAdmin.fetch();
                 }
 
-
-            }catch(IOException e){
-                ui.showException("@server.error", e);
+                net.host(Core.settings.getInt("port", port));
+                player.admin = true;
+                Events.fire(new HostEvent());
+            }catch(Exception e){
+                ui.showException(e.getMessage() != null && e.getMessage().toLowerCase(Locale.ROOT).contains("address already in use") ? "@server.error.addressinuse" : "@server.error", e);
             }
             ui.loadfrag.hide();
             hide();

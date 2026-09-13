@@ -23,11 +23,15 @@ import mindustry.game.EventType.*;
 import mindustry.game.Schematic.*;
 import mindustry.gen.*;
 import mindustry.input.*;
+import mindustry.input.InputHandler.*;
 import mindustry.input.Placement.*;
 import mindustry.io.*;
+import mindustry.io.TypeIO.*;
+import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.ConstructBlock.*;
 import mindustry.world.blocks.distribution.*;
+import mindustry.world.blocks.environment.*;
 import mindustry.world.blocks.legacy.*;
 import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.sandbox.*;
@@ -48,6 +52,7 @@ public class Schematics implements Loadable{
 
     private static final byte[] header = {'m', 's', 'c', 'h'};
     private static final byte version = 1;
+    private static final boolean limitSchematicSize = false;
 
     private static final int padding = 2;
     private static final int maxPreviewsMobile = 32;
@@ -64,7 +69,6 @@ public class Schematics implements Loadable{
     private long lastClearTime;
 
     public Schematics(){
-
         Events.on(ClientLoadEvent.class, event -> {
             errorTexture = new Texture("sprites/error.png");
         });
@@ -77,28 +81,33 @@ public class Schematics implements Loadable{
 
     /** Load all schematics in the folder immediately.*/
     public void load(){
+        Time.mark();
         all.clear();
 
-        var await = Seq.<Future<?>>with(mainExecutor.submit(this::loadLoadouts));
+        var await = Seq.<Future<?>>with();
 
-        for(Fi file : schematicDirectory.list()){
-            await.add(mainExecutor.submit(() -> loadFile(file)));
-        }
+        schematicDirectory.walk(file -> {
+            if(file.extEquals(schematicExtension)){
+                await.add(mainExecutor.submit(() -> loadFile(file)));
+            }
+        });
 
         platform.getWorkshopContent(Schematic.class).each(file -> await.add(mainExecutor.submit(() -> loadFile(file))));
 
         //mod-specific schematics, cannot be removed
         mods.listFiles("schematics", (mod, file) -> await.add(mainExecutor.submit(() -> {
             Schematic s = loadFile(file);
-            if(s != null){
-                s.mod = mod;
-            }
+            if(s != null) s.mod = mod;
         })));
 
+        loadLoadouts();
+        Time.mark();
         await.each(Threads::await);
+        Log.debug("Awaited schematics for @ms", Time.elapsed());
         all.sort();
+        Log.debug("Loaded @ schematics in @ms", all.size, Time.elapsed());
 
-        if(shadowBuffer == null){
+        if(shadowBuffer == null && !headless){
             Core.app.post(() -> shadowBuffer = new FrameBuffer(maxSchematicSize + padding + 8, maxSchematicSize + padding + 8));
         }
     }
@@ -113,6 +122,7 @@ public class Schematics implements Loadable{
             previews.remove(target);
         }
 
+        Pools.freeAll(target.tiles, true);
         target.tiles.clear();
         target.tiles.addAll(newSchematic.tiles);
         target.width = newSchematic.width;
@@ -138,10 +148,10 @@ public class Schematics implements Loadable{
 
         try{
             Schematic s = read(file);
-            synchronized(this){
+            synchronized(all){
                 all.add(s);
-                checkLoadout(s, true);
             }
+            checkLoadout(s, true);
 
             //external file from workshop
             if(!s.file.parent().equals(schematicDirectory)){
@@ -163,7 +173,7 @@ public class Schematics implements Loadable{
     public void saveChanges(Schematic s){
         if(s.file != null){
             try{
-                write(s, s.file);
+                write(s, s.file, true);
             }catch(Exception e){
                 ui.showException(e);
             }
@@ -193,6 +203,11 @@ public class Schematics implements Loadable{
         }
     }
 
+    /** Because making this public in foo's only will certainly break some mod */
+    public OrderedMap<Schematic, FrameBuffer> previews(){
+        return previews;
+    }
+
     public boolean hasPreview(Schematic schematic){
         return previews.containsKey(schematic);
     }
@@ -200,12 +215,12 @@ public class Schematics implements Loadable{
     public FrameBuffer getBuffer(Schematic schematic){
         //dispose unneeded previews to prevent memory outage errors.
         //only runs every 2 seconds
-        if(mobile && Time.timeSinceMillis(lastClearTime) > 1000 * 2 && previews.size > maxPreviewsMobile){
+        int max = Core.settings.getInt("maxschematicpreviews", mobile ? maxPreviewsMobile : 0);
+        if(max > 0 && Time.timeSinceMillis(lastClearTime) > 1000 * 2 && previews.size > max){
             Seq<Schematic> keys = previews.orderedKeys().copy();
-            for(int i = 0; i < previews.size - maxPreviewsMobile; i++){
+            for(int i = 0; i < previews.size - max; i++){
                 //dispose and remove unneeded previews
-                previews.get(keys.get(i)).dispose();
-                previews.remove(keys.get(i));
+                previews.remove(keys.get(i)).dispose();
             }
             //update last clear time
             lastClearTime = Time.millis();
@@ -248,20 +263,34 @@ public class Schematics implements Loadable{
             Draw.rect(Tmp.tr1, buffer.getWidth()/2f, buffer.getHeight()/2f, buffer.getWidth(), -buffer.getHeight());
             Draw.color();
 
-            Seq<BuildPlan> plans = schematic.tiles.map(t -> new BuildPlan(t.x, t.y, t.rotation, t.block, t.config));
+            Seq<BuildPlan> plans = schematic.tiles.map(t -> new BuildPlan(t.x, t.y, t.rotation, t.block, t.config){
+                @Override
+                public Tile tile(){
+                    //fake tile to return for previews to work properly
+                    emptyTile.x = (short)x;
+                    emptyTile.y = (short)y;
+                    return emptyTile;
+                }
+            });
 
             Draw.flush();
             //scale each plan to fit schematic
             Draw.trans().scale(resolution / tilesize, resolution / tilesize).translate(tilesize*1.5f, tilesize*1.5f);
 
+            QueryEachable eachPlans = new QueryEachable(null, plans);
+
             //draw plans
             plans.each(req -> {
                 req.animScale = 1f;
                 req.worldContext = false;
-                req.block.drawPlanRegion(req, plans);
+                req.block.drawPlanRegion(req, eachPlans);
             });
 
-            plans.each(req -> req.block.drawPlanConfigTop(req, plans));
+            plans.each(req -> req.block.drawPlanConfigTop(req, eachPlans));
+
+            //reset state
+            emptyTile.x = 0;
+            emptyTile.y = 0;
 
             Draw.flush();
             Draw.trans().idt();
@@ -277,10 +306,17 @@ public class Schematics implements Loadable{
         return previews.get(schematic);
     }
 
-    /** Creates an array of build plans from a schematic's data, centered on the provided x+y coordinates. */
+    /** Creates an array of build plans from a schematic's data, centered on the provided x,y coordinates. */
     public Seq<BuildPlan> toPlans(Schematic schem, int x, int y){
-        return schem.tiles.map(t -> new BuildPlan(t.x + x - schem.width/2, t.y + y - schem.height/2, t.rotation, t.block, t.config).original(t.x, t.y, schem.width, schem.height))
-            .removeAll(s -> (!s.block.isVisible() && !(s.block instanceof CoreBlock)) || !s.block.unlockedNow()).sort(Structs.comparingInt(s -> -s.block.schematicPriority));
+        return toPlans(schem, x, y, true);
+    }
+
+    /** Creates an array of build plans from a schematic's data, centered on the provided x,y coordinates. */
+    public Seq<BuildPlan> toPlans(Schematic schem, int x, int y, boolean checkHidden){
+        return schem.tiles.map(t -> new BuildPlan(t.x + x - schem.width/2, t.y + y - schem.height/2, t.rotation, t.block, t.config))
+            .removeAll(s -> (checkHidden && !s.block.isVisible() && !(
+                s.block instanceof CoreBlock || (s.block.buildVisibility == BuildVisibility.sandboxOnly && s.block.category != Category.defense /*Exclude walls*/)
+            )) || !s.block.unlockedNow()).sort(Structs.comparingInt(s -> -s.block.schematicPriority));
     }
 
     /** @return all the valid loadouts for a specific core type. */
@@ -311,12 +347,14 @@ public class Schematics implements Loadable{
         if((customSchem && (s.width > maxSize || s.height > maxSize
             || s.tiles.contains(t -> t.block.buildVisibility == BuildVisibility.sandboxOnly || !t.block.unlocked()) || cores > 1))) return;
 
-        //place in the cache
-        loadouts.get((CoreBlock)core.block, Seq::new).add(s);
+        synchronized(this){
+            //place in the cache
+            loadouts.get((CoreBlock)core.block, Seq::new).add(s);
 
-        //save non-custom loadout
-        if(!customSchem){
-            defaultLoadouts.put((CoreBlock)core.block, s);
+            //save non-custom loadout
+            if(!customSchem){
+                defaultLoadouts.put((CoreBlock)core.block, s);
+            }
         }
     }
 
@@ -337,7 +375,7 @@ public class Schematics implements Loadable{
         return result;
     }
 
-    /** Adds a schematic to the list, also copying it into the files.*/
+    /** Adds a schematic to the list with the option to import tags. */
     public void add(Schematic schematic){
         all.add(schematic);
         try{
@@ -367,8 +405,12 @@ public class Schematics implements Loadable{
         all.sort();
     }
 
-    /** Creates a schematic from a world selection. */
     public Schematic create(int x, int y, int x2, int y2){
+        return create(x, y, x2, y2, false);
+    }
+
+    /** Creates a schematic from a world selection. */
+    public Schematic create(int x, int y, int x2, int y2, boolean useEnvThings){
         Team team = headless ? null : Vars.player.team();
         NormalizeResult result = Placement.normalizeArea(x, y, x2, y2, 0, false, maxSchematicSize);
         x = result.x;
@@ -380,34 +422,42 @@ public class Schematics implements Loadable{
 
         Seq<Stile> tiles = new Seq<>();
 
-        int minx = x2, miny = y2, maxx = x, maxy = y;
-        boolean found = false;
-        for(int cx = x; cx <= x2; cx++){
-            for(int cy = y; cy <= y2; cy++){
-                Building linked = world.build(cx, cy);
-                if(linked != null && (!linked.isDiscovered(team) || !linked.wasVisible)) continue;
+        if(useEnvThings){
+            //all tiles in the world have a valid floor, so the entire selection will be included
+            x = Math.max(0, x);
+            y = Math.max(0, y);
+            x2 = Math.min(Vars.world.width(), x2);
+            y2 = Math.min(Vars.world.height(), y2);
+        } else {
+            int minx = x2, miny = y2, maxx = x, maxy = y;
+            boolean found = false;
+            for(int cx = x; cx <= x2; cx++){
+                for(int cy = y; cy <= y2; cy++){
+                    Building linked = world.build(cx, cy);
+                    if(linked != null && (!linked.isDiscovered(team) || !linked.wasVisible)) continue;
 
-                Block realBlock = linked == null ? null : linked instanceof ConstructBuild cons ? cons.current : linked.block;
+                    Block realBlock = linked == null ? null : linked instanceof ConstructBuild cons ? cons.current : linked.block;
 
-                if(linked != null && realBlock != null && (realBlock.isVisible() || realBlock instanceof CoreBlock)){
-                    int top = realBlock.size/2;
-                    int bot = realBlock.size % 2 == 1 ? -realBlock.size/2 : -(realBlock.size - 1)/2;
-                    minx = Math.min(linked.tileX() + bot, minx);
-                    miny = Math.min(linked.tileY() + bot, miny);
-                    maxx = Math.max(linked.tileX() + top, maxx);
-                    maxy = Math.max(linked.tileY() + top, maxy);
-                    found = true;
+                    if(linked != null && realBlock != null && (realBlock.isVisible() || realBlock instanceof CoreBlock)){
+                        int top = realBlock.size/2;
+                        int bot = realBlock.size % 2 == 1 ? -realBlock.size/2 : -(realBlock.size - 1)/2;
+                        minx = Math.min(linked.tileX() + bot, minx);
+                        miny = Math.min(linked.tileY() + bot, miny);
+                        maxx = Math.max(linked.tileX() + top, maxx);
+                        maxy = Math.max(linked.tileY() + top, maxy);
+                        found = true;
+                    }
                 }
             }
-        }
 
-        if(found){
-            x = minx;
-            y = miny;
-            x2 = maxx;
-            y2 = maxy;
-        }else{
-            return new Schematic(new Seq<>(), new StringMap(), 1, 1);
+            if(found){
+                x = minx;
+                y = miny;
+                x2 = maxx;
+                y2 = maxy;
+            }else{
+                return new Schematic(new Seq<>(), new StringMap(), 1, 1);
+            }
         }
 
         int width = x2 - x + 1, height = y2 - y + 1;
@@ -415,16 +465,36 @@ public class Schematics implements Loadable{
         IntSet counted = new IntSet();
         for(int cx = ox; cx <= ox2; cx++){
             for(int cy = oy; cy <= oy2; cy++){
-                Building tile = world.build(cx, cy);
-                if(tile != null && (!tile.isDiscovered(team) || !tile.wasVisible)) continue;
-                Block realBlock = tile == null ? null : tile instanceof ConstructBuild cons ? cons.current : tile.block;
+                if(useEnvThings){
+                    Tile tile = world.tile(cx, cy);
+                    if(tile == null) continue;
+                    Floor floor = tile.floor();
+                    if(floor != null){ //i dont think this check is necessary
+                        //config is null, can we copy the tile data somehow?
+                        tiles.add(new Stile(floor, cx + offsetX, cy + offsetY, null, (byte)0));
+                    }
+                    Block block = tile.block();
+                    if(block != null && (block.isStatic() || block instanceof Prop)){
+                        Object config = block instanceof Cliff ? (int)tile.data : null;
+                        tiles.add(new Stile(block, cx + offsetX, cy + offsetY, config, (byte)0));
+                    }
+                    //Add overlay last to support wall ores
+                    Floor overlay = tile.overlay();
+                    if(overlay != null && overlay != Blocks.air){
+                        tiles.add(new Stile(overlay, cx + offsetX, cy + offsetY, null, (byte)0));
+                    }
+                } else {
+                    Building tile = world.build(cx, cy);
+                    if(tile != null && (!tile.isDiscovered(team) || !tile.wasVisible)) continue;
+                    Block realBlock = tile == null ? null : tile instanceof ConstructBuild cons ? cons.current : tile.block;
 
-                if(tile != null && !counted.contains(tile.pos()) && realBlock != null
-                    && (realBlock.isVisible() || realBlock instanceof CoreBlock)){
-                    Object config = !(tile instanceof ConstructBuild cons) ?
-                        tile.config() : cons.lastConfig;
-                    tiles.add(new Stile(realBlock, tile.tileX() + offsetX, tile.tileY() + offsetY, config, (byte)tile.rotation));
-                    counted.add(tile.pos());
+                    if(tile != null && !counted.contains(tile.pos()) && realBlock != null
+                        && (realBlock.isVisible() || realBlock instanceof CoreBlock)){
+                        Object config = !(tile instanceof ConstructBuild cons) ?
+                            tile.config() : cons.lastConfig;
+                        tiles.add(new Stile(realBlock, tile.tileX() + offsetX, tile.tileY() + offsetY, config, (byte)tile.rotation));
+                        counted.add(tile.pos());
+                    }
                 }
             }
         }
@@ -434,9 +504,20 @@ public class Schematics implements Loadable{
 
     /** Converts a schematic to base64. Note that the result of this will always start with 'bXNjaAB'.*/
     public String writeBase64(Schematic schematic){
+        return writeBase64(schematic, true);
+    }
+
+    /** Converts a schematic to base64 with the option to export tags.*/
+    public String writeBase64(Schematic schematic, boolean exportTags){
+        Seq<String> tags = new Seq<>();
+        if (!exportTags) {
+            tags.addAll(schematic.labels);
+            schematic.labels.clear();
+        }
         try{
             out.reset();
             write(schematic, out);
+            schematic.labels.addAll(tags);
             return new String(Base64Coder.encode(out.getBuffer(), out.size()));
         }catch(IOException e){
             throw new RuntimeException(e);
@@ -516,6 +597,21 @@ public class Schematics implements Loadable{
 
     //region IO methods
 
+    public static boolean isSchematic(Fi file){
+        try{
+            try(InputStream input = file.read()){
+                for(byte b : header){
+                    if(input.read() != b){
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }catch(Throwable t){
+            return false;
+        }
+    }
+
     /** Loads a schematic from base64. May throw an exception. */
     public static Schematic readBase64(String schematic){
         try{
@@ -534,7 +630,6 @@ public class Schematics implements Loadable{
         return s;
     }
 
-    private static ThreadLocal<Reads> readsLocal = Threads.local(() -> new Reads(null));
     public static Schematic read(InputStream input) throws IOException{
         for(byte b : header){
             if(input.read() != b){
@@ -544,8 +639,12 @@ public class Schematics implements Loadable{
 
         int ver = input.read();
 
+        if(ver > version) throw new IOException("Unknown version: " + ver + " (are you trying to load a schematic from a newer version of the game?)");
+
         try(DataInputStream stream = new DataInputStream(new InflaterInputStream(input))){
             short width = stream.readShort(), height = stream.readShort();
+
+            if(limitSchematicSize && (width > 128 || height > 128)) throw new IOException("Invalid schematic: Too large (max possible size is 128x128)");
 
             StringMap map = new StringMap();
             int tags = stream.readUnsignedByte();
@@ -553,17 +652,33 @@ public class Schematics implements Loadable{
                 map.put(stream.readUTF(), stream.readUTF());
             }
 
+            ContentMapper mapper = null;
+
+            //set up content mapping if found; this should not fail
+            if(map.containsKey("contentMap")){
+                IntMap<ObjectIntMap<String>> nameMap = JsonIO.json.fromJson(IntMap.class, ObjectIntMap.class, map.get("contentMap", "{}"));
+                IntMap<IntMap<Content>> contentMap = new IntMap<>();
+                for(var entry : nameMap){
+                    var inner = new IntMap<Content>();
+                    contentMap.put(entry.key, inner);
+                    for(var ce : entry.value){
+                        inner.put(ce.value, content.getByName(ContentType.all[entry.key], ce.key));
+                    }
+                }
+                mapper = (type, id) -> contentMap.get(type.ordinal(), IntMap::new).get(id);
+            }
+
             String[] labels = null;
 
             //try to read the categories, but skip if it fails
             try{
                 labels = JsonIO.read(String[].class, map.get("labels", "[]"));
-            }catch(Exception ignored){
-                Log.err(ignored);
+            }catch(Exception err){
+                Log.err(err);
             }
 
             IntMap<Block> blocks = new IntMap<>();
-            byte length = stream.readByte();
+            int length = stream.readUnsignedByte();
             for(int i = 0; i < length; i++){
                 String name = stream.readUTF();
                 Block block = Vars.content.getByName(ContentType.block, SaveFileReader.fallback.get(name, name));
@@ -572,13 +687,15 @@ public class Schematics implements Loadable{
 
             int total = stream.readInt();
 
+            if(limitSchematicSize && total > 128 * 128) throw new IOException("Invalid schematic: Too many blocks.");
+
+            Reads read = new Reads(stream);
+
             Seq<Stile> tiles = new Seq<>(total);
-            var reads = readsLocal.get();
-            reads.input = stream;
             for(int i = 0; i < total; i++){
                 Block block = blocks.get(stream.readByte());
                 int position = stream.readInt();
-                Object config = ver == 0 ? mapConfig(block, stream.readInt(), position) : TypeIO.readObject(reads);
+                Object config = ver == 0 ? mapConfig(block, stream.readInt(), position) : TypeIO.readObject(read, false, mapper);
                 byte rotation = stream.readByte();
                 if(block != Blocks.air){
                     tiles.add(new Stile(block, Point2.x(position), Point2.y(position), config, rotation));
@@ -591,20 +708,41 @@ public class Schematics implements Loadable{
         }
     }
 
-    public static void write(Schematic schematic, Fi file) throws IOException{
-        write(schematic, file.write(false, 1024));
+    public static void write(Schematic schematic, Fi file) throws IOException {
+        write(schematic, file.write(false, 1024), false);
     }
 
-    public static void write(Schematic schematic, OutputStream output) throws IOException{
+    public static void write(Schematic schematic, Fi file, boolean tags) throws IOException{
+        write(schematic, file.write(false, 1024), tags);
+    }
+
+    public static void write(Schematic schematic, OutputStream output) throws IOException {
+        write(schematic, output, false);
+    }
+
+    public static void write(Schematic schematic, OutputStream output, boolean tags) throws IOException{
         output.write(header);
         output.write(version);
 
         try(DataOutputStream stream = new DataOutputStream(new DeflaterOutputStream(output))){
+            Writes write = new Writes(stream);
 
             stream.writeShort(schematic.width);
             stream.writeShort(schematic.height);
 
-            schematic.tags.put("labels", JsonIO.write(schematic.labels.toArray(String.class)));
+            if (tags || Core.settings.getBool("schematicmenuexporttags")) {
+                schematic.tags.put("labels", JsonIO.write(schematic.labels.toArray(String.class)));
+            }
+
+            //write a map for content name -> id to make sure remapping doesn't occur
+            IntMap<ObjectIntMap<String>> contentMap = new IntMap<>();
+            for(var tile : schematic.tiles){
+                if(tile.config instanceof MappableContent c){
+                    contentMap.get(c.getContentType().ordinal(), ObjectIntMap::new).put(c.name, c.id);
+                }
+            }
+
+            schematic.tags.put("contentMap", JsonIO.write(contentMap));
 
             stream.writeByte(schematic.tags.size);
             for(var e : schematic.tags.entries()){
@@ -626,7 +764,7 @@ public class Schematics implements Loadable{
             for(Stile tile : schematic.tiles){
                 stream.writeByte(blocks.orderedItems().indexOf(tile.block));
                 stream.writeInt(Point2.pack(tile.x, tile.y));
-                TypeIO.writeObject(Writes.get(stream), tile.config);
+                TypeIO.writeObject(write, tile.config);
                 stream.writeByte(tile.rotation);
             }
         }
@@ -658,7 +796,7 @@ public class Schematics implements Loadable{
 
     private static Schematic rotated(Schematic input, boolean counter){
         int direction = Mathf.sign(counter);
-        Schematic schem = input == tmpSchem ? tmpSchem2 : tmpSchem2;
+        Schematic schem = input == tmpSchem ? tmpSchem2 : tmpSchem;
         schem.width = input.width;
         schem.height = input.height;
         Pools.freeAll(schem.tiles);

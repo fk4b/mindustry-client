@@ -12,6 +12,7 @@ import mindustry.world.blocks.power.*;
 import mindustry.world.blocks.power.ConsumeGenerator.*;
 import mindustry.world.consumers.*;
 import org.junit.jupiter.api.*;
+import test.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.DynamicTest.*;
@@ -25,6 +26,11 @@ public class ConsumeGeneratorTests extends PowerTestFixture{
     private ConsumeGeneratorBuild build;
     private final float fakeItemDuration = 60f; //ticks
     private final float maximumLiquidUsage = 1f;
+
+    @BeforeAll
+    static void init(){
+        ApplicationTests.launchApplication(false);
+    }
 
     public void createGenerator(InputType inputType){
         Vars.state = new GameState();
@@ -98,7 +104,7 @@ public class ConsumeGeneratorTests extends PowerTestFixture{
         //reset
         Time.setDeltaProvider(() -> 0.5f);
 
-        assertEquals(expectedEfficiency, build.efficiency(), inputType + " | " + parameterDescription + ": Base input efficiency mismatch.");
+        assertEquals(expectedEfficiency, build.efficiency, inputType + " | " + parameterDescription + ": Base input efficiency mismatch.");
         assertEquals(expectedRemainingLiquidAmount, build.liquids.get(liquid), inputType + " | " + parameterDescription + ": Remaining liquid amount mismatch.");
         assertEquals(expectedOutputEfficiency, build.productionEfficiency, inputType + " | " + parameterDescription + ": Output production efficiency mismatch.");
     }

@@ -1,7 +1,6 @@
 package mindustry.entities;
 
 import arc.math.*;
-import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
@@ -11,9 +10,9 @@ import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.meta.*;
 
-public class Puddles{
-    private static final IntMap<Puddle> map = new IntMap<>();
+import static mindustry.Vars.*;
 
+public class Puddles{
     public static final float maxLiquid = 70f;
 
     /** Deposits a Puddle between tile and source. */
@@ -27,8 +26,8 @@ public class Puddles{
     }
 
     /** Returns the Puddle on the specified tile. May return null. */
-    public static Puddle get(Tile tile){
-        return map.get(tile.pos());
+    public static @Nullable Puddle get(Tile tile){
+        return tile == null ? null : world.tiles.getPuddle(tile.array());
     }
 
     public static void deposit(Tile tile, Tile source, Liquid liquid, float amount, boolean initial){
@@ -54,10 +53,10 @@ public class Puddles{
             return;
         }
 
-        if(tile.floor().isLiquid && !canStayOn(liquid, tile.floor().liquidDrop)){
+        if(tile.floor().isLiquid && tile.floor().liquidDrop != null && !canStayOn(liquid, tile.floor().liquidDrop)){
             reactPuddle(tile.floor().liquidDrop, liquid, amount, tile, ax, ay);
 
-            Puddle p = map.get(tile.pos());
+            Puddle p = get(tile);
 
             if(initial && p != null && p.lastRipple <= Time.time - 40f){
                 Fx.ripple.at(ax, ay, 1f, tile.floor().liquidDrop.color);
@@ -68,16 +67,16 @@ public class Puddles{
 
         if(tile.floor().solid) return;
 
-        Puddle p = map.get(tile.pos());
+        Puddle p = get(tile);
         if(p == null || p.liquid == null){
             if(!Vars.net.client()){
                 //do not create puddles clientside as that destroys syncing
                 Puddle puddle = Puddle.create();
                 puddle.tile = tile;
                 puddle.liquid = liquid;
-                puddle.amount = amount;
+                puddle.amount = Math.min(amount, maxLiquid);
                 puddle.set(ax, ay);
-                map.put(tile.pos(), puddle);
+                register(puddle);
                 puddle.add();
             }
         }else if(p.liquid == liquid){
@@ -98,14 +97,20 @@ public class Puddles{
         }
     }
 
+    public static boolean hasLiquid(Tile tile, Liquid liquid){
+        if(tile == null) return false;
+        var p = get(tile);
+        return p != null && p.liquid == liquid && p.amount >= 0.5f;
+    }
+
     public static void remove(Tile tile){
         if(tile == null) return;
 
-        map.remove(tile.pos());
+        world.tiles.setPuddle(tile.array(), null);
     }
 
     public static void register(Puddle puddle){
-        map.put(puddle.tile().pos(), puddle);
+        world.tiles.setPuddle(puddle.tile.array(), puddle);
     }
 
     /** Reacts two liquids together at a location. */
@@ -127,7 +132,7 @@ public class Puddles{
             if(Mathf.chance(0.8f * amount)){
                 Fx.steam.at(x, y);
             }
-            return -0.4f * amount;
+            return -0.7f * amount;
         }
         return dest.react(liquid, amount, tile, x, y);
     }

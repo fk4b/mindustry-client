@@ -60,10 +60,11 @@ public class ConsumePayloadDynamic extends Consume{
         var inv = build.getPayloads();
         var pay = payloads.get(build);
 
+        table.clear();
         table.table(c -> {
             int i = 0;
             for(var stack : pay){
-                c.add(new ReqImage(new ItemImage(stack.item.uiIcon, Math.round(stack.amount * multiplier.get(build))),
+                c.add(new ReqImage(StatValues.stack(stack.item, Math.round(stack.amount * multiplier.get(build))),
                 () -> inv.contains(stack.item, Math.round(stack.amount * multiplier.get(build))))).padRight(8);
                 if(++i % 4 == 0) c.row();
             }

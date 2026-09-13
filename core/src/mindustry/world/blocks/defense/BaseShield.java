@@ -4,6 +4,7 @@ import arc.func.*;
 import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
+import arc.struct.*;
 import arc.util.*;
 import arc.util.io.*;
 import mindustry.content.*;
@@ -19,6 +20,10 @@ public class BaseShield extends Block{
     //TODO game rule? or field? should vary by base.
     public float radius = 200f;
     public int sides = 24;
+
+    public @Nullable Color shieldColor;
+
+    public static Seq<BaseShield> baseShields = new Seq<>(2);
 
     protected static BaseShieldBuild paramBuild;
     //protected static Effect paramEffect;
@@ -60,6 +65,10 @@ public class BaseShield extends Block{
         hasPower = true;
         update = solid = true;
         rebuildable = false;
+
+        baseShields.add(this);
+        if(baseShields.size > 2) baseShields.shrink(); // Modded shields will grow the seq, we may as well just keep it as small as we can
+        allowedInPayloads = false;
     }
 
     @Override
@@ -77,7 +86,7 @@ public class BaseShield extends Block{
     }
 
     public class BaseShieldBuild extends Building{
-        public boolean broken = false; //TODO
+        public boolean broken = false;
         public float hit = 0f;
         public float smoothRadius;
 
@@ -125,7 +134,7 @@ public class BaseShield extends Block{
 
                 Draw.z(Layer.shields);
 
-                Draw.color(team.color, Color.white, Mathf.clamp(hit));
+                Draw.color(shieldColor == null ? team.color : shieldColor, Color.white, Mathf.clamp(hit));
 
                 if(renderer.animateShields){
                     Fill.poly(x, y, sides, radius);

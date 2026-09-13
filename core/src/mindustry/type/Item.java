@@ -47,8 +47,6 @@ public class Item extends UnlockableContent implements Senseable{
     /** If true, this material is used by buildings. If false, this material will be incinerated in certain cores. */
     public boolean buildable = true;
     public boolean hidden = false;
-    /** For mods. Adds this item to the listed planets' hidden items Seq. */
-    public @Nullable Planet[] hiddenOnPlanets;
 
     public Item(String name, Color color){
         super(name);
@@ -60,14 +58,9 @@ public class Item extends UnlockableContent implements Senseable{
     }
 
     @Override
-    public void init(){
-        super.init();
-
-        if(hiddenOnPlanets != null){
-            for(Planet planet : hiddenOnPlanets){
-                planet.hiddenItems.add(this);
-            }
-        }
+    public boolean isOnPlanet(Planet planet){
+        //hidden items should not appear on any planet's resource selection screen
+        return super.isOnPlanet(planet) && !hidden;
     }
 
     @Override
@@ -102,7 +95,6 @@ public class Item extends UnlockableContent implements Senseable{
 
             Events.run(Trigger.update, () -> {
                 int frame = (int)(Time.globalTime / frameTime) % regions.length;
-
                 fullIcon.set(regions[frame]);
                 uiIcon.set(regions[frame]);
             });
@@ -136,7 +128,7 @@ public class Item extends UnlockableContent implements Senseable{
             var pixmaps = new PixmapRegion[frames];
 
             for(int i = 0; i < frames; i++){
-                pixmaps[i] = Core.atlas.getPixmap(name + (i + 1));
+                pixmaps[i] = packer.get(name + (i + 1));
             }
 
             for(int i = 0; i < frames; i++){
@@ -146,6 +138,7 @@ public class Item extends UnlockableContent implements Senseable{
 
                     Pixmap res = Pixmaps.blend(pixmaps[i], pixmaps[(i + 1) % frames], f);
                     packer.add(PageType.main, name + "-t" + index, res);
+                    res.dispose();
                 }
             }
         }

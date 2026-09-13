@@ -27,7 +27,7 @@ public class BasicBulletType extends BulletType{
         super(speed, damage);
         this.sprite = bulletSprite;
     }
-    
+
     public BasicBulletType(float speed, float damage){
         this(speed, damage, "bullet");
     }
@@ -47,7 +47,6 @@ public class BasicBulletType extends BulletType{
 
     @Override
     public void draw(Bullet b){
-        if (UnitType.alpha == 0) return;
         super.draw(b);
         float shrink = shrinkInterp.apply(b.fout());
         float height = this.height * ((1f - shrinkY) + shrinkY * shrink);

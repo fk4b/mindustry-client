@@ -17,14 +17,14 @@ public class Weathers{
     suspendParticles;
 
     public static void load(){
-        snow = new ParticleWeather("snow"){{
+        snow = new ParticleWeather("snowing"){{
             particleRegion = "particle";
             sizeMax = 13f;
             sizeMin = 2.6f;
             density = 1200f;
             attrs.set(Attribute.light, -0.15f);
 
-            sound = Sounds.windhowl;
+            sound = Sounds.windHowl;
             soundVol = 0f;
             soundVolOscMag = 1.5f;
             soundVolOscScl = 1100f;

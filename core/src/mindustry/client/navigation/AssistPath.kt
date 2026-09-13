@@ -45,7 +45,7 @@ class AssistPath(
     private var orbitPaused = false
     private val safeHoldOffset = Vec2()
 
-    companion object {
+    companion object { // Events.remove is weird, so we just create the hooks once instead
         private var lastType: Type = Type.Regular
         private var lastAssisted: String? = null
 
@@ -152,12 +152,10 @@ class AssistPath(
             }
             // Re-follow after map load if we were assisting this player and freecam wasn't moved
             Events.on(UnitChangeEventClient::class.java) {
-                if (it.player.hasLoadedMap || it.oldUnit != null) return@on
-                if (it.player.name != lastAssisted) return@on
-                if (Navigation.currentlyFollowing != null) return@on
-                val input = control.input as? DesktopInput ?: return@on
-                if (input.moved) return@on
-                Navigation.follow(AssistPath(it.player, lastType, Core.settings.getBool("circleassist")))
+                if (it.player.hasLoadedMap || it.oldUnit != null || it.player.name != lastAssisted) return@on
+                if (Navigation.currentlyFollowing == null && lastAssisted != null && (control.input as? DesktopInput)?.moved == false) {
+                    Navigation.follow(AssistPath(it.player, lastType, Core.settings.getBool("circleassist")))
+                }
             }
         }
     }
@@ -206,18 +204,19 @@ class AssistPath(
             }
         }
 
-        if (assisting.isBuilder && player.isBuilder) {
-            if (assisting.unit().updateBuilding && assisting.team() == player.team()) {
-                plans.forEach { player.unit().removeBuild(it.x, it.y, it.breaking) }
-                plans.clear()
-                val skipBridges = Core.settings.getBool("assistfixfd", false)
-                for (plan in assisting.unit().plans) {
-                    if (BuildPlanCommunicationSystem.isNetworking(plan)) continue
-                    if (skipBridges && (plan.block is PowerNode || plan.block is ItemBridge || plan.block is LiquidBridge)) continue
-                    plans.add(plan)
-                    player.unit().addBuild(plan, false)
-                }
+        if (assisting.isBuilder && player.isBuilder && assisting.unit().updateBuilding && assisting.team() == player.team()) {
+            plans.forEach { player.unit().removeBuild(it.x, it.y, it.breaking) }
+            plans.clear()
+            val skipBridges = Core.settings.getBool("assistfixfd", false)
+            for (plan in assisting.unit().plans) {
+                if (BuildPlanCommunicationSystem.isNetworking(plan)) continue
+                if (skipBridges && (plan.block is PowerNode || plan.block is ItemBridge || plan.block is LiquidBridge)) continue
+                plans.add(plan)
+                player.unit().addBuild(plan, false)
             }
+        } else { // The player isn't building, we shouldn't be either.
+            plans.forEach { player.unit().removeBuild(it.x, it.y, it.breaking) }
+            plans.clear()
         }
     }
 
@@ -422,7 +421,7 @@ class AssistPath(
     }
 
     override fun progress(): Float {
-        if (assisting != null && !assisting.isAdded) {
+        if (assisting?.isAdded == false) {
             (control.input as? DesktopInput)?.moved = false
             lastAssisted = assisting.name
         }

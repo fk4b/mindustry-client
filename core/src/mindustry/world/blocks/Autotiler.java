@@ -1,5 +1,6 @@
 package mindustry.world.blocks;
 
+import arc.func.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.math.geom.*;
@@ -18,6 +19,23 @@ public interface Autotiler{
     class AutotilerHolder{
         static final int[] blendresult = new int[5];
         static final BuildPlan[] directionals = new BuildPlan[4];
+
+        static BuildPlan plan;
+        static final Boolf<BuildPlan> blendFinder = other -> {
+            if(other.breaking || other == plan) return false;
+
+            int i = 0;
+            for(Point2 point : Geometry.d4){
+                int x = plan.x + point.x, y = plan.y + point.y;
+                if(x >= other.x -(other.block.size - 1) / 2 && x <= other.x + (other.block.size / 2) && y >= other.y -(other.block.size - 1) / 2 && y <= other.y + (other.block.size / 2)){
+                    directionals[i] = other;
+                }
+                i++;
+            }
+
+            //this technically doesn't "find" anything, since it needs to scan up to 4 conveyors in every direction.
+            return false;
+        };
     }
 
     /**
@@ -56,26 +74,15 @@ public interface Autotiler{
         return region;
     }
 
-    default @Nullable int[] getTiling(BuildPlan req, Eachable<BuildPlan> list){
-        if(req.tile() == null) return null;
+    default @Nullable int[] getTiling(BuildPlan plan, Eachable<BuildPlan> list){
+        if(plan.tile() == null) return null;
         BuildPlan[] directionals = AutotilerHolder.directionals;
 
         Arrays.fill(directionals, null);
-        //TODO this is O(n^2), very slow, should use quadtree or intmap or something instead
-        list.each(other -> {
-            if(other.breaking || other == req || other.block == null) return;
+        AutotilerHolder.plan = plan;
+        Block.findPlan(list, plan.x, plan.y, plan.block.size + 2, AutotilerHolder.blendFinder);
 
-            int i = 0;
-            for(Point2 point : Geometry.d4){
-                int x = req.x + point.x, y = req.y + point.y;
-                if(x >= other.x -(other.block.size - 1) / 2 && x <= other.x + (other.block.size / 2) && y >= other.y -(other.block.size - 1) / 2 && y <= other.y + (other.block.size / 2)){
-                    directionals[i] = other;
-                }
-                i++;
-            }
-        });
-
-        return buildBlending(req.tile(), req.rotation, directionals, req.worldContext);
+        return buildBlending(plan.tile(), plan.rotation, directionals, plan.worldContext);
     }
 
     /**
@@ -189,14 +196,14 @@ public interface Autotiler{
 
     default boolean blendsArmored(Tile tile, int rotation, int otherx, int othery, int otherrot, Block otherblock){
         return Point2.equals(tile.x + Geometry.d4(rotation).x, tile.y + Geometry.d4(rotation).y, otherx, othery)
-                || ((!otherblock.rotatedOutput(otherx, othery) && Edges.getFacingEdge(otherblock, otherx, othery, tile) != null &&
+                || ((!otherblock.rotatedOutput(otherx, othery, tile) && Edges.getFacingEdge(otherblock, otherx, othery, tile) != null &&
                 Edges.getFacingEdge(otherblock, otherx, othery, tile).relativeTo(tile) == rotation) ||
-                (otherblock.rotatedOutput(otherx, othery) && Point2.equals(otherx + Geometry.d4(otherrot).x, othery + Geometry.d4(otherrot).y, tile.x, tile.y)));
+                (otherblock.rotatedOutput(otherx, othery, tile) && Point2.equals(otherx + Geometry.d4(otherrot).x, othery + Geometry.d4(otherrot).y, tile.x, tile.y)));
     }
 
     /** @return whether this other block is *not* looking at this one. */
     default boolean notLookingAt(Tile tile, int rotation, int otherx, int othery, int otherrot, Block otherblock){
-        return !(otherblock.rotatedOutput(otherx, othery) && Point2.equals(otherx + Geometry.d4(otherrot).x, othery + Geometry.d4(otherrot).y, tile.x, tile.y));
+        return !(otherblock.rotatedOutput(otherx, othery, tile) && Point2.equals(otherx + Geometry.d4(otherrot).x, othery + Geometry.d4(otherrot).y, tile.x, tile.y));
     }
 
     /** @return whether this tile is looking at the other tile, or the other tile is looking at this one.
@@ -206,7 +213,7 @@ public interface Autotiler{
             //block is facing the other
             Point2.equals(tile.x + Geometry.d4(rotation).x, tile.y + Geometry.d4(rotation).y, otherx, othery) ||
             //does not output to rotated direction
-            !otherblock.rotatedOutput(otherx, othery) ||
+            !otherblock.rotatedOutput(otherx, othery, tile) ||
             //other block is facing this one
             Point2.equals(otherx + Geometry.d4(otherrot).x, othery + Geometry.d4(otherrot).y, tile.x, tile.y);
     }

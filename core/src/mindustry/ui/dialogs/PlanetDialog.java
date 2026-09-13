@@ -31,10 +31,13 @@ import mindustry.graphics.*;
 import mindustry.graphics.g3d.PlanetGrid.*;
 import mindustry.graphics.g3d.*;
 import mindustry.input.*;
+import mindustry.io.*;
 import mindustry.maps.*;
 import mindustry.type.*;
+import mindustry.type.Planet.*;
 import mindustry.ui.*;
 import mindustry.world.blocks.storage.*;
+import mindustry.world.blocks.storage.CoreBlock.*;
 
 import static arc.Core.*;
 import static mindustry.Vars.*;
@@ -42,15 +45,8 @@ import static mindustry.graphics.g3d.PlanetRenderer.*;
 import static mindustry.ui.dialogs.PlanetDialog.Mode.*;
 
 public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
-    static final String[] defaultIcons = {
-    "effect", "power", "logic", "units", "liquid", "production", "defense", "turret", "distribution", "crafting",
-    "settings", "cancel", "zoom", "ok", "star", "home", "pencil", "up", "down", "left", "right",
-    "hammer", "warning", "tree", "admin", "map", "modePvp", "terrain",
-    "modeSurvival", "commandRally", "commandAttack",
-    };
-
     //if true, enables launching anywhere for testing
-    public static boolean debugSelect = false;
+    public static boolean debugSelect = false, debugSectorAttackEdit, debugShowNumbers = false;
     public static float sectorShowDuration = 60f * 2.4f;
 
     public final FrameBuffer buffer = new FrameBuffer(2, 2, true);
@@ -60,6 +56,8 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     public PlanetParams state = new PlanetParams();
     public float zoom = 1f;
     public @Nullable Sector selected, hovered, launchSector;
+    /** Must not be null in planet launch mode. */
+    public @Nullable Seq<Planet> launchCandidates;
     public Mode mode = look;
     public boolean launching;
     public Cons<Sector> listener = s -> {};
@@ -73,10 +71,12 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     public Label hoverLabel = new Label("");
 
     private Texture[] planetTextures;
+    private Element mainView;
+    private SectorSelectDialog selectDialog = new SectorSelectDialog();
 
     public PlanetDialog(){
         super("", Styles.fullDialog);
-        
+
         state.renderer = this;
         state.drawUi = true;
 
@@ -84,10 +84,12 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         state.planet = content.getByName(ContentType.planet, Core.settings.getString("lastplanet", "serpulo"));
         if(state.planet == null) state.planet = Planets.serpulo;
 
+        clampZoom();
+
         addListener(new InputListener(){
             @Override
             public boolean keyDown(InputEvent event, KeyCode key){
-                if(event.targetActor == PlanetDialog.this && (key == KeyCode.escape || key == KeyCode.back || key == Core.keybinds.get(Binding.planet_map).key)){
+                if(event.targetActor == PlanetDialog.this && (key == KeyCode.escape || key == KeyCode.back || key == Binding.planetMap.value.key)){
                     if(showing() && newPresets.size > 1){
                         //clear all except first, which is the last sector.
                         newPresets.truncate(1);
@@ -113,9 +115,9 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
             //no multitouch drag
             if(Core.input.getTouches() > 1) return;
 
-            if(showing()){
-                newPresets.clear();
-            }
+            if(showing() && newPresets.peek() != state.planet.getLastSector()) return;
+
+            newPresets.clear();
 
             Vec3 pos = state.camPos;
 
@@ -139,7 +141,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
             @Override
             public boolean scrolled(InputEvent event, float x, float y, float amountX, float amountY){
                 if(event.targetActor == PlanetDialog.this){
-                    zoom = Mathf.clamp(zoom + amountY / 10f, state.planet.minZoom, 2f);
+                    zoom = Mathf.clamp(zoom + amountY / 10f, state.planet.minZoom, state.planet.maxZoom);
                 }
                 return true;
             }
@@ -154,12 +156,23 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                     lastZoom = zoom;
                 }
 
-                zoom = (Mathf.clamp(initialDistance / distance * lastZoom, state.planet.minZoom, 2f));
+                zoom = (Mathf.clamp(initialDistance / distance * lastZoom, state.planet.minZoom, state.planet.maxZoom));
             }
 
             @Override
             public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button){
                 lastZoom = zoom;
+            }
+
+            @Override
+            public void tap(InputEvent event, float x, float y, int count, KeyCode button){
+                var hovered = getHoverPlanet(x, y);
+                if(hovered != null){
+                    var hit = scene.hit(x, y, true);
+                    if(hit == mainView){
+                        viewPlanet(hovered, false);
+                    }
+                }
             }
         });
 
@@ -167,7 +180,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
         //show selection of Erekir/Serpulo campaign if the user has no bases, and hasn't selected yet (essentially a "have they played campaign before" check)
         shown(() -> {
-            if(!settings.getBool("campaignselect") && !content.planets().contains(p -> p.sectors.contains(s -> s.hasBase()))){
+            if(!settings.getBool("campaignselect") && !content.planets().contains(p -> p.sectors.contains(Sector::hasBase))){
                 var diag = new BaseDialog("@campaign.select");
 
                 Planet[] selected = {null};
@@ -200,6 +213,12 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 }).size(300f, 64f).disabled(b -> selected[0] == null);
 
                 app.post(diag::show);
+            }else if(hadSerpuloRemaps && settings.getBoolOnce("serpulo-remaps-notice")){
+                var diag = new BaseDialog("@campaign.rework.title");
+                diag.cont.add("@campaign.rework.serpulo").labelAlign(Align.center).growX().wrap().maxWidth(500f);
+                diag.buttons.button("@ok", Icon.ok, diag::hide).size(280f, 64f);
+
+                app.post(diag::show);
             }
         });
 
@@ -211,11 +230,6 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 minFilter = magFilter = TextureFilter.linear;
             }}).loaded = t -> planetTextures[fi] = t;
             assets.finishLoadingAsset(names[i]);
-        }
-
-        //unlock defaults for older campaign saves (TODO move? where to?)
-        if(content.planets().contains(p -> p.sectors.contains(s -> s.hasBase())) || Blocks.scatter.unlocked() || Blocks.router.unlocked()){
-            Seq.with(Blocks.junction, Blocks.mechanicalDrill, Blocks.conveyor, Blocks.duo, Items.copper, Items.lead).each(UnlockableContent::quietUnlock);
         }
     }
 
@@ -252,7 +266,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         zoom = 1f;
         state.zoom = 1f;
         state.uiAlpha = 0f;
-        launchSector = Vars.state.getSector();
+        launchSector = Vars.state.gameOver ? null : Vars.state.getSector();
         presetShow = 0f;
         showed = false;
         listener = s -> {};
@@ -261,7 +275,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
         //announce new presets
         for(SectorPreset preset : content.sectors()){
-            if(preset.unlocked() && !preset.alwaysUnlocked && !preset.sector.info.shown && !preset.sector.hasBase() && preset.planet == state.planet){
+            if(preset.unlocked() && preset.sector.preset == preset && !preset.alwaysUnlocked && !preset.sector.info.shown && preset.requireUnlock && !preset.sector.hasBase() && preset.planet == state.planet){
                 newPresets.add(preset.sector);
                 preset.sector.info.shown = true;
                 preset.sector.saveInfo();
@@ -305,7 +319,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     }
 
     void addTech(){
-        buttons.button("@techtree", Icon.tree, () -> ui.research.show()).size(200f, 54f).pad(2).bottom();
+        buttons.button("@techtree", Icon.tree, () -> ui.research.show()).size(200f, 54f).visible(() -> mode == look).pad(2).bottom();
     }
 
     public void showOverview(){
@@ -323,16 +337,17 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     }
 
     //TODO not fully implemented, cutscene needed
-    public void showPlanetLaunch(Sector sector, Cons<Sector> listener){
+    public void showPlanetLaunch(Sector sector, Seq<Planet> launchCandidates, Cons<Sector> listener){
         selected = null;
         hovered = null;
         launching = false;
         this.listener = listener;
+        this.launchCandidates = (launchCandidates == null ? sector.planet.launchCandidates : launchCandidates);
         launchSector = sector;
 
         //automatically select next planets;
-        if(sector.planet.launchCandidates.size == 1){
-            state.planet = sector.planet.launchCandidates.first();
+        if(this.launchCandidates.size == 1){
+            state.planet = this.launchCandidates.first();
             state.otherCamPos = sector.planet.position;
             state.otherCamAlpha = 0f;
 
@@ -343,8 +358,6 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 preset.unlock();
             }
             selected = destSec;
-            updateSelected();
-            rebuildExpand();
         }
 
         //TODO pan over to correct planet
@@ -355,6 +368,13 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         state.uiAlpha = 0f;
 
         mode = planetLaunch;
+
+        updateSelected();
+        rebuildExpand();
+
+        if(sectorTop != null){
+            sectorTop.color.a = 0f;
+        }
 
         super.show();
     }
@@ -378,47 +398,55 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         super.show();
     }
 
-    void lookAt(Sector sector){
+    public void lookAt(Sector sector){
         if(sector.tile == Ptile.empty) return;
 
+        //TODO should this even set `state.planet`? the other lookAt() doesn't, so...
         state.planet = sector.planet;
-        state.camPos.set(Tmp.v33.set(sector.tile.v).rotate(Vec3.Y, -sector.planet.getRotation()));
+        sector.planet.lookAt(sector, state.camPos);
+
+        clampZoom();
+    }
+
+    public void lookAt(Sector sector, float alpha){
+        float len = state.camPos.len();
+        state.camPos.slerp(sector.planet.lookAt(sector, Tmp.v33).setLength(len), alpha);
+    }
+
+    void clampZoom(){
+        zoom = Mathf.clamp(zoom, state.planet.minZoom, state.planet.maxZoom);
     }
 
     boolean canSelect(Sector sector){
         if(mode == select) return sector.hasBase() && launchSector != null && sector.planet == launchSector.planet;
-        //cannot launch to existing sector w/ accelerator TODO test
-        if(mode == planetLaunch) return sector.id == sector.planet.startSector;
+
+        //sectors with addStartingItems = true can't be landed on, as they override the core and items of the interplanetary accelerator
+        //at the moment, this is only true of Ground Zero in vanilla
+        //TODO: maybe relax these restrictions and add better support for these sorts of "tutorial" starting sectors later
+        if(mode == planetLaunch && (sector.hasBase() || (sector.preset != null && sector.preset.addStartingItems))) return false;
+
+        if(sector.planet.generator == null) return false;
+
+        if(sector.isShielded()) return false;
+
         if(sector.hasBase() || sector.id == sector.planet.startSector) return true;
+
         //preset sectors can only be selected once unlocked
-        if(sector.preset != null){
+        if(sector.preset != null && sector.preset.requireUnlock){
             TechNode node = sector.preset.techNode;
-            return node == null || node.parent == null || (node.parent.content.unlocked() && (!(node.parent.content instanceof SectorPreset preset) || preset.sector.hasBase()));
+            return sector.preset.unlocked() || node == null || node.parent == null || (node.parent.content.unlocked() && (!(node.parent.content instanceof SectorPreset preset) || preset.sector.hasBase()));
         }
 
-        return sector.planet.generator != null ?
-            //use planet impl when possible
-            sector.planet.generator.allowLanding(sector) :
-            sector.hasBase() || sector.near().contains(Sector::hasBase); //near an occupied sector
+        return mode == planetLaunch ? sector.planet.generator.allowAcceleratorLanding(sector) : sector.planet.generator.allowLanding(sector);
     }
 
-    Sector findLauncher(Sector to){
-        Sector launchSector = this.launchSector != null && this.launchSector.planet == to.planet && this.launchSector.hasBase() ? this.launchSector : null;
-        //directly nearby.
-        if(to.near().contains(launchSector)) return launchSector;
+    @Nullable Sector findLauncher(Sector to){
+        if(mode == planetLaunch || to.planet.generator == null) return launchSector;
 
-        Sector launchFrom = launchSector;
-        if(launchFrom == null || (to.preset == null && !to.near().contains(launchSector))){
-            //TODO pick one with the most resources
-            launchFrom = to.near().find(Sector::hasBase);
-            if(launchFrom == null && to.preset != null){
-                if(launchSector != null) return launchSector;
-                launchFrom = state.planet.sectors.min(s -> !s.hasBase() ? Float.MAX_VALUE : s.tile.v.dst2(to.tile.v));
-                if(!launchFrom.hasBase()) launchFrom = null;
-            }
-        }
+        Sector actualLaunchSector = (launchSector != null && launchSector.planet == to.planet ? launchSector : null);
 
-        return launchFrom;
+        Sector candidate = to.planet.generator.findLaunchCandidate(to, actualLaunchSector);
+        return candidate == null && actualLaunchSector != null && (mode == planetLaunch || !actualLaunchSector.isAttacked()) ? actualLaunchSector : candidate;
     }
 
     boolean showing(){
@@ -428,21 +456,27 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     @Override
     public void renderSectors(Planet planet){
 
-        //draw all sector stuff
         if(state.uiAlpha > 0.01f){
             for(Sector sec : planet.sectors){
+                if(sec == selected) continue;
+
                 if(canSelect(sec) || sec.unlocked() || debugSelect){
 
                     Color color =
                     sec.hasBase() ? Tmp.c2.set(Team.sharded.color).lerp(Team.crux.color, sec.hasEnemyBase() ? 0.5f : 0f) :
-                    sec.preset != null ?
+                    sec.preset != null && sec.preset.requireUnlock ?
                         sec.preset.unlocked() ? Tmp.c2.set(Team.derelict.color).lerp(Color.white, Mathf.absin(Time.time, 10f, 1f)) :
                         Color.gray :
                     sec.hasEnemyBase() ? Team.crux.color :
                     null;
 
                     if(color != null){
-                        planets.drawSelection(sec, Tmp.c1.set(color).mul(0.8f).a(state.uiAlpha), 0.026f, -0.001f);
+                        var destColor = Tmp.c1.set(color).mul(0.8f).a(state.uiAlpha);
+                        if(!sec.isCaptured() && sec.preset != null && sec.preset.showHidden){
+                            planets.drawSpecialSelection(sec, destColor, 0.026f, -0.001f);
+                        }else{
+                            planets.drawSelection(sec, destColor, 0.026f, -0.001f);
+                        }
                     }
                 }else{
                     planets.fill(sec, Tmp.c1.set(shadowColor).mul(1, 1, 1, state.uiAlpha), -0.001f);
@@ -458,7 +492,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
         //draw hover border
         if(hovered != null){
-            planets.fill(hovered, hoverColor.write(Tmp.c1).mulA(state.uiAlpha), -0.001f);
+            planets.fill(hovered, hoverColor.write(Tmp.c1).mulA(state.uiAlpha), -0.003f);
             planets.drawBorders(hovered, borderColor, state.uiAlpha);
         }
 
@@ -469,55 +503,68 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         }
 
         planets.batch.flush(Gl.triangles);
+    }
 
-        if(hovered != null && !hovered.hasBase()){
-            Sector launchFrom = findLauncher(hovered);
-            if(launchFrom != null && hovered != launchFrom && canSelect(hovered)){
-                planets.drawArc(planet, launchFrom.tile.v, hovered.tile.v);
-            }
+    @Override
+    public void renderOverProjections(Planet planet){
+        Sector hoverOrSelect = hovered != null ? hovered : selected;
+        Sector launchFrom = hoverOrSelect != null && !hoverOrSelect.hasBase() ? findLauncher(hoverOrSelect) : null;
+
+        if(hoverOrSelect != null && !hoverOrSelect.hasBase() && launchFrom != null && hoverOrSelect != launchFrom && canSelect(hoverOrSelect)){
+            planets.drawArcLine(planet, launchFrom.tile.v, hoverOrSelect.tile.v);
+        }
+
+        if(mode == planetLaunch && launchSector != null && selected != null && hovered == null){
+            planets.drawArcLine(planet, launchSector.tile.v, selected.tile.v);
         }
 
         if(state.uiAlpha > 0.001f){
             for(Sector sec : planet.sectors){
+
+                //draw shield arc
+                if(sec.shieldTarget != null && !sec.isCaptured() && !sec.shieldTarget.isCaptured() && (planet.generator.allowLanding(sec) || planet.generator.allowLanding(sec.shieldTarget))){
+                    planets.drawArcLine(planet, sec.tile.v, sec.shieldTarget.tile.v, Team.crux.color.write(Tmp.c2).a(state.uiAlpha), Tmp.c3.set(Tmp.c2).mulA(0.5f), 0.3f, 110f, 25, 0.006f);
+                }
+
                 if(sec.hasBase()){
-                    if(planet.allowSectorInvasion){
+                    //draw vulnerable sector attack arc
+                    if(planet.campaignRules.sectorInvasion){
                         for(Sector enemy : sec.near()){
-                            if(enemy.hasEnemyBase()){
-                                planets.drawArc(planet, enemy.tile.v, sec.tile.v, Team.crux.color.write(Tmp.c2).a(state.uiAlpha), Color.clear, 0.24f, 110f, 25);
+                            if(enemy.hasEnemyBase() && (enemy.preset == null || !enemy.preset.requireUnlock)){
+                                planets.drawArcLine(planet, enemy.tile.v, sec.tile.v, Team.crux.color.write(Tmp.c2).a(state.uiAlpha), Color.clear, 0.24f, 110f, 25, 0.005f);
                             }
                         }
                     }
 
                     if(selected != null && selected != sec && selected.hasBase()){
                         //imports
-                        if(sec.info.getRealDestination() == selected && sec.info.anyExports()){
+                        if(sec.info.destination == selected && sec.info.anyExports()){
                             planets.drawArc(planet, sec.tile.v, selected.tile.v, Color.gray.write(Tmp.c2).a(state.uiAlpha), Pal.accent.write(Tmp.c3).a(state.uiAlpha), 0.4f, 90f, 25);
                         }
                         //exports
-                        if(selected.info.getRealDestination() == sec && selected.info.anyExports()){
+                        if(selected.info.destination == sec && selected.info.anyExports()){
                             planets.drawArc(planet, selected.tile.v, sec.tile.v, Pal.place.write(Tmp.c2).a(state.uiAlpha), Pal.accent.write(Tmp.c3).a(state.uiAlpha), 0.4f, 90f, 25);
                         }
                     }
                 }
             }
         }
-
     }
 
     @Override
     public void renderProjections(Planet planet){
-        float iw = 48f/4f;
+        float iw = 64f/4f;
 
         for(Sector sec : planet.sectors){
             if(sec != hovered){
                 var preficon = sec.icon();
                 var icon =
                     sec.isAttacked() ? Fonts.getLargeIcon("warning") :
-                    !sec.hasBase() && sec.preset != null && sec.preset.unlocked() && preficon == null ?
-                    Fonts.getLargeIcon("terrain") :
-                    sec.preset != null && sec.preset.locked() && sec.preset.techNode != null && !sec.preset.techNode.parent.content.locked() ? Fonts.getLargeIcon("lock") :
+                    !sec.hasBase() && sec.preset != null && ((sec.preset.requireUnlock && sec.preset.unlocked()) || (sec.preset.showHidden && mode == planetLaunch)) && preficon == null ?
+                    (sec.preset != null && ((sec.preset.requireUnlock && sec.preset.unlocked()) || sec.preset.showHidden) ? sec.preset.uiIcon : Fonts.getLargeIcon("terrain")) :
+                    sec.preset != null && sec.preset.requireUnlock && sec.preset.locked() && sec.preset.techNode != null && (sec.preset.techNode.parent == null || !sec.preset.techNode.parent.content.locked()) ? Fonts.getLargeIcon("lock") :
                     preficon;
-                var color = sec.preset != null && !sec.hasBase() ? Team.derelict.color : Team.sharded.color;
+                var color = sec.isAttacked() ? Team.sharded.color : Color.white;
 
                 if(icon != null){
                     planets.drawPlane(sec, () -> {
@@ -526,6 +573,17 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                         Draw.rect(icon, 0, 0, iw, iw * icon.height / icon.width);
                     });
                 }
+            }
+
+            if(debugShowNumbers && (sec.hasEnemyBase() || sec.preset != null)){
+                planets.drawPlane(sec, () -> {
+                    Fonts.outline.getData().setScale(0.5f);
+                    Fonts.outline.setColor(sec.preset == null ? Color.scarlet : Color.white);
+
+                    Fonts.outline.draw(sec.id + "", 0f, 0f, Align.center);
+                    Fonts.outline.setColor(Color.white);
+                    Fonts.outline.getData().setScale(1f);
+                });
             }
         }
 
@@ -536,7 +594,10 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 Draw.color(hovered.isAttacked() ? Pal.remove : Color.white, Pal.accent, Mathf.absin(5f, 1f));
                 Draw.alpha(state.uiAlpha);
 
-                var icon = hovered.locked() && !canSelect(hovered) ? Fonts.getLargeIcon("lock") : hovered.isAttacked() ? Fonts.getLargeIcon("warning") : hovered.icon();
+                var icon =
+                    hovered.locked() && !canSelect(hovered) && hovered.planet.generator != null ? hovered.planet.generator.getLockedIcon(hovered) :
+                    hovered.isAttacked() ? Fonts.getLargeIcon("warning") :
+                    hovered.icon();
 
                 if(icon != null){
                     Draw.rect(icon, 0, 0, iw, iw * icon.height / icon.width);
@@ -550,10 +611,9 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
     }
 
     boolean selectable(Planet planet){
-        //TODO what if any sector is selectable?
-        //TODO launch criteria - which planets can be launched to? Where should this be defined? Should planets even be selectable?
+        if(planet.removed) return false;
         if(mode == select) return planet == state.planet;
-        if(mode == planetLaunch) return launchSector != null && planet != launchSector.planet && launchSector.planet.launchCandidates.contains(planet);
+        if(mode == planetLaunch) return launchSector != null && (launchCandidates.contains(planet) || (planet == launchSector.planet && planet.allowSelfSectorLaunch));
         return (planet.alwaysUnlocked && planet.isLandable()) || planet.sectors.contains(Sector::hasBase) || debugSelect;
     }
 
@@ -568,15 +628,15 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         margin(0f);
 
         stack(
-        new Element(){
+        mainView = new Element(){
             {
                 //add listener to the background rect, so it doesn't get unnecessary touch input
                 addListener(new ElementGestureListener(){
                     @Override
                     public void tap(InputEvent event, float x, float y, int count, KeyCode button){
-                        if(showing()) return;
+                        if(showing() || button != KeyCode.mouseLeft) return;
 
-                        if(hovered != null && selected == hovered && count == 2){
+                        if(hovered != null && selected == hovered && count == 2 && canPlaySector(hovered)){
                             playSelected();
                         }
 
@@ -588,13 +648,71 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                             updateSelected();
                         }
                     }
+
+                    @Override
+                    public void touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
+                        super.touchDown(event, x, y, pointer, button);
+
+                        var hovered = PlanetDialog.this.hovered;
+
+                        if(debugSectorAttackEdit && hovered != null){
+                            if(button == KeyCode.mouseRight){
+                                if(input.shift()){
+                                    hovered.generateEnemyBase = !hovered.generateEnemyBase;
+                                }else{
+                                    selectDialog.show(state.planet, result -> {
+                                        for(var other : state.planet.sectors){
+                                            if(other.preset == result){
+                                                other.preset = null;
+                                            }
+                                        }
+                                        hovered.preset = result;
+                                    });
+                                }
+                            }
+                        }
+                    }
                 });
             }
 
             @Override
             public void act(float delta){
-                if(scene.getDialog() == PlanetDialog.this && !scene.hit(input.mouseX(), input.mouseY(), true).isDescendantOf(e -> e instanceof ScrollPane)){
+                if(scene.getDialog() == PlanetDialog.this && (scene.getHoverElement() == null || !scene.getHoverElement().isDescendantOf(e -> e instanceof ScrollPane))){
                     scene.setScrollFocus(PlanetDialog.this);
+
+                    if(debugSectorAttackEdit){
+                        int timeShift = input.keyDown(KeyCode.rightBracket) ? 1 : input.keyDown(KeyCode.leftBracket) ? -1 : 0;
+                        if(timeShift != 0){
+                            universe.setSeconds(universe.secondsf() + timeShift * Time.delta * 2.5f);
+                        }
+
+                        if(input.keyTap(KeyCode.r)){
+                            state.planet.reloadMeshAsync();
+                        }
+                    }
+
+                    if(debugSectorAttackEdit && input.ctrl() && input.keyTap(KeyCode.s)){
+                        try{
+                            PlanetData data = new PlanetData();
+                            IntSeq attack = new IntSeq();
+                            for(var sector : state.planet.sectors){
+                                if((sector.preset == null || !sector.preset.requireUnlock) && sector.generateEnemyBase){
+                                    attack.add(sector.id);
+                                }
+
+                                if(sector.preset != null && sector.preset.requireUnlock){
+                                    data.presets.put(sector.preset.name, sector.id);
+                                }
+                            }
+                            Log.info("Saving sectors for @: @ presets, @ procedural attack sectors", state.planet.name, data.presets.size, attack.size);
+                            data.attackSectors = attack.toArray();
+                            files.local("planets/" + state.planet.name + ".json").writeString(JsonIO.write(data));
+
+                            ui.showInfoFade("@editor.saved");
+                        }catch(Exception e){
+                            Log.err(e);
+                        }
+                    }
                 }
 
                 super.act(delta);
@@ -609,7 +727,11 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         new Table(t -> {
             t.touchable = Touchable.disabled;
             t.top();
-            t.label(() -> mode == select ? "@sectors.select" : "").style(Styles.outlineLabel).color(Pal.accent);
+            t.label(() ->
+                mode == select ? "@sectors.select" :
+                mode == planetLaunch ? "@sectors.launchselect" :
+                ""
+            ).style(Styles.outlineLabel).color(Pal.accent);
         }),
         buttons,
 
@@ -618,6 +740,10 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
             t.top().left();
             ScrollPane pane = new ScrollPane(null, Styles.smallPane);
             t.add(pane).colspan(2).row();
+            t.button("@campaign.difficulty", Icon.bookSmall, () -> {
+                Vars.ui.campaignRules.show(state.planet);
+            }).margin(12f).size(208f, 40f).padTop(12f).visible(() -> state.planet.allowCampaignRules && mode != planetLaunch).row();
+            t.add().height(64f); //padding for close button
             Table starsTable = new Table(Styles.black);
             pane.setWidget(starsTable);
             pane.setScrollingDisabled(true, false);
@@ -634,15 +760,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 for(Planet planet : content.planets()){
                     if(planet.solarSystem == star && selectable(planet)){
                         Button planetButton = planetTable.button(planet.localizedName, Icon.icons.get(planet.icon + "Small", Icon.icons.get(planet.icon, Icon.commandRallySmall)), Styles.flatTogglet, () -> {
-                            selected = null;
-                            launchSector = null;
-                            if(state.planet != planet){
-                                newPresets.clear();
-                                state.planet = planet;
-
-                                rebuildExpand();
-                            }
-                            settings.put("lastplanet", planet.name);
+                            viewPlanet(planet, false);
                         }).width(200).height(40).update(bb -> bb.setChecked(state.planet == planet)).with(w -> w.marginLeft(10f)).get();
                         planetButton.getChildren().get(1).setColor(planet.iconColor);
                         planetButton.setColor(planet.iconColor);
@@ -652,17 +770,14 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
             }
         }).visible(() -> mode != select),
 
-        new Table(c -> {
-            expandTable = c;
-        })).grow();
-
+        new Table(c -> expandTable = c)).grow();
         rebuildExpand();
     }
 
     void rebuildExpand(){
         Table c = expandTable;
         c.clear();
-        c.visible(() -> !(graphics.isPortrait() && mobile));
+        c.visible(() -> !(graphics.isPortrait() && mobile) && mode != planetLaunch);
         if(state.planet.sectors.contains(Sector::hasBase)){
             int attacked = state.planet.sectors.count(Sector::isAttacked);
 
@@ -726,11 +841,13 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                                     head.image(Icon.warningSmall).update(i -> {
                                         i.color.set(Pal.accent).lerp(Pal.remove, Mathf.absin(Time.globalTime, 9f, 1f));
                                     }).padRight(4f);
+                                }else if(sec.preset != null && sec.preset.requireUnlock){
+                                    head.image(sec.preset.uiIcon).size(iconSmall).padRight(4f);
                                 }
 
                                 String ic = sec.iconChar() == null ? "" : sec.iconChar() + " ";
 
-                                head.add(ic + sec.name()).growX().wrap();
+                                head.add(ic + sec.name()).growX().wrap(true);
                             }).growX().row();
 
                             if(sec.isAttacked()){
@@ -754,6 +871,44 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         }).grow().scrollX(false);
     }
 
+    public Planet getHoverPlanet(float mouseX, float mouseY){
+        Planet hoverPlanet = null;
+        float nearest = Float.POSITIVE_INFINITY;
+
+        for(Planet planet : content.planets()){
+            Ray r = planets.cam.getPickRay(mouseX, mouseY);
+
+            // get planet we're hovering over
+            Vec3 intersect = planet.intersect(r, outlineRad * planet.radius);
+
+            if(intersect != null && selectable(planet) && intersect.dst(r.origin) < nearest){
+                nearest = intersect.dst(r.origin);
+                hoverPlanet = planet;
+            }
+        }
+
+        return hoverPlanet;
+    }
+
+    public void viewPlanet(Planet planet, boolean pan){
+        if(state.planet != planet){
+            selected = null;
+            if(pan){
+                state.otherCamPos = state.planet.position;
+                state.otherCamAlpha = 0;
+            }
+            newPresets.clear();
+            state.planet = planet;
+
+            clampZoom();
+
+            selected = null;
+            updateSelected();
+            rebuildExpand();
+            settings.put("lastplanet", planet.name);
+        }
+    }
+
     @Override
     public void draw(){
         boolean doBuffer = color.a < 0.99f;
@@ -774,11 +929,6 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         }
     }
 
-    public void lookAt(Sector sector, float alpha){
-        float len = state.camPos.len();
-        state.camPos.slerp(Tmp.v31.set(sector.tile.v).rotate(Vec3.Y, -sector.planet.getRotation()).setLength(len), alpha);
-    }
-
     @Override
     public void act(float delta){
         super.act(delta);
@@ -790,32 +940,41 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
             if(Mathf.equal(state.otherCamAlpha, 1f, 0.01f)){
                 //TODO change zoom too
-                state.camPos.set(Tmp.v31.set(state.otherCamPos).lerp(state.planet.position, state.otherCamAlpha).add(state.camPos).sub(state.planet.position));
+                state.camPos.set(Tmp.v31.set(state.otherCamPos).slerp(state.planet.position, state.otherCamAlpha).add(state.camPos).sub(state.planet.position));
 
                 state.otherCamPos = null;
                 //announce new sector
-                newPresets.add(state.planet.sectors.get(state.planet.startSector));
+                if(!state.planet.sectors.isEmpty()){
+                    newPresets.add(state.planet.sectors.get(state.planet.startSector));
+                }
 
             }
         }
 
-        if(hovered != null && !mobile && state.planet.hasGrid()){
+        //fade in sector dialog after panning
+        if(sectorTop != null && state.otherCamPos == null){
+            sectorTop.color.a = Mathf.lerpDelta(sectorTop.color.a, 1f, 0.1f);
+        }
+
+        if(hovered != null && state.planet.hasGrid()){
             addChild(hoverLabel);
             hoverLabel.toFront();
             hoverLabel.touchable = Touchable.disabled;
             hoverLabel.color.a = state.uiAlpha;
 
-            Vec3 pos = planets.cam.project(Tmp.v31.set(hovered.tile.v).setLength(PlanetRenderer.outlineRad * state.planet.radius).rotate(Vec3.Y, -state.planet.getRotation()).add(state.planet.position));
+            Vec3 pos = hovered.planet.project(hovered, planets.cam, Tmp.v31);
             hoverLabel.setPosition(pos.x - Core.scene.marginLeft, pos.y - Core.scene.marginBottom, Align.center);
 
             hoverLabel.getText().setLength(0);
             if(hovered != null){
                 StringBuilder tx = hoverLabel.getText();
                 if(!canSelect(hovered)){
-                    if(mode == planetLaunch){
-                        tx.append("[gray]").append(Iconc.cancel);
-                    }else{
-                        tx.append("[gray]").append(Iconc.lock).append(" ").append(Core.bundle.get("locked"));
+                    if(!(hovered.preset == null && !hovered.planet.allowLaunchToNumbered)){
+                        if(mode == planetLaunch){
+                            tx.append("[gray]").append(Iconc.cancel);
+                        }else if(hovered.planet.generator != null && mode != select){
+                            hovered.planet.generator.getLockedText(hovered, tx);
+                        }
                     }
                 }else{
                     tx.append("[accent][[ [white]").append(hovered.name()).append("[accent] ]");
@@ -870,18 +1029,18 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         state.uiAlpha = Mathf.lerpDelta(state.uiAlpha, Mathf.num(state.zoom < 1.9f), 0.1f);
     }
 
-    void displayItems(Table c, float scl, ObjectMap<Item, ExportStat> stats, String name){
-        displayItems(c, scl, stats, name, t -> {});
+    void displayItems(Table c, ObjectMap<Item, ExportStat> stats, String name){
+        displayItems(c, stats, name, t -> {});
     }
 
-    void displayItems(Table c, float scl, ObjectMap<Item, ExportStat> stats, String name, Cons<Table> builder){
+    void displayItems(Table c, ObjectMap<Item, ExportStat> stats, String name, Cons<Table> builder){
         Table t = new Table().left();
 
         int i = 0;
         for(var item : content.items()){
             var stat = stats.get(item);
             if(stat == null) continue;
-            int total = (int)(stat.mean * 60 * scl);
+            int total = (int)(stat.mean * 60);
             if(total > 1){
                 t.image(item.uiIcon).padRight(3);
                 t.add(UI.formatAmount(total) + " " + Core.bundle.get("unit.perminute")).color(Color.lightGray).padRight(3);
@@ -911,8 +1070,12 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
             c.add(Core.bundle.get("sectors.time") + " [accent]" + sector.save.getPlayTime()).left().row();
 
+            if(sector.info.attempts > 0){
+                c.add(Core.bundle.get("sectors.attempts") + " [accent]" + sector.info.attempts).left().row();
+            }
+
             if(sector.info.waves && sector.hasBase()){
-                c.add(Core.bundle.get("sectors.wave") + " [accent]" + (sector.info.wave + sector.info.wavesPassed)).left().row();
+                c.add(Core.bundle.get("sectors.wave") + " [accent]" + sector.info.wave).left().row();
             }
 
             if(sector.isAttacked() || !sector.hasBase()){
@@ -929,11 +1092,17 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 }).padLeft(10f).left().row();
             }
 
+            boolean lockdown = sector.isAttacked() && !sector.isBeingPlayed();
+
+            if(lockdown){
+                c.add(UI.formatIcons(bundle.get("sector.lockdown"))).wrap().fillX().padBottom(10f).row();
+            }
+
             //production
-            displayItems(c, sector.getProductionScale(), sector.info.production, "@sectors.production");
+            displayItems(c, sector.info.production, "@sectors.production");
 
             //export
-            displayItems(c, sector.getProductionScale(), sector.info.export, "@sectors.export", t -> {
+            displayItems(c, sector.info.export, "@sectors.export", t -> {
                 if(sector.info.destination != null && sector.info.destination.hasBase()){
                     String ic = sector.info.destination.iconChar();
                     t.add(Iconc.rightOpen + " " + (ic == null || ic.isEmpty() ? "" : ic + " ") + sector.info.destination.name()).padLeft(10f).row();
@@ -942,7 +1111,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
             //import
             if(sector.hasBase()){
-                displayItems(c, 1f, sector.info.importStats(sector.planet), "@sectors.import", t -> {
+                displayItems(c, sector.info.imports, "@sectors.import", t -> {
                     sector.info.eachImport(sector.planet, other -> {
                         String ic = other.iconChar();
                         t.add(Iconc.rightOpen + " " + (ic == null || ic.isEmpty() ? "" : ic + " ") + other.name()).padLeft(10f).row();
@@ -997,29 +1166,23 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                     }
                 });
             }else{
-                if(sector.save != null){
-                    sector.save.delete();
-                }
-                sector.save = null;
+                sector.info.items.clear();
+                sector.info.hasCore = false;
+                sector.info.production.clear();
+                sector.saveInfo();
             }
             updateSelected();
+            rebuildList();
         });
     }
 
     void addSurvivedInfo(Sector sector, Table table, boolean wrap){
         if(!wrap){
-            table.add(sector.planet.allowWaveSimulation ? Core.bundle.format("sectors.underattack", (int)(sector.info.damage * 100)) : "@sectors.underattack.nodamage").wrapLabel(wrap).row();
-        }
-
-        if(sector.planet.allowWaveSimulation && sector.info.wavesSurvived >= 0 && sector.info.wavesSurvived - sector.info.wavesPassed >= 0 && !sector.isBeingPlayed()){
-            int toCapture = sector.info.attack || sector.info.winWave <= 1 ? -1 : sector.info.winWave - (sector.info.wave + sector.info.wavesPassed);
-            boolean plus = (sector.info.wavesSurvived - sector.info.wavesPassed) >= SectorDamage.maxRetWave - 1;
-            table.add(Core.bundle.format("sectors.survives", Math.min(sector.info.wavesSurvived - sector.info.wavesPassed, toCapture <= 0 ? 200 : toCapture) +
-            (plus ? "+" : "") + (toCapture < 0 ? "" : "/" + toCapture))).wrapLabel(wrap).row();
+            table.add("@sectors.underattack").wrapLabel(wrap).row();
         }
     }
 
-    void selectSector(Sector sector){
+    public void selectSector(Sector sector){
         selected = sector;
         updateSelected();
     }
@@ -1040,12 +1203,12 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         stable.background(Styles.black6);
 
         stable.table(title -> {
-            title.add("[accent]" + sector.name()).padLeft(3);
-            if(sector.preset == null){
+            title.add("[accent]" + sector.name() + (debugSelect && (sector.info.name != null || sector.preset != null) ? " [lightgray](" + sector.id + ")" : "")).padLeft(3);
+            if(sector.preset == null || (!sector.preset.requireUnlock)){
                 title.add().growX();
 
                 title.button(Icon.pencilSmall, Styles.clearNonei, () -> {
-                   ui.showTextInput("@sectors.rename", "@name", 20, sector.name(), v -> {
+                   ui.showTextInput("@sectors.rename", "@name", 32, sector.name(), v -> {
                        sector.setName(v);
                        updateSelected();
                        rebuildList();
@@ -1058,6 +1221,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                 Icon.icons.get(sector.info.icon + "Small");
 
             title.button(icon == null ? Icon.noneSmall : icon, Styles.clearNonei, iconSmall, () -> {
+                //TODO use IconSelectDialog
                 new Dialog(""){{
                     closeOnBack();
                     setFillParent(true);
@@ -1084,7 +1248,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                             int cols = (int)Math.min(20, Core.graphics.getWidth() / Scl.scl(52f));
 
                             int i = 1;
-                            for(var key : defaultIcons){
+                            for(var key : accessibleIcons){
                                 var value = Icon.icons.get(key);
 
                                 t.button(value, Styles.squareTogglei, () -> {
@@ -1123,7 +1287,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
         stable.image().color(Pal.accent).fillX().height(3f).pad(3f).row();
 
-        boolean locked = sector.preset != null && sector.preset.locked() && !sector.hasBase() && sector.preset.techNode != null;
+        boolean locked = isLocked(sector);
 
         if(locked){
             stable.table(r -> {
@@ -1143,7 +1307,7 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
         if(sector.isAttacked()){
             addSurvivedInfo(sector, stable, false);
-        }else if(sector.hasBase() && sector.planet.allowSectorInvasion && sector.near().contains(Sector::hasEnemyBase)){
+        }else if(sector.hasBase() && sector.planet.campaignRules.sectorInvasion && sector.near().contains(s -> s.hasEnemyBase() && (s.preset == null || !s.preset.requireUnlock))){
             stable.add("@sectors.vulnerable");
             stable.row();
         }else if(!sector.hasBase() && sector.hasEnemyBase()){
@@ -1168,18 +1332,43 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
         }
 
         if((sector.hasBase() && mode == look) || canSelect(sector) || (sector.preset != null && sector.preset.alwaysUnlocked) || debugSelect){
+            if(Vars.showSectorSubmissions){
+                String link = SectorSubmissions.getSectorThread(sector);
+                if(link != null){
+                    stable.button("@sectors.viewsubmission", Icon.link, () -> {
+                        Core.app.openURI(link);
+                    }).growX().height(54f).minWidth(170f).padTop(2f).row();
+                }
+            }
+
+            boolean noCandidate = hasNoCandidate(sector);
+
             stable.button(
                 mode == select ? "@sectors.select" :
                 sector.isBeingPlayed() ? "@sectors.resume" :
                 sector.hasBase() ? "@sectors.go" :
-                locked ? "@locked" : "@sectors.launch",
-                locked ? Icon.lock : Icon.play, this::playSelected).growX().height(54f).minWidth(170f).padTop(4).disabled(locked);
+                locked ? "@locked" :
+                noCandidate ? "@sectors.nolaunchcandidate" :
+                "@sectors.launch",
+                locked ? Icon.lock : Icon.play, this::playSelected).growX().height(54f).minWidth(170f).padTop(4).disabled(locked || noCandidate);
         }
 
         stable.pack();
         stable.setPosition(x, y, Align.center);
 
         stable.act(0f);
+    }
+
+    boolean hasNoCandidate(Sector sector){
+        return sector != sector.planet.getStartSector() && !sector.hasBase() && findLauncher(sector) == null;
+    }
+
+    boolean isLocked(Sector sector){
+        return sector.preset != null && sector.preset.locked() && !sector.hasBase() && sector.preset.techNode != null;
+    }
+
+    boolean canPlaySector(Sector sector){
+        return !isLocked(sector) && !hasNoCandidate(sector);
     }
 
     void playSelected(){
@@ -1193,29 +1382,8 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
             return;
         }
 
-        if(sector.preset != null && sector.preset.locked() && sector.preset.techNode != null && !sector.hasBase()){
+        if(sector.preset != null && sector.preset.requireUnlock && sector.preset.locked() && sector.preset.techNode != null && !sector.hasBase()){
             return;
-        }
-
-        //make sure there are no under-attack sectors (other than this one)
-        for(Planet planet : content.planets()){
-            if(!planet.allowWaveSimulation && !debugSelect && planet.allowWaveSimulation == sector.planet.allowWaveSimulation){
-                //if there are two or more attacked sectors... something went wrong, don't show the dialog to prevent softlock
-                Sector attacked = planet.sectors.find(s -> s.isAttacked() && s != sector);
-                if(attacked != null &&  planet.sectors.count(s -> s.isAttacked()) < 2){
-                    BaseDialog dialog = new BaseDialog("@sector.noswitch.title");
-                    dialog.cont.add(bundle.format("sector.noswitch", attacked.name(), attacked.planet.localizedName)).width(400f).labelAlign(Align.center).center().wrap();
-                    dialog.addCloseButton();
-                    dialog.buttons.button("@sector.view", Icon.eyeSmall, () -> {
-                        dialog.hide();
-                        lookAt(attacked);
-                        selectSector(attacked);
-                    });
-                    dialog.show();
-
-                    return;
-                }
-            }
         }
 
         boolean shouldHide = true;
@@ -1250,7 +1418,8 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
 
                     Events.fire(new SectorLaunchLoadoutEvent(sector, from, loadout));
 
-                    if(settings.getBool("skipcoreanimation")){
+                    CoreBuild core = player.team().core();
+                    if(core == null || settings.getBool("skipcoreanimation")){
                         //just... go there
                         control.playSector(from, sector);
                         //hide only after load screen is shown
@@ -1262,9 +1431,9 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                         //allow planet dialog to finish hiding before actually launching
                         Time.runTask(5f, () -> {
                             Runnable doLaunch = () -> {
-                                renderer.showLaunch(schemCore);
+                                renderer.showLaunch(core);
                                 //run with less delay, as the loading animation is delayed by several frames
-                                Time.runTask(coreLandDuration - 8f, () -> control.playSector(from, sector));
+                                Time.runTask(core.launchDuration() - 8f, () -> control.playSector(from, sector));
                             };
 
                             //load launchFrom sector right before launching so animation is correct
@@ -1279,16 +1448,8 @@ public class PlanetDialog extends BaseDialog implements PlanetInterfaceRenderer{
                     }
                 });
             }
-        }else if(mode == select){
+        }else if(mode == select || mode == planetLaunch){
             listener.get(sector);
-        }else if(mode == planetLaunch){ //TODO make sure it doesn't have a base already.
-
-            //TODO animation
-            //schematic selection and cost handled by listener
-            listener.get(sector);
-            //unlock right before launch
-            sector.planet.unlockedOnLand.each(UnlockableContent::unlock);
-            control.playSector(sector);
         }else{
             //sector should have base here
             control.playSector(sector);

@@ -84,7 +84,6 @@ public class TrashDialog extends BaseDialog {
                 image.clicked(() -> {
                     if(Core.input.keyDown(KeyCode.shiftLeft)){
                         hide();
-                        InputHandler.last_select_units_type = unit;
                         control.input.selectUnitsType(unit);
                     }else{
                         hide();
@@ -197,24 +196,20 @@ public class TrashDialog extends BaseDialog {
 
                 filters.check("@client.fdtrash.at.t_turrets", Core.settings.getBool("autotransfer-t-turrets"), b -> {
                     Core.settings.put("autotransfer-t-turrets", b);
-                    AutoTransfer.Settings.setTargetTurrets(b);
                 });
 
                 filters.check("@client.fdtrash.at.t_prod", Core.settings.getBool("autotransfer-t-prod"), b -> {
                     Core.settings.put("autotransfer-t-prod", b);
-                    AutoTransfer.Settings.setTargetProduction(b);
                 });
 
                 filters.row();
 
                 filters.check("@client.fdtrash.at.t_units", Core.settings.getBool("autotransfer-t-units"), b -> {
                     Core.settings.put("autotransfer-t-units", b);
-                    AutoTransfer.Settings.setTargetUnitFactories(b);
                 });
 
                 filters.check("@client.fdtrash.at.t_recons", Core.settings.getBool("autotransfer-t-recons"), b -> {
                     Core.settings.put("autotransfer-t-recons", b);
-                    AutoTransfer.Settings.setTargetReconstructors(b);
                 });
                 addSeparator(Pal.gray);
             }).left().row();

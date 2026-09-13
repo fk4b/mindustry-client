@@ -54,7 +54,6 @@ public class ShrapnelBulletType extends BulletType{
 
     @Override
     public void draw(Bullet b){
-        if (UnitType.alpha == 0) return;
         float realLength = b.fdata, rot = b.rotation();
 
         Draw.color(fromColor, toColor, b.fin());
@@ -64,7 +63,7 @@ public class ShrapnelBulletType extends BulletType{
             Drawf.tri(b.x + Tmp.v1.x, b.y + Tmp.v1.y, serrationWidth, sl, b.rotation() + 90);
             Drawf.tri(b.x + Tmp.v1.x, b.y + Tmp.v1.y, serrationWidth, sl, b.rotation() - 90);
         }
-        Drawf.tri(b.x, b.y, width * b.fout(), (realLength + 50), b.rotation());
+        Drawf.tri(b.x, b.y, width * b.fout(), (realLength + 4f), b.rotation());
         Drawf.tri(b.x, b.y, width * b.fout(), 10f, b.rotation() + 180f);
         Draw.reset();
 

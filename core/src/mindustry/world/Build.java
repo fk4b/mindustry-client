@@ -14,12 +14,15 @@ import mindustry.game.*;
 import mindustry.game.Teams.*;
 import mindustry.gen.*;
 import mindustry.world.blocks.*;
+import mindustry.world.blocks.environment.*;
 import mindustry.world.blocks.ConstructBlock.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
 
 import static mindustry.Vars.*;
 
 public class Build{
+    public static final Seq<BuildPlan> planSeq = new Seq<>(BuildPlan.class); // FINISHME: This is pretty cursed
+
     private static final IntSet tmp = new IntSet();
 
     @Remote(called = Loc.server)
@@ -48,9 +51,13 @@ public class Build{
         Block sub = ConstructBlock.get(previous.size);
 
         Seq<Building> prevBuild = new Seq<>(1);
-        if(tile.build != null) prevBuild.add(tile.build);
+        if(tile.build != null){
+            prevBuild.add(tile.build);
+            tile.build.onDeconstructed(unit);
+            tile.build.dead = true;
+        }
 
-        Events.fire(new BlockBuildBeginEventBefore(tile, team, unit, true, null));
+        Events.fire(new BlockBuildBeginEventBefore(tile, team, unit, true, null, -1));
 
         tile.setBlock(sub, team, rotation);
         var build = (ConstructBuild)tile.build;
@@ -65,10 +72,9 @@ public class Build{
         Events.fire(new BlockBuildBeginEvent(tile, team, unit, true));
     }
 
-    public final static Seq<BuildPlan> planSeq = new Seq<>(BuildPlan.class);
-    /** Places a ConstructBlock at this location. */
+    /** Places a ConstructBlock at this location. To preserve bandwidth, a config is only passed in the case of instant-place blocks. */
     @Remote(called = Loc.server)
-    public static void beginPlace(@Nullable Unit unit, Block result, Team team, int x, int y, int rotation){
+    public static void beginPlace(@Nullable Unit unit, Block result, Team team, int x, int y, int rotation, @Nullable Object placeConfig){
         if(!validPlace(result, team, x, y, rotation) || !validPlaceCoreRange(result, team, x, y) || !validPlaceUnit(result, x, y)){
             return;
         }
@@ -77,8 +83,6 @@ public class Build{
 
         //just in case
         if(tile == null) return;
-
-        Events.fire(new BlockBuildBeginEventBefore(tile, team, unit, false, result));
 
         //auto-rotate the block to the correct orientation and bail out
         if(tile.team() == team && tile.block == result && tile.build != null && tile.block.quickRotate){
@@ -89,6 +93,36 @@ public class Build{
             tile.build.noSleep();
             Fx.rotateBlock.at(tile.build.x, tile.build.y, tile.build.block.size);
             Events.fire(new BuildRotateEvent(tile.build, unit, previous));
+            if(!headless) Sounds.blockRotate.at(tile.build, 1f + Mathf.range(0.1f), 1f);
+            return;
+        }
+
+        // Doesn't fire on quick rotates
+        Events.fire(new BlockBuildBeginEventBefore(tile, team, unit, false, result, Mathf.mod(rotation, 4)));
+
+        //repair derelict tile
+        if(tile.team() == Team.derelict && team != Team.derelict && tile.block == result && tile.build != null && tile.block.allowDerelictRepair && state.rules.derelictRepair){
+            tile.build.rotation = rotation;
+            tile.build.changeTeam(team);
+            tile.build.enabled = true;
+            if(tile.build.power != null){
+                tile.build.power.links.clear();
+                tile.build.powerGraphRemoved();
+            }
+            tile.build.checkAllowUpdate();
+            tile.build.updateProximity();
+            tile.build.onRepaired();
+            world.tileChanges ++; //repair should count as a tile change
+
+            if(unit != null && unit.getControllerName() != null) tile.build.lastAccessed = unit.getControllerName();
+
+            if(fogControl.isVisibleTile(team, tile.x, tile.y)){
+                result.placeEffect.at(tile.drawx(), tile.drawy(), result.size);
+                Fx.rotateBlock.at(tile.build.x, tile.build.y, tile.build.block.size);
+                ConstructBlock.playRepairSound(team, tile);
+            }
+
+            Events.fire(new BlockBuildEndEvent(tile, unit, team, false, tile.build.config()));
             return;
         }
 
@@ -99,6 +133,14 @@ public class Build{
                 out.remove();
             }
         });
+
+        //complete it immediately
+        if(result.instantBuild){
+            Events.fire(new BlockBuildBeginEvent(tile, team, unit, false));
+            result.placeBegan(tile, tile.block, unit);
+            ConstructBlock.constructFinish(tile, result, unit, (byte)rotation, team, placeConfig);
+            return;
+        }
 
         Block previous = tile.block();
         Block sub = ConstructBlock.get(result.size);
@@ -115,6 +157,7 @@ public class Build{
         });
 
         tile.setBlock(sub, team, rotation);
+        if(result instanceof Cliff && placeConfig != null && placeConfig instanceof Integer i) tile.data = i.byteValue();
 
         var build = (ConstructBuild)tile.build;
 
@@ -127,31 +170,44 @@ public class Build{
         result.placeBegan(tile, previous, unit);
     }
 
-    /** Returns whether a tile can be placed at this location by this team. */
+    /** @return whether a tile can be placed at this location by this team. */
     public static boolean validPlace(Block type, Team team, int x, int y, int rotation){
         return validPlace(type, team, x, y, rotation, true);
     }
 
-    /** Returns whether a tile can be placed at this location by this team. */
+    /** @return whether a tile can be placed at this location by this team. */
     public static boolean validPlace(Block type, Team team, int x, int y, int rotation, boolean checkVisible){
+        return validPlace(type, team, x, y, rotation, checkVisible, true);
+    }
+
+    /** @return whether a tile can be placed at this location by this team. */
+    public static boolean validPlace(Block type, Team team, int x, int y, int rotation, boolean checkVisible, boolean checkCoreRadius){
+        return validPlaceIgnoreUnits(type, team, x, y, rotation, checkVisible, checkCoreRadius) && checkNoUnitOverlap(type, x, y);
+    }
+
+    /** @return whether a tile can be placed at this location by this team. */
+    public static boolean checkNoUnitOverlap(Block type, int x, int y){
+        return (!type.solid && !type.solidifes) || !Units.anyEntities(x * tilesize + type.offset - type.size * tilesize / 2f, y * tilesize + type.offset - type.size * tilesize / 2f, type.size * tilesize, type.size * tilesize);
+    }
+
+    /** @return whether a tile can be placed at this location by this team. Ignores units at this location. */
+    public static boolean validPlaceIgnoreUnits(Block type, Team team, int x, int y, int rotation, boolean checkVisible, boolean checkCoreRadius){
         //the wave team can build whatever they want as long as it's visible - banned blocks are not applicable
-        if(type == null || (checkVisible && (!type.environmentBuildable() || (!type.isPlaceable() && !(state.rules.waves && team == state.rules.waveTeam && type.isVisible()))))){
+        if(type == null || (!state.rules.editor && (checkVisible && (!type.environmentBuildable() || (!type.isPlaceable() && !(state.rules.waves && team == state.rules.waveTeam && type.isVisible())))))){
             return false;
         }
 
         /*
-        if((type.solid || type.solidifes) && Units.anyEntities(x * tilesize + type.offset - type.size*tilesize/2f, y * tilesize + type.offset - type.size*tilesize/2f, type.size * tilesize, type.size*tilesize)){
-            return false;
-        }
-         */
-
-        /*
-        if(!state.rules.editor){
+        if(!state.rules.editor && checkCoreRadius){
             //find closest core, if it doesn't match the team, placing is not legal
             if(state.rules.polygonCoreProtection){
                 float mindst = Float.MAX_VALUE;
                 CoreBuild closest = null;
                 for(TeamData data : state.teams.active){
+                    if(!data.team.rules().protectCores){
+                        continue;
+                    }
+
                     for(CoreBuild tile : data.cores){
                         float dst = tile.dst2(x * tilesize + type.offset, y * tilesize + type.offset);
                         if(dst < mindst){
@@ -163,7 +219,7 @@ public class Build{
                 if(closest != null && closest.team != team){
                     return false;
                 }
-            }else if(state.teams.anyEnemyCoresWithin(team, x * tilesize + type.offset, y * tilesize + type.offset, state.rules.enemyCoreBuildRadius + tilesize)){
+            }else if(state.teams.anyEnemyCoresWithinBuildRadius(team, x * tilesize + type.offset, y * tilesize + type.offset)){
                 return false;
             }
         }
@@ -173,22 +229,26 @@ public class Build{
 
         if(tile == null) return false;
 
-        //campaign darkness check
-        if(world.getDarkness(x, y) >= 3){
-            return false;
-        }
-
-        if(!type.requiresWater && !contactsShallows(tile.x, tile.y, type) && !type.placeableLiquid){
-            return false;
-        }
-
-        if((type.isFloor() && tile.floor() == type) || (type.isOverlay() && tile.overlay() == type)){
-            return false;
-        }
-
         if(!type.canPlaceOn(tile, team, rotation)){
             return false;
         }
+
+        //floors have different checks
+        if(type.isFloor()){
+            return type.isOverlay() ? tile.overlay() != type : tile.floor() != type;
+        }
+
+        //campaign darkness check
+        if(!type.ignoreBuildDarkness && world.getDarkness(x, y) >= 3){
+            return false;
+        }
+
+        if(!state.rules.editor && !type.requiresWater && !contactsShallows(tile.x, tile.y, type) && !type.placeableLiquid){
+            return false;
+        }
+
+        //check limits for non-AI teams
+        if(type.isOverPlacementLimit(team)) return false;
 
         int offsetx = -(type.size - 1) / 2;
         int offsety = -(type.size - 1) / 2;
@@ -203,20 +263,22 @@ public class Build{
                 check == null || //nothing there
                 (type.size == 2 && world.getDarkness(wx, wy) >= 3) ||
                 (state.rules.staticFog && state.rules.fog && !fogControl.isDiscovered(team, wx, wy)) ||
-                (check.floor().isDeep() && !type.floating && !type.requiresWater && !type.placeableLiquid) || //deep water
-                (type == check.block() && check.build != null && rotation == check.build.rotation && type.rotate) || //same block, same rotation
+                (!state.rules.editor && check.floor().isDeep() && !type.floating && !type.requiresWater && !type.placeableLiquid) || //deep water
+                (!state.rules.derelictRepair && check.team() == Team.derelict && check.build != null) ||
+                (type == check.block() && check.build != null && rotation == check.build.rotation && type.rotate && !((type == check.block && team != Team.derelict && check.team() == Team.derelict))) || //same block, same rotation
                 !check.interactable(team) || //cannot interact
-                !check.floor().placeableOn || //solid wall
-                (!checkVisible && !check.block().alwaysReplace) || //replacing a block that should be replaced (e.g. payload placement)
-                    !((type.canReplace(check.block()) || //can replace type
-                        (check.build instanceof ConstructBuild build && build.current == type && check.centerX() == tile.x && check.centerY() == tile.y)) && //same type in construction
+                !check.floor().placeableOn && !type.ignoreBuildDarkness || //solid floor
+                //when you have a payload, you cannot place blocks on things, even if normal placement rules allow it. this is a hack that assumes checkVisible = true means it's coming from a payload
+                (!checkVisible && checkCoreRadius && !check.block().alwaysReplace) || //replacing a block that should be replaced (e.g. payload placement)
+                !(((type.canReplace(check.block()) || (check.build != null && check.build.canBeReplaced(type)) || (type == check.block && team != Team.derelict && check.team() == Team.derelict)) || //can replace type OR can replace derelict block of same type
+                    (check.build instanceof ConstructBuild build && build.current == type && check.centerX() == tile.x && check.centerY() == tile.y)) && //same type in construction
                     type.bounds(tile.x, tile.y, Tmp.r1).grow(0.01f).contains(check.block.bounds(check.centerX(), check.centerY(), Tmp.r2))) || //no replacement
                 (type.requiresWater && check.floor().liquidDrop != Liquids.water) //requires water but none found
                 ) return false;
             }
         }
 
-        if(state.rules.placeRangeCheck && !state.isEditor() && getEnemyOverlap(type, team, x, y) != null){
+        if(state.rules.placeRangeCheck && checkCoreRadius && !state.isEditor() && getEnemyOverlap(type, team, x, y) != null){
             return false;
         }
 
@@ -230,6 +292,10 @@ public class Build{
             float mindst = Float.MAX_VALUE;
             CoreBuild closest = null;
             for(TeamData data : state.teams.active){
+                if(!data.team.rules().protectCores){
+                    continue;
+                }
+
                 for(CoreBuild tile : data.cores){
                     float dst = tile.dst2(x * tilesize + type.offset, y * tilesize + type.offset);
                     if(dst < mindst){
@@ -239,16 +305,16 @@ public class Build{
                 }
             }
             return closest == null || closest.team == team;
-        }else return !state.teams.anyEnemyCoresWithin(team, x * tilesize + type.offset, y * tilesize + type.offset, state.rules.enemyCoreBuildRadius + tilesize);
+        }else return !state.teams.anyEnemyCoresWithinBuildRadius(team, x * tilesize + type.offset, y * tilesize + type.offset);
     }
-    
+
     /** Whether a build plan intersects a unit here */
     public static boolean validPlaceUnit(Block type, int x, int y) {
         return state.rules.editor || !((type.solid || type.solidifes) && Units.anyEntities(x * tilesize + type.offset - type.size*tilesize/2f, y * tilesize + type.offset - type.size*tilesize/2f, type.size * tilesize, type.size*tilesize));
     }
-    
+
     public static @Nullable Building getEnemyOverlap(Block block, Team team, int x, int y) {
-        return indexer.findEnemyTile(team, x * tilesize + block.size, y * tilesize + block.size, block.placeOverlapRange + 4f, p -> true);
+        return indexer.findEnemyTile(team, x * tilesize + block.size, y * tilesize + block.size, block.placeOverlapRange + 4f, b -> b.team.rules().checkPlacement);
     }
 
     public static boolean contactsGround(int x, int y, Block block){
@@ -288,9 +354,9 @@ public class Build{
         return false;
     }
 
-    /** Returns whether the tile at this position is breakable by this team */
+    /** @return whether the tile at this position is breakable by this team */
     public static boolean validBreak(Team team, int x, int y){
         Tile tile = world.tile(x, y);
-        return tile != null && tile.block().canBreak(tile) && tile.breakable() && tile.interactable(team);
+        return tile != null && tile.block() != Blocks.air && (tile.block().canBreak(tile) && (tile.breakable() || state.rules.allowEnvironmentDeconstruct)) && tile.interactable(team);
     }
 }

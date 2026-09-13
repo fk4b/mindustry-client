@@ -1,5 +1,7 @@
 package mindustry.client.navigation
 
+import arc.*
+import arc.graphics.*
 import arc.math.*
 import arc.math.geom.*
 import arc.struct.*
@@ -18,10 +20,10 @@ import kotlin.math.*
 // https://arxiv.org/ftp/arxiv/papers/1506/1506.01864.pdf the stuff looks familiar
 
 object AStarNavigatorOptimised : Navigator() {
-    private val pool = Pools.get(PositionWaypoint::class.java) { PositionWaypoint() }
+    private val pool = Pools.get(PositionWaypoint::class.java, ::PositionWaypoint)
     private var grid: Array<Cell> = emptyArray()
     private var gridSize = Point2()
-    private var open = BinaryHeap<Cell>(65_536, false)
+    private var open = BinaryHeap<Cell>(1024, false)
     private var startX = -1
     private var startY = -1
     private var endX = 0
@@ -128,7 +130,7 @@ object AStarNavigatorOptimised : Navigator() {
 
         //pointSpacing.clear()
         val pathIndices = ObjectIntMap<Cell>(psize)
-        for (i in 0 until psize) {
+        for (i in 0 ..< psize) {
             pathIndices.put(path[i], i)
             //pointSpacing.put(cell, cell.goesTo?.g?.minus(cell.g) ?: continue)
         }
@@ -169,6 +171,20 @@ object AStarNavigatorOptimised : Navigator() {
                 val prev = curr.cameFrom?: continue
                 val next = curr.goesTo?: continue
                 if (collinear(prev, curr, next)) continue
+                
+                var nearWall = false
+                var nearStart = false
+                for (j in Geometry.d4x.indices) {
+                    val x = curr.x + Geometry.d4x[j]
+                    val y = curr.y + Geometry.d4y[j]
+                    val cell = cell(x, y)
+                    if (Structs.inBounds(x, y, tileWidth, tileHeight) && cell.blocked) nearWall = true;
+                    else if (cell == start) nearStart = true
+                }
+                //Don't relax nodes that are right next to the start AND next to a wall
+                //Hacky fix for getting stuck on corners
+                if(nearWall && nearStart) continue
+
                 val cost = spaces[pathIndices[prev]] + spaces[i]
                 val newCost = lineOfSight(prev.x, prev.y, next.x, next.y)
                 if (newCost <= cost) {
@@ -190,10 +206,10 @@ object AStarNavigatorOptimised : Navigator() {
                 }
             }
         }
-        // FIXME: Optimise this, especially at the straight sections they can be reduced
+        // FINISHME: Optimise this, especially at the straight sections they can be reduced
         // Worst case scenario: O(n^2) (very bad)(very very bad)
-        // TODO: Set an upper bound on number of passes
-        // TODO: Make relaxation prefer the direction with longer straight, so that relaxation is more optimal
+        // FINISHME: Set an upper bound on number of passes
+        // FINISHME: Make relaxation prefer the direction with longer straight, so that relaxation is more optimal
     }
 
     private fun collinear(c: Cell): Boolean {
@@ -210,8 +226,8 @@ object AStarNavigatorOptimised : Navigator() {
         return if (cell(x1, y2).blocked || cell(x2, y1).blocked) Float.POSITIVE_INFINITY else Mathf.sqrt2
     }
 
-    private const val step_count = 200 // TODO: Use fixed step size or just get overlapped pixels and do math
-    // TODO: yeah we will need overlapped pixels since the ray might land on the corner
+    private const val step_count = 200 // FINISHME: Use fixed step size or just get overlapped pixels and do math
+    // FINISHME: yeah we will need overlapped pixels since the ray might land on the corner
     private fun lineOfSight(x1: Int, y1: Int, x2: Int, y2: Int): Float {
         val absdx = abs(x1 - x2)
         if (absdx == 1 && absdx == abs(y1 - y2)) return diagonalLineOfSight(x1, y1, x2, y2)
@@ -221,7 +237,7 @@ object AStarNavigatorOptimised : Navigator() {
         val step = dist(x1, y1, x2, y2) / step_count // 200 steps per ray
         val dx = (x2.toFloat() - x) / step_count
         val dy = (y2.toFloat() - y) / step_count
-        for (i in 0 until step_count) {
+        for (i in 0 ..< step_count) {
             x += dx
             y += dy
             if (cell(x.roundToInt(), y.roundToInt()).blocked) return Float.POSITIVE_INFINITY
@@ -239,11 +255,11 @@ object AStarNavigatorOptimised : Navigator() {
         blocked: Int2P
     ): Array<PositionWaypoint> {
         val t0 = Time.nanos()
-        tileWidth = ceil(width / tilesize).toInt() + 1
-        tileHeight = ceil(height / tilesize).toInt() + 1
+        tileWidth = ceil(width / tilesize).toInt()
+        tileHeight = ceil(height / tilesize).toInt()
 
-        start.clamp(0f, 0f, width, height)
-        end.clamp(0f, 0f, width, height)
+        start.clamp(0f, 0f, width - 1f, height - 1f)
+        end.clamp(0f, 0f, width - 1f, height - 1f)
 
         //Reset
         startX = World.toTile(start.x).coerceIn(0, tileWidth - 1)
@@ -258,11 +274,11 @@ object AStarNavigatorOptimised : Navigator() {
 
         open.clear()
 
-        // TODO: VERY long init time when ground (cache friendliness?)
+        // FINISHME: VERY long init time when ground (cache friendliness?)
         var hasBlocked = false
         // Reset all cells
-        for (x in 0 until tileWidth) {
-            for (y in 0 until tileHeight) {
+        for (x in 0 ..< tileWidth) {
+            for (y in 0 ..< tileHeight) {
                 val cell = cell(x, y)
                 cell.g = 0f
                 cell.cameFrom = null
@@ -297,7 +313,7 @@ object AStarNavigatorOptimised : Navigator() {
                 }
                 points.reverse()
                 if (hasBlocked) {
-                    val tileSize = tilesize.toFloat()
+                    val tileSize = tilesizeF
                     for (c in points) { // adjust tolerance values
                         val cx = World.toTile(c.x)
                         val cy = World.toTile(c.y)
@@ -316,8 +332,8 @@ object AStarNavigatorOptimised : Navigator() {
                     }
                     // corner identification
                     val v1 = Vec2()
-                    val v2 = Vec2() //TODO: move this out
-                    for (i in 1 until points.size - 1) {
+                    val v2 = Vec2() //FINISHME: move this out
+                    for (i in 1 ..< points.size - 1) {
                         val c = points[i]
                         v1.set(points[i + 1].x - c.x, points[i + 1].y - c.y)
                         v2.set(points[i - 1].x - c.x, points[i - 1].y - c.y)

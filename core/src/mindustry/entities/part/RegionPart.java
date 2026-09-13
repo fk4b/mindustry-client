@@ -15,7 +15,7 @@ public class RegionPart extends DrawPart{
     public String suffix = "";
     /** Overrides suffix if set. */
     public @Nullable String name;
-    public TextureRegion heat;
+    public TextureRegion heat, light;
     public TextureRegion[] regions = {};
     public TextureRegion[] outlines = {};
 
@@ -23,10 +23,14 @@ public class RegionPart extends DrawPart{
     public boolean mirror = false;
     /** If true, an outline is drawn under the part. */
     public boolean outline = true;
+    /** If true, this part has an outline created 'in-place'. Currently vanilla only, do not use this! */
+    public boolean replaceOutline = false;
     /** If true, the base + outline regions are drawn. Set to false for heat-only regions. */
     public boolean drawRegion = true;
     /** If true, the heat region produces light. */
     public boolean heatLight = false;
+    /** Whether to clamp progress to (0-1). If false, allows usage of interps that go past the range, but may have unwanted visual bugs depending on values. */
+    public boolean clampProgress = true;
     /** Progress function for determining position/rotation. */
     public PartProgress progress = PartProgress.warmup;
     /** Progress function for scaling. */
@@ -36,7 +40,8 @@ public class RegionPart extends DrawPart{
     public Blending blending = Blending.normal;
     public float layer = -1, layerOffset = 0f, heatLayerOffset = 1f, turretHeatLayer = Layer.turretHeat;
     public float outlineLayerOffset = -0.001f;
-    public float x, y, xScl = 1f, yScl = 1f, rotation;
+    //note that origin DOES NOT AFFECT child parts
+    public float x, y, xScl = 1f, yScl = 1f, rotation, originX, originY;
     public float moveX, moveY, growX, growY, moveRot;
     public float heatLightOpacity = 0.3f;
     public @Nullable Color color, colorTo, mixColor, mixColorTo;
@@ -67,14 +72,14 @@ public class RegionPart extends DrawPart{
         Draw.z(Draw.z() + layerOffset);
 
         float prevZ = Draw.z();
-        float prog = progress.getClamp(params), sclProg = growProgress.getClamp(params);
+        float prog = progress.getClamp(params, clampProgress), sclProg = growProgress.getClamp(params, clampProgress);
         float mx = moveX * prog, my = moveY * prog, mr = moveRot * prog + rotation,
             gx = growX * sclProg, gy = growY * sclProg;
 
         if(moves.size > 0){
             for(int i = 0; i < moves.size; i++){
                 var move = moves.get(i);
-                float p = move.progress.getClamp(params);
+                float p = move.progress.getClamp(params, clampProgress);
                 mx += move.x * p;
                 my += move.y * p;
                 mr += move.rot * p;
@@ -87,26 +92,32 @@ public class RegionPart extends DrawPart{
         float preXscl = Draw.xscl, preYscl = Draw.yscl;
         Draw.xscl *= xScl + gx;
         Draw.yscl *= yScl + gy;
+        float prevMixCol = Draw.getMixColorPacked(), prevCol = Draw.getColorPacked();
 
         for(int s = 0; s < len; s++){
             //use specific side if necessary
             int i = params.sideOverride == -1 ? s : params.sideOverride;
 
             //can be null
-            var region = drawRegion ? regions[Math.min(i, regions.length - 1)] : null;
+            var region = drawRegion && regions.length > 0 ? regions[Math.min(i, regions.length - 1)] : null;
             float sign = (i == 0 ? 1 : -1) * params.sideMultiplier;
             Tmp.v1.set((x + mx) * sign, y + my).rotateRadExact((params.rotation - 90) * Mathf.degRad);
+
+            Draw.xscl *= sign;
+
+            if(originX != 0f || originY != 0f){
+                //correct for offset caused by origin shift
+                Tmp.v1.sub(Tmp.v2.set(-originX * Draw.xscl, -originY * Draw.yscl).rotate(params.rotation - 90f).add(originX * Draw.xscl, originY * Draw.yscl));
+            }
 
             float
                 rx = params.x + Tmp.v1.x,
                 ry = params.y + Tmp.v1.y,
                 rot = mr * sign + params.rotation - 90;
 
-            Draw.xscl *= sign;
-
             if(outline && drawRegion){
                 Draw.z(prevZ + outlineLayerOffset);
-                Draw.rect(outlines[Math.min(i, regions.length - 1)], rx, ry, rot);
+                rect(outlines[Math.min(i, regions.length - 1)], rx, ry, rot);
                 Draw.z(prevZ);
             }
 
@@ -124,23 +135,23 @@ public class RegionPart extends DrawPart{
                 }
 
                 Draw.blend(blending);
-                Draw.rect(region, rx, ry, rot);
+                rect(region, rx, ry, rot);
                 Draw.blend();
                 if(color != null) Draw.color();
             }
 
             if(heat.found()){
-                float hprog = heatProgress.getClamp(params);
+                float hprog = heatProgress.getClamp(params, clampProgress);
                 heatColor.write(Tmp.c1).a(hprog * heatColor.a);
-                Drawf.additive(heat, Tmp.c1, rx, ry, rot, turretShading ? turretHeatLayer : Draw.z() + heatLayerOffset);
-                if(heatLight) Drawf.light(rx, ry, heat, rot, Tmp.c1, heatLightOpacity * hprog);
+                Drawf.additive(heat, Tmp.c1, 1f, rx, ry, rot, turretShading ? turretHeatLayer : Draw.z() + heatLayerOffset, originX, originY);
+                if(heatLight) Drawf.light(rx, ry, light.found() ? light : heat, rot, Tmp.c1, heatLightOpacity * hprog);
             }
 
             Draw.xscl *= sign;
         }
 
-        Draw.color();
-        Draw.mixcol();
+        Draw.color(prevCol);
+        Draw.mixcol(prevMixCol);
 
         Draw.z(z);
 
@@ -152,7 +163,7 @@ public class RegionPart extends DrawPart{
                 float sign = (i == 1 ? -1 : 1) * params.sideMultiplier;
                 Tmp.v1.set((x + mx) * sign, y + my).rotateRadExact((params.rotation - 90) * Mathf.degRad);
 
-                childParam.set(params.warmup, params.reload, params.smoothReload, params.heat, params.recoil, params.charge, params.x + Tmp.v1.x, params.y + Tmp.v1.y, i * sign + mr * sign + params.rotation);
+                childParam.set(params.warmup, params.reload, params.smoothReload, params.heat, params.recoil, params.charge, params.x + Tmp.v1.x, params.y + Tmp.v1.y, mr * sign + params.rotation);
                 childParam.sideMultiplier = params.sideMultiplier;
                 childParam.life = params.life;
                 childParam.sideOverride = i;
@@ -163,6 +174,11 @@ public class RegionPart extends DrawPart{
         }
 
         Draw.scl(preXscl, preYscl);
+    }
+
+    void rect(TextureRegion region, float x, float y, float rotation){
+        float w = region.width * region.scl() * Draw.xscl, h = region.height * region.scl() * Draw.yscl;
+        Draw.rect(region, x, y, w, h, w / 2f + originX * Draw.xscl, h / 2f + originY * Draw.yscl, rotation);
     }
 
     @Override
@@ -187,6 +203,7 @@ public class RegionPart extends DrawPart{
         }
 
         heat = Core.atlas.find(realName + "-heat");
+        light = Core.atlas.find(realName + "-light");
         for(var child : children){
             child.turretShading = turretShading;
             child.load(name);

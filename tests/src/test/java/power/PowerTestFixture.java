@@ -6,12 +6,12 @@ import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
 import mindustry.core.*;
-import mindustry.ctype.*;
 import mindustry.game.*;
 import mindustry.gen.*;
 import mindustry.world.*;
 import mindustry.world.blocks.power.*;
 import org.junit.jupiter.api.*;
+import test.*;
 
 import static mindustry.Vars.*;
 
@@ -26,18 +26,14 @@ public class PowerTestFixture{
     @BeforeAll
     static void initializeDependencies(){
         headless = true;
+        ApplicationTests.launchApplication(false);
         Core.files = new MockFiles();
         Groups.init();
 
         boolean make = content == null;
 
         if(make){
-            Vars.content = new ContentLoader(){
-                @Override
-                public void handleMappableContent(MappableContent content){
-
-                }
-            };
+            Vars.content = new ContentLoader();
         }
         Vars.state = new GameState();
         Vars.tree = new FileTree();
