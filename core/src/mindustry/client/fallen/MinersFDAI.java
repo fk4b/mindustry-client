@@ -140,9 +140,9 @@ public class MinersFDAI {
     private static final IntSet pendingMineHandoff = new IntSet();
 
     /** Ores this AI can assign (order used for display / fallback). */
-    private static final Item[] MINE_ITEMS = {
-        Items.copper, Items.lead, Items.titanium, Items.sand, Items.coal, Items.scrap
-    };
+    private static Item[] mineItems(){
+        return PanelFragment.allMineOres();
+    }
 
     /** Max share of a type-group that may sit on a single non-crisis ore (spread). */
     private static final float MAX_SINGLE_ORE_SHARE = 0.55f;
@@ -209,8 +209,9 @@ public class MinersFDAI {
 
                 int intervalSec = Math.max(1, PanelFragment.AIMiningUpdateTime);
                 if (forceAssignNext || miningTimer.get(intervalSec * 60f)) {
-                    forceAssignNext = false;
-                    autoAssignMiningUnitsEqually();
+                    if (autoAssignMiningUnitsEqually()) {
+                        forceAssignNext = false;
+                    }
                 }
 
                 // After assign, so newly issued mine commands get escorted away from red the same tick
@@ -823,10 +824,11 @@ public class MinersFDAI {
         }
     }
 
-    public static void autoAssignMiningUnitsEqually() {
-        if (player == null || player.unit() == null) return;
+    public static boolean autoAssignMiningUnitsEqually() {
+        if (player == null || player.team() == null) return false;
+        if (PanelFragment.enabledOres.isEmpty()) PanelFragment.loadMiningPrefs();
         Building core = player.team().core();
-        if (core == null) return;
+        if (core == null) return false;
 
         boolean needsRepairNearCore = false;
         if (PanelFragment.autoHealMegas) {
@@ -843,19 +845,15 @@ public class MinersFDAI {
         // CoreBuild.storageCapacity (team.core() is a core building)
         int capacity = core.core() != null ? Math.max(1, core.core().storageCapacity) : 1;
 
-        boolean[] flags = {
-                PanelFragment.minecopper, PanelFragment.minelead, PanelFragment.minetitan,
-                PanelFragment.minesand, PanelFragment.minecoal, PanelFragment.minescrap
-        };
         ObjectMap<Item, Float> itemWeights = new ObjectMap<>();
         Seq<Item> allEnabled = new Seq<>();
         float totalWeight = 0;
 
         Seq<Item> flagged = new Seq<>();
-        for (int i = 0; i < MINE_ITEMS.length; i++) {
-            if (flags[i]) flagged.add(MINE_ITEMS[i]);
+        for (Item it : mineItems()) {
+            if (it != null && PanelFragment.isOreEnabled(it)) flagged.add(it);
         }
-        // Prefer ores present on the map; if indexer reports none yet, fall back to all flagged
+        // Prefer ores present on the map; if indexer reports none yet, keep all flagged
         Seq<Item> present = new Seq<>();
         if (Vars.indexer != null) {
             for (Item it : flagged) {
@@ -868,13 +866,26 @@ public class MinersFDAI {
 
         if (safeMining) {
             ensureRedScan(false);
-            Seq<Item> unsafe = new Seq<>();
-            for (Item it : use) {
-                if (findAnySafeOre(it) == null) unsafe.add(it);
-            }
-            for (Item it : unsafe) {
-                disableMineResource(it, Core.bundle.get("client.fd.safemine.reason.turrets"));
-                use.remove(it);
+            if (red != null) {
+                Seq<Item> unsafe = new Seq<>();
+                for (Item it : use) {
+                    if (findAnySafeOre(it) == null) unsafe.add(it);
+                }
+                // Only drop an ore when the scan actually found some other safe deposit —
+                // an empty index right after join must not disable everything.
+                boolean anySafe = false;
+                for (Item it : use) {
+                    if (!unsafe.contains(it)) {
+                        anySafe = true;
+                        break;
+                    }
+                }
+                if (anySafe) {
+                    for (Item it : unsafe) {
+                        disableMineResource(it, Core.bundle.get("client.fd.safemine.reason.turrets"));
+                        use.remove(it);
+                    }
+                }
             }
         }
 
@@ -888,7 +899,7 @@ public class MinersFDAI {
             itemWeights.put(it, weight);
             totalWeight += weight;
         }
-        if (allEnabled.isEmpty() || totalWeight <= 0) return;
+        if (allEnabled.isEmpty() || totalWeight <= 0) return false;
 
         ObjectMap<Item, IntSeq> toBatchSend = new ObjectMap<>();
 
@@ -1041,7 +1052,7 @@ public class MinersFDAI {
             }
         }
 
-        if (unitGroups.isEmpty()) return;
+        if (unitGroups.isEmpty()) return false;
 
         for (var entry : unitGroups.entries()) {
             UnitType type = entry.key;
@@ -1049,7 +1060,7 @@ public class MinersFDAI {
             // Stable order so assignment is deterministic across ticks
             units.sort(u -> u.id);
 
-            Seq<Item> possible = allEnabled.select(it -> type.mineTier >= it.hardness);
+            Seq<Item> possible = PanelFragment.possibleOresFor(type, allEnabled);
             if (possible.isEmpty()) continue;
 
             ObjectMap<Item, Integer> quotas = buildOreQuotas(
@@ -1105,6 +1116,7 @@ public class MinersFDAI {
         }
 
         sendOreStances(toBatchSend);
+        return true;
     }
 
     /**
@@ -1301,7 +1313,7 @@ public class MinersFDAI {
         if (cai.hasStance(UnitStance.mineAuto)) return true;
         UnitStance wantSt = ItemUnitStance.getByItem(want);
         if (wantSt == null || !cai.hasStance(wantSt)) return true;
-        for (Item it : MINE_ITEMS) {
+        for (Item it : mineItems()) {
             if (it == want) continue;
             UnitStance st = ItemUnitStance.getByItem(it);
             if (st != null && cai.hasStance(st)) return true;
@@ -1344,7 +1356,8 @@ public class MinersFDAI {
             boolean anyNeedCommand = false;
             boolean anyAuto = false;
             boolean anyMissingWanted = false;
-            boolean[] extraOn = new boolean[MINE_ITEMS.length];
+            Item[] items = mineItems();
+            boolean[] extraOn = new boolean[items.length];
             UnitStance wantSt = ItemUnitStance.getByItem(item);
 
             for (int id : ids) {
@@ -1358,18 +1371,18 @@ public class MinersFDAI {
                 if (cai.command != UnitCommand.mineCommand) anyNeedCommand = true;
                 if (cai.hasStance(UnitStance.mineAuto)) anyAuto = true;
                 if (wantSt == null || !cai.hasStance(wantSt)) anyMissingWanted = true;
-                for (int i = 0; i < MINE_ITEMS.length; i++) {
-                    if (MINE_ITEMS[i] == item) continue;
-                    UnitStance st = ItemUnitStance.getByItem(MINE_ITEMS[i]);
+                for (int i = 0; i < items.length; i++) {
+                    if (items[i] == item) continue;
+                    UnitStance st = ItemUnitStance.getByItem(items[i]);
                     if (st != null && cai.hasStance(st)) extraOn[i] = true;
                 }
             }
 
             if (anyNeedCommand) queueSetCommand(ids, UnitCommand.mineCommand);
             if (anyAuto) queueSetStance(ids, UnitStance.mineAuto, false);
-            for (int i = 0; i < MINE_ITEMS.length; i++) {
-                if (!extraOn[i] || MINE_ITEMS[i] == item) continue;
-                UnitStance st = ItemUnitStance.getByItem(MINE_ITEMS[i]);
+            for (int i = 0; i < items.length; i++) {
+                if (!extraOn[i] || items[i] == item) continue;
+                UnitStance st = ItemUnitStance.getByItem(items[i]);
                 if (st != null) queueSetStance(ids, st, false);
             }
             if (anyMissingWanted && wantSt != null) queueSetStance(ids, wantSt, true);
@@ -1480,7 +1493,7 @@ public class MinersFDAI {
 
         Item found = null;
         int count = 0;
-        for (Item it : MINE_ITEMS) {
+        for (Item it : mineItems()) {
             if (limitTo != null && !limitTo.contains(it)) continue;
             UnitStance st = ItemUnitStance.getByItem(it);
             if (st != null && cai.hasStance(st)) {
@@ -1647,7 +1660,8 @@ public class MinersFDAI {
     }
 
     private static boolean isTrackedMineItem(Item it) {
-        for (Item m : MINE_ITEMS) if (m == it) return true;
+        if (it == null) return false;
+        for (Item m : mineItems()) if (m == it) return true;
         return false;
     }
 
@@ -1749,31 +1763,13 @@ public class MinersFDAI {
 
     public static void disableMineResource(Item item, String reason) {
         if (item == null) return;
-        boolean changed = false;
-        if (item == Items.copper && PanelFragment.minecopper) {
-            PanelFragment.minecopper = false;
-            changed = true;
-        } else if (item == Items.lead && PanelFragment.minelead) {
-            PanelFragment.minelead = false;
-            changed = true;
-        } else if (item == Items.titanium && PanelFragment.minetitan) {
-            PanelFragment.minetitan = false;
-            changed = true;
-        } else if (item == Items.sand && PanelFragment.minesand) {
-            PanelFragment.minesand = false;
-            changed = true;
-        } else if (item == Items.coal && PanelFragment.minecoal) {
-            PanelFragment.minecoal = false;
-            changed = true;
-        } else if (item == Items.scrap && PanelFragment.minescrap) {
-            PanelFragment.minescrap = false;
-            changed = true;
+        boolean changed = PanelFragment.isOreEnabled(item);
+        if (changed) {
+            PanelFragment.setOreEnabled(item, false, false);
+            forceAssignNext = true;
         }
         if (PanelFragment.itemtomine != null) {
             PanelFragment.itemtomine.remove(item);
-        }
-        if (changed) {
-            forceAssignNext = true;
         }
         notifyOreUnavailable(item, reason);
     }

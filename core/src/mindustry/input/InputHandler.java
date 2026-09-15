@@ -2321,7 +2321,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             });
         }
 
-        if(block != null && (Core.settings.getBool("blockreplace") != conveyorPlaceNormal || block instanceof ItemBridge)){ // Bridges need this for weaving, I'm too lazy to fix this properly
+        if(block != null && (Core.settings.getBool("blockreplace") != conveyorPlaceNormal || block instanceof ItemBridge || block instanceof StackConveyor)){ // Bridges need this for weaving, I'm too lazy to fix this properly
             linePlans.each(plan -> {
                 Block replace = plan.block.getReplacement(plan, linePlans);
                 if(replace.unlockedNow()){

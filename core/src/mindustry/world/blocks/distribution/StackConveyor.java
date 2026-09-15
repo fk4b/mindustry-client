@@ -16,6 +16,7 @@ import mindustry.graphics.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.*;
+import mindustry.input.Placement;
 import mindustry.world.blocks.distribution.Conveyor.*;
 import mindustry.world.meta.*;
 
@@ -84,6 +85,15 @@ public class StackConveyor extends Block implements Autotiler{
             }
         }
         return otherblock.outputsItems() && blendsArmored(tile, rotation, otherx, othery, otherrot, otherblock) && otherblock instanceof StackConveyor;
+    }
+
+    @Override
+    public void handlePlacementLine(Seq<BuildPlan> plans){
+        if(plans == null || plans.isEmpty()) return;
+        Block br = Blocks.itemBridge;
+        if(br instanceof ItemBridge ib){
+            Placement.applyPlastaniumCrossBridges(plans, ib);
+        }
     }
 
     @Override

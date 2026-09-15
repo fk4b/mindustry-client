@@ -8,6 +8,7 @@ import arc.struct.*;
 import arc.util.pooling.*;
 import mindustry.entities.units.*;
 import mindustry.world.*;
+import mindustry.content.Blocks;
 import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.payloads.*;
 import mindustry.world.Build;
@@ -87,7 +88,103 @@ public class Placement{
     private static final IntIntMap parents = new IntIntMap();
     private static final IntSet closed = new IntSet();
 
-    /** Normalize a diagonal line into points. */
+    /** Copper / titanium / armored — existing belts that plastanium should not cut. */
+    public static boolean isLowTierConveyor(Block b){
+        return b == Blocks.conveyor || b == Blocks.titaniumConveyor || b == Blocks.armoredConveyor;
+    }
+
+    /** Line direction at plan i: 0 = horizontal, 1 = vertical, -1 = unknown. */
+    private static int planAxis(Seq<BuildPlan> plans, int i){
+        BuildPlan p = plans.get(i);
+        if(i > 0){
+            BuildPlan prev = plans.get(i - 1);
+            if(prev.x == p.x && prev.y != p.y) return 1;
+            if(prev.y == p.y && prev.x != p.x) return 0;
+        }
+        if(i + 1 < plans.size){
+            BuildPlan next = plans.get(i + 1);
+            if(next.x == p.x && next.y != p.y) return 1;
+            if(next.y == p.y && next.x != p.x) return 0;
+        }
+        return -1;
+    }
+
+    /**
+     * Walk along an axis away from a crossing, skipping tiles the plastanium line will occupy.
+     * Returns the first remaining copper/titanium/armored tile (the titanium path that should become a bridge).
+     */
+    private static Tile walkBeltHost(int x, int y, int rot, int dir, IntSet occupied, int max){
+        int dx = Geometry.d4x(rot) * dir;
+        int dy = Geometry.d4y(rot) * dir;
+        for(int i = 0; i < max; i++){
+            x += dx;
+            y += dy;
+            Tile t = world.tile(x, y);
+            if(t == null) return null;
+            if(occupied.contains(Point2.pack(x, y))) continue;
+            if(isLowTierConveyor(t.block())) return t;
+            return null;
+        }
+        return null;
+    }
+
+    private static void addBeltBridge(Seq<BuildPlan> extra, IntSet used, ItemBridge bridge, Tile from, Tile to){
+        if(from == null || to == null) return;
+        if(!bridge.positionsValid(from.x, from.y, to.x, to.y)) return;
+        int a = Point2.pack(from.x, from.y);
+        int b = Point2.pack(to.x, to.y);
+        if(used.contains(a) || used.contains(b)) return;
+        used.add(a);
+        used.add(b);
+        extra.add(new BuildPlan(from.x, from.y, 0, bridge, new Point2(to.x - from.x, to.y - from.y)));
+        extra.add(new BuildPlan(to.x, to.y, 0, bridge));
+    }
+
+    /**
+     * Plastanium line stays plastanium. Existing copper/titanium/armored belts that the line
+     * crosses become item-bridges on those belt tiles, hopping over the plastanium.
+     */
+    public static void applyPlastaniumCrossBridges(Seq<BuildPlan> plans, ItemBridge bridge){
+        if(plans == null || plans.isEmpty() || bridge == null) return;
+        if(!Core.settings.getBool("plastaniumcrossbridges", true)) return;
+        if(!bridge.unlockedNow()) return;
+
+        IntSet occupied = new IntSet();
+        for(BuildPlan p : plans){
+            occupied.add(Point2.pack(p.x, p.y));
+        }
+
+        IntSet used = new IntSet();
+        Seq<BuildPlan> extra = new Seq<>();
+        int max = Math.max(2, bridge.range);
+
+        for(int i = 0; i < plans.size; i++){
+            BuildPlan p = plans.get(i);
+            Tile tile = world.tile(p.x, p.y);
+            if(tile == null || !isLowTierConveyor(tile.block())) continue;
+
+            int lineAx = planAxis(plans, i);
+            int beltRot = tile.build != null ? tile.build.rotation : -1;
+            // Prefer the existing belt's rotation when it is perpendicular to the plastanium line.
+            if(beltRot >= 0 && (lineAx < 0 || (beltRot & 1) != lineAx)){
+                Tile from = walkBeltHost(p.x, p.y, beltRot, -1, occupied, max);
+                Tile to = walkBeltHost(p.x, p.y, beltRot, 1, occupied, max);
+                addBeltBridge(extra, used, bridge, from, to);
+                continue;
+            }
+
+            // Fallback: any axis that still has belt tiles on both sides and is not the plastanium line.
+            for(int axis = 0; axis <= 1; axis++){
+                if(lineAx == axis) continue;
+                Tile from = walkBeltHost(p.x, p.y, axis, -1, occupied, max);
+                Tile to = walkBeltHost(p.x, p.y, axis, 1, occupied, max);
+                addBeltBridge(extra, used, bridge, from, to);
+            }
+        }
+
+        plans.addAll(extra);
+    }
+
     public static Seq<Point2> pathfindLine(boolean conveyors, int startX, int startY, int endX, int endY){
         Pools.freeAll(points);
         points.clear();

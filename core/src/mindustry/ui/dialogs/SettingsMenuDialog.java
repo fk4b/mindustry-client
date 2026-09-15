@@ -566,6 +566,7 @@ public class SettingsMenuDialog extends BaseDialog{
         client.sliderPref("playerunitdeathalarmhp", 15000, 0, 24000, 50, String::valueOf);
         client.sliderPref("yoffssetfdpamel", -200, -900, 900, 10, String::valueOf);
         client.sliderPref("buttonsizefdpamel", 30, 10, 70, 5, String::valueOf);
+        client.checkPref("plastaniumcrossbridges", true);
         client.sliderPref("fadedblockallplayers", 10, 0, 100, 1, String::valueOf);
         client.checkPref("resetschetags", false);
         client.checkPref("blocksplayersplan", true);

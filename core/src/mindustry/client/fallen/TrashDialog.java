@@ -14,7 +14,9 @@ import mindustry.*;
 import mindustry.client.ClientVars;
 import mindustry.client.ui.PanelFragment;
 import mindustry.client.utils.AutoTransfer;
+import mindustry.content.*;
 import mindustry.gen.*;
+import arc.scene.style.TextureRegionDrawable;
 import mindustry.graphics.*;
 import mindustry.input.InputHandler;
 import mindustry.type.*;
@@ -46,6 +48,7 @@ public class TrashDialog extends BaseDialog {
     void rebuild(){
         all.clear();
         all.top();
+        PanelFragment.loadMiningPrefs();
 
         all.add("@client.fdtrash.slidicon").left().row();
 
@@ -235,11 +238,23 @@ public class TrashDialog extends BaseDialog {
                         PanelFragment.crisisThreshold = v / 100f;
                         Core.settings.put("fd-crisisThreshold", PanelFragment.crisisThreshold);
                     }, " %");
-            tt.check("@client.fdtrash.mineMonos", PanelFragment.mineMonos, b -> PanelFragment.mineMonos = b).row();
-            tt.check("@client.fdtrash.minePolys", PanelFragment.minePolys, b -> PanelFragment.minePolys = b).row();
-            tt.check("@client.fdtrash.minePulss", PanelFragment.minePulss, b -> PanelFragment.minePulss = b).row();
-            tt.check("@client.fdtrash.mineQuazs", PanelFragment.mineQuazs, b -> PanelFragment.mineQuazs = b).row();
-            tt.check("@client.fdtrash.mineMegas", PanelFragment.mineMegas, b -> PanelFragment.mineMegas = b).row();
+            tt.check("@client.fdtrash.mineMonos", PanelFragment.mineMonos, b -> PanelFragment.setMinerTypeOn(UnitTypes.mono, b)).row();
+            tt.check("@client.fdtrash.minePolys", PanelFragment.minePolys, b -> PanelFragment.setMinerTypeOn(UnitTypes.poly, b)).row();
+            tt.check("@client.fdtrash.minePulss", PanelFragment.minePulss, b -> PanelFragment.setMinerTypeOn(UnitTypes.pulsar, b)).row();
+            tt.check("@client.fdtrash.mineQuazs", PanelFragment.mineQuazs, b -> PanelFragment.setMinerTypeOn(UnitTypes.quasar, b)).row();
+            tt.check("@client.fdtrash.mineMegas", PanelFragment.mineMegas, b -> PanelFragment.setMinerTypeOn(UnitTypes.mega, b)).row();
+
+            tt.table(mode -> {
+                mode.defaults().left().padRight(16);
+                mode.check("@client.fdtrash.oreassign.auto", !PanelFragment.manualOreAssign, b -> {
+                    if(b) PanelFragment.setManualOreAssign(false);
+                }).update(c -> c.setChecked(!PanelFragment.manualOreAssign));
+                mode.check("@client.fdtrash.oreassign.manual", PanelFragment.manualOreAssign, b -> {
+                    if(b) PanelFragment.setManualOreAssign(true);
+                }).update(c -> c.setChecked(PanelFragment.manualOreAssign));
+            }).left().padTop(6).row();
+
+            addOreAssignGrid(tt);
             tt.check("@client.fdtrash.megaAutoHeal", PanelFragment.autoHealMegas, b -> {
                 PanelFragment.autoHealMegas = b;
                 Core.settings.put("fd-megaAutoHeal", b);
@@ -490,6 +505,45 @@ public class TrashDialog extends BaseDialog {
                     Log.err(e);
                 }
             });
+    }
+
+    private void addOreAssignGrid(Table parent){
+        UnitType[] types = {UnitTypes.mono, UnitTypes.poly, UnitTypes.pulsar, UnitTypes.mega, UnitTypes.quasar};
+        parent.add("@client.fdtrash.oreassign").left().colspan(2).padTop(8).row();
+        parent.add("@client.fdtrash.oreassign.hint").left().color(Pal.lightishGray).wrap().growX().padBottom(6).row();
+        parent.table(grid -> {
+            grid.defaults().pad(2);
+            grid.add();
+            for(Item it : PanelFragment.allMineOres()){
+                if(it == null) continue;
+                grid.image(it.uiIcon).size(24).tooltip(it.localizedName);
+            }
+            grid.row();
+            for(UnitType type : types){
+                grid.image(type.uiIcon).size(28).padRight(6).tooltip(type.localizedName);
+                for(Item it : PanelFragment.allMineOres()){
+                    if(it == null) continue;
+                    boolean can = PanelFragment.typeCanMine(type, it);
+                    TextureRegionDrawable icon = new TextureRegionDrawable(it.uiIcon);
+                    icon.setMinWidth(18);
+                    icon.setMinHeight(18);
+                    var cell = grid.button(icon, Styles.clearNoneTogglei, () -> {
+                        if(!can) return;
+                        PanelFragment.toggleUnitOre(type, it);
+                    }).size(28);
+                    ImageButton b = cell.get();
+                    b.setDisabled(!can);
+                    b.resizeImage(18);
+                    b.update(() -> {
+                        boolean on = PanelFragment.unitAssigned(type, it);
+                        b.setChecked(on);
+                        b.getImage().setColor(!can ? Pal.gray : (on ? Pal.accent : Color.white));
+                    });
+                    cell.tooltip(type.localizedName + ": " + it.localizedName);
+                }
+                grid.row();
+            }
+        }).left().padBottom(8).row();
     }
 
     private void addSeparator(Color color){

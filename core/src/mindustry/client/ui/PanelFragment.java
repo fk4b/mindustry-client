@@ -63,6 +63,10 @@ public class PanelFragment extends Table{
     public static boolean minecopper = false, minelead = false, minetitan = false,
             minesand = false, minecoal = false, minescrap = false;
     private static boolean mineBerylliumwall, mineGraphiticwall;
+
+    public static Item[] ALL_MINE_ORES = {};
+    public static final ObjectSet<Item> enabledOres = new ObjectSet<>();
+    public static final ObjectMap<UnitType, ObjectSet<Item>> unitMineOres = new ObjectMap<>();
     private float brokenFade = 0f;
     public static int max_length = 146;
     private final IntMap<EffState> effStorage = new IntMap<>();
@@ -106,6 +110,8 @@ public class PanelFragment extends Table{
     public static boolean minePulss = true;
     public static boolean mineMegas = true;
     public static boolean mineQuazs = true;
+    /** false = AI splits enabled ores by tier; true = table in Trash (e.g. quasar → titanium only). */
+    public static boolean manualOreAssign = Core.settings.getBool("fd-manualOreAssign", false);
     public static boolean autoHealMegas = Core.settings.getBool("fd-megaAutoHeal", false);
     public static float autoHealDist = Core.settings.getFloat("fd-megaAutoHealDist", 50f);
     public static int minUnitsPerResource = 1;
@@ -157,11 +163,7 @@ public class PanelFragment extends Table{
 
             rebuild();
             // MinersFDAI resets itself on WorldLoadEvent
-            minecopper = true; minelead = true; minetitan = true;
-            mineBerylliumwall = true; mineGraphiticwall = true;
-            //minesand = false; minecoal = false;
-            minescrap = false;
-            itemtomine.clear();
+            loadMiningPrefs();
             updatemineitems();
             effStorage.clear();
 
@@ -187,6 +189,7 @@ public class PanelFragment extends Table{
         Events.run(Trigger.update, () -> { //currentfollowmode // 1 - mine, 2 - build, 3 - heal //переключения в режиме афк
             // Keep retrying auto-mine every frame until unit+core are ready
             if(pendingAutoMine) tryAutoMineOnJoin();
+            if(eneblemining && Navigation.currentlyFollowing == null) startmining();
 
             if (player == null || player.unit() == null) return;
             updateTriControl();
@@ -247,6 +250,7 @@ public class PanelFragment extends Table{
     }
 
     public void build(Group parent){
+        if(Items.copper != null) loadMiningPrefs();
         parent.fill(full -> {
             fdpanel = full;
             full.center().left().visible(() -> ui.hudfrag.shown);
@@ -267,8 +271,10 @@ public class PanelFragment extends Table{
                 t.row();
 
                 t.table(tb->{
-                    //tb.button(Icon.commandAttackSmall, sstyle, this::autoAssignMiningUnits).tooltip("@client.fdpanel.mineall").width(settings.getInt("buttonsizefdpamel", 30)).height(settings.getInt("buttonsizefdpamel", 30) / 2f);
-                    tb.button(Icon.wrenchSmall, sstylet, ()->{minePolys = !minePolys;}).tooltip("@client.fdpanel.minepolys").update(i -> i.setChecked(minePolys)).width(settings.getInt("buttonsizefdpamel", 30)).height(settings.getInt("buttonsizefdpamel", 30) / 2f);
+                    tb.button(Icon.wrenchSmall, sstylet, ()->{
+                        minePolys = !minePolys;
+                        MinersFDAI.forceReassign();
+                    }).tooltip("@client.fdpanel.minepolys").update(i -> i.setChecked(minePolys)).width(settings.getInt("buttonsizefdpamel", 30)).height(settings.getInt("buttonsizefdpamel", 30) / 2f);
                     tb.row();
 
                     tb.button(Icon.modeSurvivalSmall, sstylet, MinersFDAI::toggle)
@@ -283,51 +289,35 @@ public class PanelFragment extends Table{
                 });
                 t.table(tb->{
                     tb.defaults().size(settings.getInt("buttonsizefdpamel", 30) / 2f);
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minesand = !minesand;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minesand)).name("minesand").tooltip("@client.fdpanel.minesand");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.sand, !isOreEnabled(Items.sand)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.sand))).name("minesand").tooltip("@client.fdpanel.minesand");
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minecoal = !minecoal;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minecoal)).name("minecoal").tooltip("@client.fdpanel.minecoal");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.coal, !isOreEnabled(Items.coal)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.coal))).name("minecoal").tooltip("@client.fdpanel.minecoal");
                     tb.row();
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minelead = !minelead;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minelead)).name("minelead").tooltip("@client.fdpanel.minelead");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.lead, !isOreEnabled(Items.lead)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.lead))).name("minelead").tooltip("@client.fdpanel.minelead");
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minecopper = !minecopper;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minecopper)).name("minecopper").tooltip("@client.fdpanel.minecopper");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.copper, !isOreEnabled(Items.copper)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.copper))).name("minecopper").tooltip("@client.fdpanel.minecopper");
                 });
 
                 t.table(tb->{
                     tb.defaults().size(settings.getInt("buttonsizefdpamel", 30) / 2f);
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minescrap = !minescrap;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minescrap)).name("minescrap").tooltip("@client.fdpanel.minescrap");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.scrap, !isOreEnabled(Items.scrap)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.scrap))).name("minescrap").tooltip("@client.fdpanel.minescrap");
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        mineBerylliumwall = !mineBerylliumwall;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(mineBerylliumwall)).name("Beryllium").tooltip("@client.fdpanel.mineberyl");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.beryllium, !isOreEnabled(Items.beryllium)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.beryllium))).name("Beryllium").tooltip("@client.fdpanel.mineberyl");
 
                     tb.row();
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        minetitan = !minetitan;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(minetitan)).name("minetitan").tooltip("@client.fdpanel.minetitan");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.titanium, !isOreEnabled(Items.titanium)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.titanium))).name("minetitan").tooltip("@client.fdpanel.minetitan");
 
-                    tb.button(Icon.mapSmall, sstylet, () -> {
-                        mineGraphiticwall = !mineGraphiticwall;
-                        updatemineitems();
-                    }).update(i -> i.setChecked(mineGraphiticwall)).name("mineGraphiticwall").tooltip("@client.fdpanel.minegraphitic");
+                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.graphite, !isOreEnabled(Items.graphite)))
+                            .update(i -> i.setChecked(isOreEnabled(Items.graphite))).name("mineGraphiticwall").tooltip("@client.fdpanel.minegraphitic");
 
                 });
 
@@ -403,6 +393,16 @@ public class PanelFragment extends Table{
                         b.setChecked(on);
                         b.getImage().setColor(on ? Color.acid : Color.white);
                     }).name("conveyorpathfind").tooltip("@client.fdpanel.conveyorpathfind")
+                            .size(sz);
+
+                    t.button(Icon.link, sstylet, () -> {
+                        boolean on = !settings.getBool("plastaniumcrossbridges", true);
+                        settings.put("plastaniumcrossbridges", on);
+                    }).update(b -> {
+                        boolean on = settings.getBool("plastaniumcrossbridges", true);
+                        b.setChecked(on);
+                        b.getImage().setColor(on ? Color.acid : Color.white);
+                    }).name("plastaniumpathfind").tooltip("@client.fdpanel.plastaniumpathfind")
                             .size(sz);
 
                     // Safe mining: skip enemy turret range + 5 tiles
@@ -898,6 +898,7 @@ public class PanelFragment extends Table{
 
     public static void startmining() {
         if(player == null || player.team() == null || player.team().data().core() == null) return;
+        if(itemtomine.isEmpty()) loadMiningPrefs();
         // Copy items — MinePath keeps the Seq reference; clear() on join would empty an active path
         Seq<Item> ores = itemtomine.copy();
         if(ores.isEmpty() && player.unit() != null && player.unit().type != null){
@@ -934,9 +935,9 @@ public class PanelFragment extends Table{
 
         updatemineitems();
         if(itemtomine.isEmpty()){
-            minecopper = minelead = minetitan = true;
-            mineBerylliumwall = mineGraphiticwall = true;
-            updatemineitems();
+            setOreEnabled(Items.copper, true);
+            setOreEnabled(Items.lead, true);
+            setOreEnabled(Items.titanium, true);
         }
 
         eneblemining = true;
@@ -1335,27 +1336,195 @@ public class PanelFragment extends Table{
     }
 
 
-    private void updatemineitems() { //Выбор руд
-        if (player == null || player.unit() == null) return;
-
-        if (minecopper){if(!itemtomine.contains(Items.copper)) itemtomine.add(Items.copper);} else {if(itemtomine.contains(Items.copper)){itemtomine.remove(Items.copper);}}
-        if (minelead){if(!itemtomine.contains(Items.lead)) itemtomine.add(Items.lead);} else {if(itemtomine.contains(Items.lead)){itemtomine.remove(Items.lead);}}
-        if (minesand){if(!itemtomine.contains(Items.sand)) itemtomine.add(Items.sand);} else {if(itemtomine.contains(Items.sand)){itemtomine.remove(Items.sand);}}
-        if (minecoal){if(!itemtomine.contains(Items.coal)) itemtomine.add(Items.coal);} else {if(itemtomine.contains(Items.coal)){itemtomine.remove(Items.coal);}}
-        if (minescrap){if(!itemtomine.contains(Items.scrap)) itemtomine.add(Items.scrap);} else {if(itemtomine.contains(Items.scrap)){itemtomine.remove(Items.scrap);}}
-        if (minetitan){if(!itemtomine.contains(Items.titanium)) itemtomine.add(Items.titanium);} else {if(itemtomine.contains(Items.titanium)){itemtomine.remove(Items.titanium);}}
-        if (mineBerylliumwall){if(!itemtomine.contains(Items.beryllium)) itemtomine.add(Items.beryllium);} else {if(itemtomine.contains(Items.beryllium)){itemtomine.remove(Items.beryllium);}}
-        if (mineGraphiticwall){if(!itemtomine.contains(Items.graphite)) itemtomine.add(Items.graphite);} else {if(itemtomine.contains(Items.graphite)){itemtomine.remove(Items.graphite);}}
-
-        if((player.unit().type == UnitTypes.evoke)||(player.unit().type == UnitTypes.incite)||(player.unit().type == UnitTypes.emanate)){
-            if(itemtomine.contains(Items.copper)){itemtomine.remove(Items.copper);}
-            if(itemtomine.contains(Items.lead)){itemtomine.remove(Items.lead);}
-            if(itemtomine.contains(Items.sand)){itemtomine.remove(Items.sand);}
-            if(itemtomine.contains(Items.coal)){itemtomine.remove(Items.coal);}
-            if(itemtomine.contains(Items.scrap)){itemtomine.remove(Items.scrap);}
-            if(itemtomine.contains(Items.titanium)){itemtomine.remove(Items.titanium);}
+    public static Item[] allMineOres(){
+        if(Items.copper == null) return ALL_MINE_ORES;
+        if(ALL_MINE_ORES.length == 0 || ALL_MINE_ORES[0] == null){
+            ALL_MINE_ORES = new Item[]{
+                Items.copper, Items.lead, Items.sand, Items.coal, Items.scrap,
+                Items.titanium, Items.thorium, Items.beryllium, Items.graphite, Items.tungsten
+            };
         }
+        return ALL_MINE_ORES;
+    }
 
+    public static boolean isOreEnabled(Item it){
+        return it != null && enabledOres.contains(it);
+    }
+
+    public static boolean typeCanMine(UnitType type, Item it){
+        if(type == null || it == null || type.mineTier < 0) return false;
+        if(type.mineTier < it.hardness) return false;
+        boolean wall = it == Items.beryllium || it == Items.tungsten || it == Items.graphite;
+        if(wall) return type.mineWalls;
+        return type.mineFloor || type.mineTier > 0;
+    }
+
+    public static boolean isMinerTypeOn(UnitType type){
+        if(type == UnitTypes.mono) return mineMonos;
+        if(type == UnitTypes.poly) return minePolys;
+        if(type == UnitTypes.pulsar) return minePulss;
+        if(type == UnitTypes.mega) return mineMegas;
+        if(type == UnitTypes.quasar) return mineQuazs;
+        return false;
+    }
+
+    public static void setManualOreAssign(boolean on){
+        manualOreAssign = on;
+        Core.settings.put("fd-manualOreAssign", on);
+        MinersFDAI.forceReassign();
+    }
+
+    public static void setMinerTypeOn(UnitType type, boolean on){
+        if(type == UnitTypes.mono) mineMonos = on;
+        else if(type == UnitTypes.poly) minePolys = on;
+        else if(type == UnitTypes.pulsar) minePulss = on;
+        else if(type == UnitTypes.mega) mineMegas = on;
+        else if(type == UnitTypes.quasar) mineQuazs = on;
+        MinersFDAI.forceReassign();
+    }
+
+    public static void setOreEnabled(Item it, boolean on){
+        setOreEnabled(it, on, true);
+    }
+
+    public static void setOreEnabled(Item it, boolean on, boolean save){
+        if(it == null) return;
+        if(on) enabledOres.add(it);
+        else enabledOres.remove(it);
+        syncLegacyOreFlags();
+        if(save) saveMiningPrefs();
+        MinersFDAI.forceReassign();
+    }
+
+    public static ObjectSet<Item> oresFor(UnitType type){
+        if(type == null) return new ObjectSet<>();
+        ObjectSet<Item> s = unitMineOres.get(type);
+        if(s == null){
+            s = new ObjectSet<>();
+            unitMineOres.put(type, s);
+        }
+        return s;
+    }
+
+    public static boolean unitAssigned(UnitType type, Item it){
+        return oresFor(type).contains(it);
+    }
+
+    public static void toggleUnitOre(UnitType type, Item it){
+        if(type == null || it == null) return;
+        ObjectSet<Item> s = oresFor(type);
+        if(s.contains(it)) s.remove(it);
+        else s.add(it);
+        saveMiningPrefs();
+        MinersFDAI.forceReassign();
+    }
+
+    public static Seq<Item> possibleOresFor(UnitType type, Seq<Item> enabled){
+        Seq<Item> assigned = new Seq<>();
+        if(enabled == null || enabled.isEmpty()) return assigned;
+        if(!manualOreAssign){
+            for(Item it : enabled){
+                if(it != null && typeCanMine(type, it)) assigned.add(it);
+            }
+            return assigned;
+        }
+        ObjectSet<Item> pref = oresFor(type);
+        for(Item it : enabled){
+            if(it == null || !typeCanMine(type, it)) continue;
+            if(pref.contains(it)) assigned.add(it);
+        }
+        return assigned;
+    }
+
+    static void defaultUnitOres(){
+        unitMineOres.clear();
+        oresFor(UnitTypes.mono).addAll(Items.copper, Items.lead);
+        oresFor(UnitTypes.poly).add(Items.sand);
+        oresFor(UnitTypes.pulsar).add(Items.coal);
+        oresFor(UnitTypes.mega).add(Items.titanium);
+        oresFor(UnitTypes.quasar).add(Items.titanium);
+    }
+
+    public static void loadMiningPrefs(){
+        if(Items.copper == null) return;
+        allMineOres();
+        enabledOres.clear();
+        String raw = Core.settings.getString("fd-ores", "copper,lead,sand,coal,titanium");
+        for(String n : raw.split(",")){
+            Item it = content.items().find(i -> i.name.equals(n.trim()));
+            if(it != null) enabledOres.add(it);
+        }
+        if(enabledOres.isEmpty()){
+            enabledOres.addAll(Items.copper, Items.lead, Items.sand, Items.coal, Items.titanium);
+        }
+        defaultUnitOres();
+        loadUnitOres(UnitTypes.mono, "fd-ore-mono", "copper,lead");
+        loadUnitOres(UnitTypes.poly, "fd-ore-poly", "sand");
+        loadUnitOres(UnitTypes.pulsar, "fd-ore-pulsar", "coal");
+        loadUnitOres(UnitTypes.mega, "fd-ore-mega", "titanium");
+        loadUnitOres(UnitTypes.quasar, "fd-ore-quasar", "titanium");
+        manualOreAssign = Core.settings.getBool("fd-manualOreAssign", false);
+        syncLegacyOreFlags();
+    }
+
+    static void loadUnitOres(UnitType type, String key, String def){
+        ObjectSet<Item> s = oresFor(type);
+        s.clear();
+        String raw = Core.settings.getString(key, def);
+        if(raw == null || raw.trim().isEmpty()) raw = def;
+        for(String n : raw.split(",")){
+            Item it = content.items().find(i -> i.name.equals(n.trim()));
+            if(it != null) s.add(it);
+        }
+        if(s.isEmpty() && def != null){
+            for(String n : def.split(",")){
+                Item it = content.items().find(i -> i.name.equals(n.trim()));
+                if(it != null) s.add(it);
+            }
+        }
+    }
+
+    static void saveMiningPrefs(){
+        StringBuilder sb = new StringBuilder();
+        for(Item it : allMineOres()){
+            if(it == null || !enabledOres.contains(it)) continue;
+            if(sb.length() > 0) sb.append(',');
+            sb.append(it.name);
+        }
+        Core.settings.put("fd-ores", sb.toString());
+        saveUnitOres(UnitTypes.mono, "fd-ore-mono");
+        saveUnitOres(UnitTypes.poly, "fd-ore-poly");
+        saveUnitOres(UnitTypes.pulsar, "fd-ore-pulsar");
+        saveUnitOres(UnitTypes.mega, "fd-ore-mega");
+        saveUnitOres(UnitTypes.quasar, "fd-ore-quasar");
+    }
+
+    static void saveUnitOres(UnitType type, String key){
+        ObjectSet<Item> s = oresFor(type);
+        StringBuilder sb = new StringBuilder();
+        for(Item it : allMineOres()){
+            if(it == null || !s.contains(it)) continue;
+            if(sb.length() > 0) sb.append(',');
+            sb.append(it.name);
+        }
+        Core.settings.put(key, sb.toString());
+    }
+
+    static void syncLegacyOreFlags(){
+        minecopper = enabledOres.contains(Items.copper);
+        minelead = enabledOres.contains(Items.lead);
+        minetitan = enabledOres.contains(Items.titanium);
+        minesand = enabledOres.contains(Items.sand);
+        minecoal = enabledOres.contains(Items.coal);
+        minescrap = enabledOres.contains(Items.scrap);
+        mineBerylliumwall = enabledOres.contains(Items.beryllium);
+        mineGraphiticwall = enabledOres.contains(Items.graphite);
+        itemtomine.clear();
+        for(Item it : enabledOres) itemtomine.add(it);
+    }
+
+    private void updatemineitems(){
+        syncLegacyOreFlags();
     }
     private void drawBuildings() {
         if (!viewprogressunit && !viewprogresbuild && !viewEfficiency) return;
