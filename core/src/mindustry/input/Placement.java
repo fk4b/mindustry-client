@@ -7,10 +7,12 @@ import arc.math.geom.*;
 import arc.struct.*;
 import arc.util.pooling.*;
 import mindustry.entities.units.*;
+import mindustry.gen.Building;
 import mindustry.world.*;
 import mindustry.content.Blocks;
 import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.payloads.*;
+import mindustry.world.blocks.power.PowerNode;
 import mindustry.world.Build;
 
 import java.util.*;
@@ -183,6 +185,166 @@ public class Placement{
         }
 
         plans.addAll(extra);
+    }
+
+    private static boolean isRelocatablePowerNode(Building b){
+        return b != null && (b.block == Blocks.powerNode || b.block == Blocks.powerNodeLarge);
+    }
+
+    private static boolean nodeOverlaps(Building node, int x, int y){
+        int off = (node.block.size - 1) / 2;
+        int ox = node.tileX() - off, oy = node.tileY() - off;
+        return x >= ox && y >= oy && x < ox + node.block.size && y < oy + node.block.size;
+    }
+
+    private static void markFootprint(IntSet set, Block block, int x, int y){
+        int off = (block.size - 1) / 2;
+        for(int dx = 0; dx < block.size; dx++){
+            for(int dy = 0; dy < block.size; dy++){
+                set.add(Point2.pack(x + dx - off, y + dy - off));
+            }
+        }
+    }
+
+    private static boolean footprintFree(Block block, int x, int y, IntSet conveyor, IntSet used, ObjectSet<Building> removing){
+        int off = (block.size - 1) / 2;
+        for(int dx = 0; dx < block.size; dx++){
+            for(int dy = 0; dy < block.size; dy++){
+                int tx = x + dx - off, ty = y + dy - off;
+                int packed = Point2.pack(tx, ty);
+                if(conveyor.contains(packed) || used.contains(packed)) return false;
+                Tile t = world.tile(tx, ty);
+                if(t == null) return false;
+                if(t.floor().isDeep() && !block.placeableLiquid) return false;
+                if(t.build != null){
+                    if(removing.contains(t.build)) continue;
+                    if(t.block().alwaysReplace) continue;
+                    return false;
+                }
+                if(t.block() != Blocks.air && !t.block().alwaysReplace && t.solid()) return false;
+            }
+        }
+        return true;
+    }
+
+    private static Point2 findNodeSpot(int cx, int cy, int sdx, int sdy, Block block, IntSet conveyor, IntSet used, ObjectSet<Building> removing, int maxDist){
+        int ldx = -sdy, ldy = sdx;
+        for(int dist = 1; dist <= maxDist; dist++){
+            int bx = cx + sdx * dist;
+            int by = cy + sdy * dist;
+            for(int slide = 0; slide <= maxDist; slide++){
+                int[] offs = slide == 0 ? new int[]{0} : new int[]{slide, -slide};
+                for(int s : offs){
+                    int x = bx + ldx * s;
+                    int y = by + ldy * s;
+                    if(footprintFree(block, x, y, conveyor, used, removing)){
+                        return new Point2(x, y);
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean nodesLinkable(Block block, int x1, int y1, int x2, int y2){
+        if(!(block instanceof PowerNode pn)) return true;
+        float range = pn.laserRange * tilesize;
+        float o = block.offset;
+        return Mathf.dst(x1 * tilesize + o, y1 * tilesize + o, x2 * tilesize + o, y2 * tilesize + o) <= range;
+    }
+
+    /**
+     * Plastanium line hits a small/large power node: break it and place two of the same
+     * type on opposite sides of the belt so they can link across immediately.
+     */
+    public static void applyPlastaniumNodeRelocate(Seq<BuildPlan> plans){
+        if(plans == null || plans.isEmpty() || player == null) return;
+
+        IntSet occupied = new IntSet();
+        for(BuildPlan p : plans){
+            if(!p.breaking && p.block != null) occupied.add(Point2.pack(p.x, p.y));
+        }
+
+        ObjectSet<Building> nodes = new ObjectSet<>();
+        IntMap<int[]> hit = new IntMap<>();
+        for(int i = 0; i < plans.size; i++){
+            BuildPlan p = plans.get(i);
+            if(p.breaking) continue;
+            Tile t = world.tile(p.x, p.y);
+            if(t == null || t.build == null) continue;
+            Building b = t.build;
+            if(b.team != player.team() || !isRelocatablePowerNode(b)) continue;
+            nodes.add(b);
+            int axis = planAxis(plans, i);
+            hit.put(b.pos(), new int[]{p.x, p.y, axis});
+        }
+        if(nodes.isEmpty()) return;
+
+        IntSet used = new IntSet();
+        Seq<BuildPlan> breaks = new Seq<>();
+        Seq<BuildPlan> places = new Seq<>();
+        IntSet broken = new IntSet();
+
+        for(Building node : nodes){
+            if(!broken.add(node.pos())) continue;
+            breaks.add(new BuildPlan(node.tileX(), node.tileY()));
+
+            int[] h = hit.get(node.pos());
+            int cx = h != null ? h[0] : node.tileX();
+            int cy = h != null ? h[1] : node.tileY();
+            int axis = h != null ? h[2] : -1;
+            if(axis < 0) axis = 0;
+
+            Block block = node.block;
+            int maxDist = Math.max(8, block instanceof PowerNode pn ? (int)pn.laserRange : 8);
+            int sdx = axis == 0 ? 0 : 1;
+            int sdy = axis == 0 ? 1 : 0;
+
+            Point2 a = findNodeSpot(cx, cy, sdx, sdy, block, occupied, used, nodes, maxDist);
+            Point2 b = findNodeSpot(cx, cy, -sdx, -sdy, block, occupied, used, nodes, maxDist);
+            if(a == null && b == null && axis == 0){
+                a = findNodeSpot(cx, cy, 1, 0, block, occupied, used, nodes, maxDist);
+                b = findNodeSpot(cx, cy, -1, 0, block, occupied, used, nodes, maxDist);
+            }
+
+            if(a != null) markFootprint(used, block, a.x, a.y);
+            if(b != null) markFootprint(used, block, b.x, b.y);
+
+            Seq<Point2> linksA = new Seq<>();
+            Seq<Point2> linksB = new Seq<>();
+            if(a != null && b != null && nodesLinkable(block, a.x, a.y, b.x, b.y)){
+                linksA.add(new Point2(b.x - a.x, b.y - a.y));
+                linksB.add(new Point2(a.x - b.x, a.y - b.y));
+            }
+            if(node.power != null){
+                for(int i = 0; i < node.power.links.size; i++){
+                    Building other = world.build(node.power.links.get(i));
+                    if(other == null || nodes.contains(other)) continue;
+                    if(a != null) linksA.add(new Point2(other.tileX() - a.x, other.tileY() - a.y));
+                    if(b != null) linksB.add(new Point2(other.tileX() - b.x, other.tileY() - b.y));
+                }
+            }
+
+            int maxLinks = block instanceof PowerNode pn ? pn.maxNodes : 10;
+            if(linksA.size > maxLinks) linksA.truncate(maxLinks);
+            if(linksB.size > maxLinks) linksB.truncate(maxLinks);
+
+            if(a != null){
+                BuildPlan pa = new BuildPlan(a.x, a.y, 0, block);
+                if(linksA.size > 0) pa.config = linksA.toArray();
+                places.add(pa);
+            }
+            if(b != null){
+                BuildPlan pb = new BuildPlan(b.x, b.y, 0, block);
+                if(linksB.size > 0) pb.config = linksB.toArray();
+                places.add(pb);
+            }
+        }
+
+        for(int i = breaks.size - 1; i >= 0; i--){
+            plans.insert(0, breaks.get(i));
+        }
+        plans.addAll(places);
     }
 
     public static Seq<Point2> pathfindLine(boolean conveyors, int startX, int startY, int endX, int endY){

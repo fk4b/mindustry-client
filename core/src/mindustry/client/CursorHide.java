@@ -24,6 +24,16 @@ public final class CursorHide {
             && !player.dead();
     }
 
+    /** FD-panel toggle: look semi-transparent like in assist, while just flying. */
+    public static boolean smartTransparency() {
+        return Core.settings.getBool("smarttransparency");
+    }
+
+    /** Embed ASSISTING bits so other Foo clients draw this player with formation alpha. */
+    public static boolean sendAssistingFlag() {
+        return Navigation.currentlyFollowing instanceof AssistPath || smartTransparency();
+    }
+
     /**
      * Pins reported aim to the unit while not shooting:
      * - {@link Unit#aim} so {@code Main.floatEmbed()}/{@code clientSnapshot} send unit pos
@@ -54,7 +64,7 @@ public final class CursorHide {
         float ay = unit.y;
 
         boolean show = Core.settings.getBool("displayasuser");
-        boolean assist = Navigation.currentlyFollowing instanceof AssistPath;
+        boolean assist = sendAssistingFlag();
 
         if (assist && show) {
             return aimPos.set(

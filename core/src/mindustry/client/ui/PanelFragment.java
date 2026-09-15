@@ -418,6 +418,15 @@ public class PanelFragment extends Table{
 
                 t.row();
 
+                t.button(Icon.effect, sstylet, () -> {
+                    boolean on = !settings.getBool("smarttransparency", false);
+                    settings.put("smarttransparency", on);
+                }).update(b -> {
+                    boolean on = settings.getBool("smarttransparency", false);
+                    b.setChecked(on);
+                    b.getImage().setColor(on ? Color.acid : Color.white);
+                }).name("smarttransparency").tooltip("@client.fdpanel.smarttransparency");
+
                 // Keep equal-size buttons per row so the panel stays a regular grid
                 t.button(Icon.eyeOffSmall, sstyle, () -> {
                     enableLight = !enableLight;

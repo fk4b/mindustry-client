@@ -281,15 +281,16 @@ object Main : ApplicationListener {
      *  Note: NetClient also applies [CursorHide.adjustSnapshotAim] so hide works without recompiling this class. */
     fun floatEmbed(): Vec2 {
         val show = Core.settings.getBool("displayasuser")
+        val assist = CursorHide.sendAssistingFlag()
         return when {
             Vars.player.dead() -> Tmp.v1.set(0F, 0F)
             Server.current.ghost -> Tmp.v1.set(Vars.player.unit().aimX, Vars.player.unit().aimY)
-            Navigation.currentlyFollowing is AssistPath && show ->
+            assist && show ->
                 Tmp.v1.set(
                     FloatEmbed.embedInFloat(Vars.player.unit().aimX, ClientVars.FOO_USER),
                     FloatEmbed.embedInFloat(Vars.player.unit().aimY, ClientVars.ASSISTING)
                 )
-            Navigation.currentlyFollowing is AssistPath ->
+            assist ->
                 Tmp.v1.set(
                     FloatEmbed.embedInFloat(Vars.player.unit().aimX, ClientVars.ASSISTING),
                     FloatEmbed.embedInFloat(Vars.player.unit().aimY, ClientVars.ASSISTING)

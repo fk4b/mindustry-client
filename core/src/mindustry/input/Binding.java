@@ -179,8 +179,8 @@ public class Binding{
     assistPlayerFreemove = KeyBind.add("assist_player_freemove", KeyCode.mouseLeft, KeyCode.shiftLeft, KeyCode.altLeft),
     /** Bridge & unit control modifier (default Alt): conveyor/duct/conduit → router/bridge; command mode move without attacking. */
     bridgeModifier = KeyBind.add("bridge_modifier", KeyCode.altLeft),
-    blockShowPlans = KeyBind.add("block_show_plans", KeyCode.unset),
-    deathShowPlans = KeyBind.add("death_show_plans", KeyCode.unset),
+    blockShowPlans = KeyBind.add("block_show_plans", KeyCode.plus),
+    deathShowPlans = KeyBind.add("death_show_plans", KeyCode.asterisk),
     toggleFdListFrag = KeyBind.add("toogle_fdlsit_frag", KeyCode.p, "client"),
     runJS = KeyBind.add("run_js", KeyCode.u)
     ;

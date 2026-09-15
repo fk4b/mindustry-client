@@ -199,6 +199,12 @@ abstract class BuilderComp implements Posc, Statusc, Teamc, Rotc{
                 }else if(!current.initialized && current.breaking && Build.validBreak(team, current.x, current.y)){
                     Call.beginBreak(self(), team, current.x, current.y);
                 }else{
+                    // Place plan sitting on a block that is queued to be broken — try again after the break.
+                    if(!current.breaking && occupantQueuedForBreak(current)){
+                        current.stuck = true;
+                        plans.addLast(plans.removeFirst());
+                        continue;
+                    }
                     plans.removeFirst();
                     continue;
                 }
@@ -254,8 +260,20 @@ abstract class BuilderComp implements Posc, Statusc, Teamc, Rotc{
         }
     }
 
+    boolean occupantQueuedForBreak(BuildPlan place){
+        Tile t = world.tile(place.x, place.y);
+        if(t == null || t.build == null) return false;
+        Building b = t.build;
+        for(BuildPlan p : plans){
+            if(p.breaking && p.x == b.tileX() && p.y == b.tileY()) return true;
+        }
+        return false;
+    }
+
     /** @return whether this plan should be skipped, in favor of the next one. */
     boolean shouldSkip(BuildPlan plan, @Nullable Building core){
+        // Wait for the occupant to be deconstructed before placing on that tile.
+        if(!plan.breaking && occupantQueuedForBreak(plan)) return true;
         //plans that you have at least *started* are considered
         if(plan.priority || state.rules.infiniteResources || team.rules().infiniteResources || plan.breaking || core == null || plan.isRotation(team) || plan.isDerelictRepair()) return false;
 
@@ -294,7 +312,8 @@ abstract class BuilderComp implements Posc, Statusc, Teamc, Rotc{
         boolean isLocalPlayer = isLocal();
         if(!isLocalPlayer || plans.size < 10){
             for(BuildPlan plan : plans){
-                if(plan.x == place.x && plan.y == place.y && !(state.rules.editor && plan.block != place.block)){ //to support terrain copying
+                if(plan.x == place.x && plan.y == place.y && plan.breaking == place.breaking
+                    && !(state.rules.editor && plan.block != place.block)){ //to support terrain copying
                     replace = plan;
                     break;
                 }
@@ -302,7 +321,8 @@ abstract class BuilderComp implements Posc, Statusc, Teamc, Rotc{
         }else{
             control.input.playerPlanTree.intersect(place.bounds(Tmp.r3), planSeq);
             for(BuildPlan plan : planSeq){
-                if(plan.x == place.x && plan.y == place.y && !(state.rules.editor && plan.block != place.block)){ //to support terrain copying
+                if(plan.x == place.x && plan.y == place.y && plan.breaking == place.breaking
+                    && !(state.rules.editor && plan.block != place.block)){ //to support terrain copying
                     replace = plan;
                     break;
                 }

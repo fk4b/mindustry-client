@@ -188,4 +188,21 @@ class Migrations {
             }
         }
     }
+
+    private fun migration14() {
+        // 1.6.0 port accidentally defaulted FD history overlays to unset.
+        // Numpad/touchpad plus (NumLock) was KeyCode.plus and hid player block plans.
+        val unset = KeyCode.unset.ordinal
+        val plansKey = "keybind-default-keyboard-block_show_plans-key"
+        val deathsKey = "keybind-default-keyboard-death_show_plans-key"
+        if (!settings.has(plansKey) || settings.getInt(plansKey, unset) == unset) {
+            settings.put(plansKey, KeyCode.plus.ordinal)
+        }
+        if (!settings.has(deathsKey) || settings.getInt(deathsKey, unset) == unset) {
+            settings.put(deathsKey, KeyCode.asterisk.ordinal)
+        }
+        for (bind in KeyBind.all) {
+            bind.load()
+        }
+    }
 }

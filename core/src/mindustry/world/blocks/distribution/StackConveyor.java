@@ -94,6 +94,7 @@ public class StackConveyor extends Block implements Autotiler{
         if(br instanceof ItemBridge ib){
             Placement.applyPlastaniumCrossBridges(plans, ib);
         }
+        Placement.applyPlastaniumNodeRelocate(plans);
     }
 
     @Override

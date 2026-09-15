@@ -1959,6 +1959,12 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         var temp = new BuildPlan[plans.size + plans.count(plan -> plan.block == Blocks.waterExtractor) * 3]; // Cursed but works good enough for me
         var added = 0;
         IntSet toBreak = force ? new IntSet() : null;
+        ObjectSet<Building> flushBreaking = new ObjectSet<>();
+        for(BuildPlan plan : plans){
+            if(!plan.breaking) continue;
+            Tile bt = world.tile(plan.x, plan.y);
+            if(bt != null && bt.build != null) flushBreaking.add(bt.build);
+        }
         for(BuildPlan plan : plans){
             if (plan.block == null) continue;
 
@@ -2009,7 +2015,8 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             }
 
             boolean valid = validPlace(plan.x, plan.y, plan.block, plan.rotation, null, true)
-                || (state.rules.editor && plan.block instanceof OreBlock o && o.wallOre); //Always allow placing wall ores in editor mode, because there might be a wall in the plans that makes it valid
+                || (state.rules.editor && plan.block instanceof OreBlock o && o.wallOre) //Always allow placing wall ores in editor mode, because there might be a wall in the plans that makes it valid
+                || blockedOnlyByQueuedBreak(plan, flushBreaking);
             if(freeze || (force && world.tile(plan.x, plan.y) != null) || valid){
                 BuildPlan copy = plan.copy();
                 if(configLogic && copy.block instanceof LogicBlock && copy.config != null) { // Store the configs for logic blocks locally, they cause issues when sent to the server
@@ -2861,6 +2868,25 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
                 }
             }
         }
+    }
+
+    /** True when the only buildings in this plan's footprint are ones already queued to be broken. */
+    private static boolean blockedOnlyByQueuedBreak(BuildPlan plan, ObjectSet<Building> breaking){
+        if(plan.block == null || breaking.isEmpty()) return false;
+        int size = plan.block.size;
+        int off = (size - 1) / 2;
+        boolean any = false;
+        for(int dx = 0; dx < size; dx++){
+            for(int dy = 0; dy < size; dy++){
+                Tile t = world.tile(plan.x + dx - off, plan.y + dy - off);
+                if(t == null) return false;
+                if(t.build != null){
+                    if(!breaking.contains(t.build)) return false;
+                    any = true;
+                }
+            }
+        }
+        return any;
     }
 
     public void tryBreakBlock(int x, int y){

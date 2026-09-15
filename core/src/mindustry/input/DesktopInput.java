@@ -24,6 +24,7 @@ import mindustry.client.antigrief.*;
 import mindustry.client.communication.*;
 import mindustry.client.navigation.*;
 import mindustry.client.navigation.waypoints.*;
+import mindustry.client.fallen.HistoryRenderer;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
 import mindustry.core.*;
@@ -149,6 +150,12 @@ public class DesktopInput extends InputHandler{
                         }
                         if (hidingPlans) {
                             str.append("\n").append(bundle.format("client.toggleplans", Binding.hideBlocks.value.key.toString()));
+                        }
+                        if(HistoryRenderer.showBlocks || PlayerBlockListFragment.name_for_plans != null){
+                            str.append("\n").append(bundle.format("client.showplblplan", Binding.blockShowPlans.value.key.toString()));
+                        }
+                        if(HistoryRenderer.showDeaths){
+                            str.append("\n").append(bundle.format("client.showdeathlplan", Binding.deathShowPlans.value.key.toString()));
                         }
                         if(Navigation.state == NavigationState.RECORDING){
                             str.append("\n").append(bundle.format("client.waypoint", Binding.placeWaypoint.value.key.toString()));

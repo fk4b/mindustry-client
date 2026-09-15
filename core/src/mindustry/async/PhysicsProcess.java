@@ -1,5 +1,6 @@
 package mindustry.async;
 
+import arc.Core;
 import arc.math.*;
 import arc.math.geom.*;
 import arc.math.geom.QuadTree.*;
@@ -71,8 +72,12 @@ public class PhysicsProcess implements AsyncProcess{
         maxPhysicsTime = 0;
 
         //move entities
+        boolean skipLocalCollision = Core.settings.getBool("no_collisions");
         for(PhysicRef ref : refs){
             Physicsc entity = ref.entity;
+
+            // FD: skip applying physics push to the local unit so you don't bump into others
+            if(skipLocalCollision && ref.entity.isLocal()) continue;
 
             //move by delta
             entity.move(ref.body.x - ref.startX, ref.body.y - ref.startY);
@@ -195,6 +200,7 @@ public class PhysicsProcess implements AsyncProcess{
                     PhysicsBody body = bodyItems[i];
                     //for clients, the only body that collides is the local one; all other physics simulations are handled by the server.
                     if(!body.local) continue;
+                    if(Vars.net.client() && Core.settings.getBool("no_collisions")) continue;
 
                     seq.size = 0;
                     tree.intersect(body.x - body.radius, body.y - body.radius, body.radius * 2, body.radius * 2, seq);
