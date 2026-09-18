@@ -571,11 +571,6 @@ public class PanelFragment extends Table{
                     CommandHandler.CommandResponse response = ClientVars.clientCommandHandler.handleMessage(message, player);
                 }).name("fixcode").tooltip("@client.fdpanel.fixcode");
 
-                t.button(Icon.gridSmall, sstylet, () -> {
-                    Core.settings.put("prod-anal", !Core.settings.getBool("prod-anal"));
-                }).update(i -> i.setChecked(settings.getBool("prod-anal"))).name("prod-anal").tooltip("@client.fdpanel.prodanal");
-
-
                 t.row();
 
                 t.button(Icon.diagonalSmall, sstylet, () -> {
@@ -805,7 +800,7 @@ public class PanelFragment extends Table{
     }
 
     /**
-     * Next wave enemy composition (FD panel).
+     * Next wave enemy composition (side panel).
      * Same routing as Eye of Sauron: public chat only when "Unit in chat" ({@code unitatchat}) is on.
      */
     private void checkNextWave(){

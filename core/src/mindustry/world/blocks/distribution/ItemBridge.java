@@ -239,9 +239,13 @@ public class ItemBridge extends Block{
         public void playerPlaced(Object config){
             super.playerPlaced(config);
 
-            Tile link = findLink(tile.x, tile.y);
-            if(linkValid(tile, link) && this.link != link.pos() && !proximity.contains(link.build)){
-                link.build.configure(tile.pos());
+            // Plans that already carry a config (including Integer -1 = no link) must not
+            // reverse-autolink lastBuild — that is what crossed parallel hops.
+            if(config == null){
+                Tile link = findLink(tile.x, tile.y);
+                if(linkValid(tile, link) && this.link != link.pos() && !proximity.contains(link.build)){
+                    link.build.configure(tile.pos());
+                }
             }
 
             lastBuild = this;

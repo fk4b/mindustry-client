@@ -573,6 +573,9 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("itemslog", true);
         client.checkPref("unitlog", true);
         client.checkPref("fd-logic-qol", false);
+        client.checkPref("toolglobalchat", true, enabled -> {
+            if(ui != null && ui.toolChat != null) ui.toolChat.setEnabled(enabled);
+        });
         client.updateUuid();
         client.checkPref("forcechat", false);
         client.sliderPref("uchatmode", 0, 0, 4, i -> {

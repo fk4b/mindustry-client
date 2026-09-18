@@ -59,6 +59,9 @@ public class PlacementFragment{
     boolean wasHovered;
     public Table blockTable, toggler, topTable, blockCatTable, commandTable;
     Stack mainStack;
+    private Table schemMissingBox;
+    private int lastSchemMissingSig = Integer.MIN_VALUE;
+    private ItemSeq schemReqTmp;
     public ScrollPane blockPane;
     Runnable rebuildCommand;
     boolean blockSelectEnd, wasCommandMode;
@@ -308,6 +311,16 @@ public class PlacementFragment{
         parent.fill(full -> {
             toggler = full;
             full.bottom().right().visible(() -> ui.hudfrag.shown());
+
+            // Missing schematic resources: sits above the block/schematic bar, right-aligned
+            full.table(wrap -> {
+                wrap.touchable = Touchable.disabled;
+                wrap.table(Styles.black6, box -> {
+                    schemMissingBox = box;
+                    box.defaults().left();
+                    box.update(this::refreshSchemMissing);
+                }).margin(8f);
+            }).visible(this::schemMissingVisible).padBottom(8f).right().row();
 
             full.table(frame -> {
 
@@ -959,5 +972,80 @@ public class PlacementFragment{
         }
 
         return null;
+    }
+
+    private boolean schemMissingVisible(){
+        if(player == null || state == null || state.rules == null) return false;
+        if(state.rules.infiniteResources || state.rules.isInfiniteResources(player.team())) return false;
+        return control != null && control.input != null && control.input.selectPlans.any();
+    }
+
+    private ItemSeq schemRequirements(){
+        if(schemReqTmp == null) schemReqTmp = new ItemSeq();
+        schemReqTmp.clear();
+        if(control == null || control.input == null) return schemReqTmp;
+        for(BuildPlan p : control.input.selectPlans){
+            if(p == null || p.breaking || p.block == null) continue;
+            for(ItemStack s : p.block.requirements){
+                schemReqTmp.add(s.item, s.amount);
+            }
+        }
+        return schemReqTmp;
+    }
+
+    private int schemMissingSignature(){
+        if(!schemMissingVisible()) return 0;
+        ItemSeq req = schemRequirements();
+        float mul = state.rules.buildCostMultiplier;
+        var have = player.team() != null ? player.team().items() : null;
+        int h = control.input.selectPlans.size * 31;
+        for(Item item : content.items()){
+            int need = Math.round(req.get(item) * mul);
+            if(need <= 0) continue;
+            int got = have == null ? 0 : have.get(item);
+            h = h * 31 + item.id * 10007 + Math.max(0, need - got);
+        }
+        return h;
+    }
+
+    private void refreshSchemMissing(){
+        if(schemMissingBox == null) return;
+        if(!schemMissingVisible()){
+            lastSchemMissingSig = Integer.MIN_VALUE;
+            return;
+        }
+        int sig = schemMissingSignature();
+        if(sig == lastSchemMissingSig) return;
+        lastSchemMissingSig = sig;
+        schemMissingBox.clearChildren();
+        fillSchemMissing(schemMissingBox);
+    }
+
+    private void fillSchemMissing(Table box){
+        box.add("@client.schematic.missing.title").color(Pal.accent).padBottom(4f).left().row();
+
+        ItemSeq req = schemRequirements();
+        float mul = state.rules.buildCostMultiplier;
+        var have = player.team() != null ? player.team().items() : null;
+        boolean any = false;
+
+        for(Item item : content.items()){
+            int need = Math.round(req.get(item) * mul);
+            if(need <= 0) continue;
+            int got = have == null ? 0 : have.get(item);
+            int miss = need - got;
+            if(miss <= 0) continue;
+            any = true;
+            box.table(row -> {
+                row.left();
+                row.image(item.uiIcon).size(iconSmall).padRight(6f);
+                row.add(item.localizedName).color(Color.lightGray).width(120f).left().get().setEllipsis(true);
+                row.add("-" + UI.formatAmount(miss)).style(Styles.outlineLabel).color(Color.scarlet).padLeft(8f).right();
+            }).left().growX().pad(1f).row();
+        }
+
+        if(!any){
+            box.add("@client.schematic.missing.ok").color(Pal.heal).left();
+        }
     }
 }

@@ -836,6 +836,10 @@ public class DesktopInput extends InputHandler{
             if(Core.input.keyTap(Binding.research) && state.isCampaign()) ui.research.toggle();
             if(Core.input.keyTap(Binding.schematicBrowser)) ui.toggleSchematicBrowser();
             else if(Core.input.keyTap(Binding.schematicMenu)) ui.toggleSchematicMenu();
+            if(Core.input.keyTap(Binding.toolSchematicBrowser)){
+                if(ui.toolSchematics.isShown()) ui.toolSchematics.hide();
+                else ui.toolSchematics.show();
+            }
 
             if(Core.input.keyTap(Binding.toggleBlockStatus)){
                 Core.settings.put("blockstatus", !Core.settings.getBool("blockstatus"));
@@ -1149,9 +1153,11 @@ public class DesktopInput extends InputHandler{
                 commandRectY = input.mouseWorldY();
             }else if(!checkConfigTap() && selected != null && !tryRepairDerelict(selected)){
                 //only begin shooting if there's no cursor event
-                // sand (lowPriority ore): single click mines; doubletapmine still applies to other tiles
+                // sand: always one click; other ores respect doubletapmine
+                boolean mineNow = isSand(selected) || !settings.getBool("doubletapmine")
+                    || (selected == prevSelected && Time.timeSinceMillis(selectMillis) < 500);
                 if(!tryTapPlayer(Core.input.mouseWorld().x, Core.input.mouseWorld().y) && !tileTapped(selected.build) && !player.unit().activelyBuilding() && !droppingItem
-                    && !(tryStopMine(selected) || (!(isSand(selected) || settings.getBool("doubletapmine")) || selected == prevSelected && Time.timeSinceMillis(selectMillis) < 500) && tryBeginMine(selected)) && !Core.scene.hasKeyboard()){
+                    && !(tryStopMine(selected) || (mineNow && tryBeginMine(selected))) && !Core.scene.hasKeyboard()){
                     player.shooting = shouldShoot;
                 }
             }else if(!Core.scene.hasKeyboard()){ //if it's out of bounds, shooting is just fine

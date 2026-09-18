@@ -9,7 +9,7 @@ import mindustry.logic.LExecutor.*;
 import mindustry.logic.LStatements.*;
 
 /**
- * FD Logic Dialog QoL helpers. All features are gated by {@link #enabled()}.
+ * Logic Dialog QoL helpers. All features are gated by {@link #enabled()}.
  */
 public final class FdLogicQol{
     public static final String SETTING = "fd-logic-qol";

@@ -182,6 +182,8 @@ public class Binding{
     blockShowPlans = KeyBind.add("block_show_plans", KeyCode.plus),
     deathShowPlans = KeyBind.add("death_show_plans", KeyCode.asterisk),
     toggleFdListFrag = KeyBind.add("toogle_fdlsit_frag", KeyCode.p, "client"),
+    toolSchematicBrowser = KeyBind.add("tool_schematic_browser", KeyCode.unset),
+    toolGlobalChat = KeyBind.add("tool_global_chat", KeyCode.unset),
     runJS = KeyBind.add("run_js", KeyCode.u)
     ;
 

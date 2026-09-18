@@ -76,7 +76,7 @@ public class PhysicsProcess implements AsyncProcess{
         for(PhysicRef ref : refs){
             Physicsc entity = ref.entity;
 
-            // FD: skip applying physics push to the local unit so you don't bump into others
+            // skip applying physics push to the local unit so you don't bump into others
             if(skipLocalCollision && ref.entity.isLocal()) continue;
 
             //move by delta

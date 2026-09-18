@@ -24,7 +24,7 @@ public final class CursorHide {
             && !player.dead();
     }
 
-    /** FD-panel toggle: look semi-transparent like in assist, while just flying. */
+    /** Side-panel toggle: look semi-transparent like in assist, while just flying. */
     public static boolean smartTransparency() {
         return Core.settings.getBool("smarttransparency");
     }

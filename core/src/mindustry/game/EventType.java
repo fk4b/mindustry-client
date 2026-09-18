@@ -970,7 +970,7 @@ public class EventType{
         }
     }
 
-    /** FD: group unit move/attack command. */
+    /** Group unit move/attack command. */
     public static class UnitCommandPositionEvent{
         public final Player player;
         public final int[] unitIds;
@@ -985,7 +985,7 @@ public class EventType{
         }
     }
 
-    /** FD: unit command/stance change. */
+    /** Unit command/stance change. */
     public static class UnitStateChangeEvent{
         public final Player player;
         public final int[] unitIds;

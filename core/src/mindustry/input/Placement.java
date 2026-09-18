@@ -95,6 +95,14 @@ public class Placement{
         return b == Blocks.conveyor || b == Blocks.titaniumConveyor || b == Blocks.armoredConveyor;
     }
 
+    public static boolean isConduitLine(Block b){
+        return b == Blocks.conduit || b == Blocks.pulseConduit || b == Blocks.platedConduit;
+    }
+
+    public static boolean isStackConveyorLine(Block b){
+        return b instanceof StackConveyor;
+    }
+
     /** Line direction at plan i: 0 = horizontal, 1 = vertical, -1 = unknown. */
     private static int planAxis(Seq<BuildPlan> plans, int i){
         BuildPlan p = plans.get(i);
@@ -111,11 +119,52 @@ public class Placement{
         return -1;
     }
 
+    private static boolean isItemFamily(Block b){
+        return isLowTierConveyor(b) || b == Blocks.itemBridge || b == Blocks.phaseConveyor;
+    }
+
+    private static boolean isLiquidFamily(Block b){
+        return isConduitLine(b) || b == Blocks.bridgeConduit || b == Blocks.phaseConduit;
+    }
+
+    private static boolean sameCrossHost(Block host, Block b){
+        if(isItemFamily(host)) return isItemFamily(b);
+        if(isLiquidFamily(host)) return isLiquidFamily(b);
+        if(isStackConveyorLine(host)) return b == host;
+        return b == host;
+    }
+
+    private static boolean isGapSkip(Block b){
+        return b == Blocks.air || b == Blocks.junction || b == Blocks.liquidJunction;
+    }
+
+    /** Existing hop nodes that should be skipped (then broken) when extending a jump. */
+    public static boolean isHopBridge(Block b){
+        return b == Blocks.itemBridge || b == Blocks.phaseConveyor
+            || b == Blocks.bridgeConduit || b == Blocks.phaseConduit
+            || b instanceof DirectionBridge;
+    }
+
+    /** True if the gap between two line plans already has a hop — do not rebuild it. */
+    public static boolean existingHopBetween(BuildPlan a, BuildPlan b){
+        if(a == null || b == null) return false;
+        if(a.x != b.x && a.y != b.y) return false;
+        int dx = Integer.signum(b.x - a.x), dy = Integer.signum(b.y - a.y);
+        int x = a.x + dx, y = a.y + dy;
+        while(x != b.x || y != b.y){
+            Tile t = world.tile(x, y);
+            if(t != null && isHopBridge(t.block())) return true;
+            x += dx;
+            y += dy;
+        }
+        return false;
+    }
+
     /**
-     * Walk along an axis away from a crossing, skipping tiles the plastanium line will occupy.
-     * Returns the first remaining copper/titanium/armored tile (the titanium path that should become a bridge).
+     * Walk along the belt/pipe away from the crossing. First matching tile is the endpoint
+     * (right next to the plastanium), not a distant belt beyond empty ground.
      */
-    private static Tile walkBeltHost(int x, int y, int rot, int dir, IntSet occupied, int max){
+    private static Tile walkCrossHost(int x, int y, int rot, int dir, IntSet occupied, int max, Block host, boolean gaps){
         int dx = Geometry.d4x(rot) * dir;
         int dy = Geometry.d4y(rot) * dir;
         for(int i = 0; i < max; i++){
@@ -124,32 +173,321 @@ public class Placement{
             Tile t = world.tile(x, y);
             if(t == null) return null;
             if(occupied.contains(Point2.pack(x, y))) continue;
-            if(isLowTierConveyor(t.block())) return t;
+            Block b = t.block();
+            if(isStackConveyorLine(b)) continue;
+            if(sameCrossHost(host, b)){
+                // Far hop of the previous plastanium row is still this crossing (touches that P).
+                if(isHopBridge(b) && occupied != null && !partOfThisCrossing(x, y, occupied)) return null;
+                return t;
+            }
+            if(gaps && isGapSkip(b)) continue;
+            if(b == Blocks.junction || b == Blocks.liquidJunction) continue;
             return null;
         }
         return null;
     }
 
-    private static void addBeltBridge(Seq<BuildPlan> extra, IntSet used, ItemBridge bridge, Tile from, Tile to){
-        if(from == null || to == null) return;
+    private static int hostWalkRange(Block host){
+        if(host == Blocks.phaseConveyor) return ((ItemBridge)Blocks.phaseConveyor).range;
+        if(host == Blocks.phaseConduit) return ((ItemBridge)Blocks.phaseConduit).range;
+        if(isConduitLine(host) || host == Blocks.bridgeConduit){
+            int r = ((ItemBridge)Blocks.bridgeConduit).range;
+            if(Blocks.phaseConduit.unlockedNow()) r = Math.max(r, ((ItemBridge)Blocks.phaseConduit).range);
+            return r;
+        }
+        int r = ((ItemBridge)Blocks.itemBridge).range;
+        if(Blocks.phaseConveyor.unlockedNow()) r = Math.max(r, ((ItemBridge)Blocks.phaseConveyor).range);
+        return r;
+    }
+
+    private static ItemBridge pickCrossBridge(Block host, int dist){
+        if(isLiquidFamily(host)){
+            ItemBridge liquid = (ItemBridge)Blocks.bridgeConduit;
+            ItemBridge phase = (ItemBridge)Blocks.phaseConduit;
+            if((host == Blocks.phaseConduit || dist > liquid.range) && phase.unlockedNow()) return phase;
+            return liquid.unlockedNow() ? liquid : null;
+        }
+        ItemBridge items = (ItemBridge)Blocks.itemBridge;
+        ItemBridge phase = (ItemBridge)Blocks.phaseConveyor;
+        // Already a phase hop, or item-bridge range is too short: both ends become phase.
+        if((host == Blocks.phaseConveyor || dist > items.range) && phase.unlockedNow()) return phase;
+        return items.unlockedNow() ? items : null;
+    }
+
+    /** Input links to output. Output gets Integer -1 (0 connections) so parallel hops do not cross. */
+    private static void addBeltBridge(Seq<BuildPlan> extra, Seq<BuildPlan> breaks, IntSet used, ItemBridge bridge, Tile from, Tile to, IntSet occupied){
+        if(from == null || to == null || bridge == null) return;
+        if(!bridge.unlockedNow()) return;
         if(!bridge.positionsValid(from.x, from.y, to.x, to.y)) return;
+        boolean liquid = bridge instanceof mindustry.world.blocks.liquid.LiquidBridge;
+        if(isStackConveyorLine(from.block()) || isStackConveyorLine(to.block())) return;
+        if(liquid && (isItemFamily(from.block()) || isItemFamily(to.block()))) return;
+        if(!liquid && (isLiquidFamily(from.block()) || isLiquidFamily(to.block()))) return;
+        if(occupied != null && (occupied.contains(Point2.pack(from.x, from.y)) || occupied.contains(Point2.pack(to.x, to.y)))) return;
         int a = Point2.pack(from.x, from.y);
         int b = Point2.pack(to.x, to.y);
         if(used.contains(a) || used.contains(b)) return;
         used.add(a);
         used.add(b);
-        extra.add(new BuildPlan(from.x, from.y, 0, bridge, new Point2(to.x - from.x, to.y - from.y)));
-        extra.add(new BuildPlan(to.x, to.y, 0, bridge));
+        breakInnerBridges(breaks, from, to, occupied);
+        Point2 link = new Point2(to.x - from.x, to.y - from.y);
+        placeOrRelink(extra, breaks, from, bridge, link, occupied);
+        placeOrRelink(extra, breaks, to, bridge, Integer.valueOf(-1), occupied);
+        addPhasePowerNodes(extra, used, occupied, from, to, bridge);
+    }
+
+    /** Remove leftover hop bridges on the pipe/belt between the new endpoints. */
+    private static void breakInnerBridges(Seq<BuildPlan> breaks, Tile from, Tile to, IntSet occupied){
+        if(from.x != to.x && from.y != to.y) return;
+        int dx = Integer.signum(to.x - from.x), dy = Integer.signum(to.y - from.y);
+        int x = from.x + dx, y = from.y + dy;
+        while(x != to.x || y != to.y){
+            int packed = Point2.pack(x, y);
+            if(occupied == null || !occupied.contains(packed)){
+                Tile t = world.tile(x, y);
+                if(t != null && t.build != null && isHopBridge(t.block()) && partOfThisCrossing(x, y, occupied)
+                    && packed != Point2.pack(from.x, from.y) && packed != Point2.pack(to.x, to.y)){
+                    breaks.add(new BuildPlan(x, y));
+                }
+            }
+            x += dx;
+            y += dy;
+        }
+    }
+
+    private static boolean adjacentToOccupied(int x, int y, IntSet occupied){
+        if(occupied == null) return true;
+        if(occupied.contains(Point2.pack(x, y))) return true;
+        for(int d = 0; d < 4; d++){
+            if(occupied.contains(Point2.pack(x + Geometry.d4x(d), y + Geometry.d4y(d)))) return true;
+        }
+        return false;
     }
 
     /**
-     * Plastanium line stays plastanium. Existing copper/titanium/armored belts that the line
-     * crosses become item-bridges on those belt tiles, hopping over the plastanium.
+     * Hop belongs to this placement: adjacent to the new line or to any connected
+     * plastanium/surge already touching it (2nd, 3rd, 4th row in a strip).
+     */
+    private static boolean partOfThisCrossing(int x, int y, IntSet line){
+        if(line == null || line.isEmpty()) return true;
+        if(adjacentToOccupied(x, y, line)) return true;
+        IntSet strip = new IntSet();
+        IntSeq q = new IntSeq();
+        line.each(p -> {
+            strip.add(p);
+            q.add(p);
+        });
+        for(int i = 0; i < q.size && i < 64; i++){
+            int p = q.get(i);
+            int sx = Point2.x(p), sy = Point2.y(p);
+            for(int d = 0; d < 4; d++){
+                int nx = sx + Geometry.d4x(d), ny = sy + Geometry.d4y(d);
+                int np = Point2.pack(nx, ny);
+                if(strip.contains(np)) continue;
+                Tile t = world.tile(nx, ny);
+                if(t != null && isStackConveyorLine(t.block())){
+                    strip.add(np);
+                    q.add(np);
+                }
+            }
+        }
+        return adjacentToOccupied(x, y, strip);
+    }
+
+    /**
+     * Keep existing hop endpoints (only re-link). Place a new bridge on belt/pipe.
+     * Never demolish the far hop of the previous plastanium row.
+     */
+    private static void placeOrRelink(Seq<BuildPlan> extra, Seq<BuildPlan> breaks, Tile t, ItemBridge bridge, Object config, IntSet occupied){
+        if(occupied != null && occupied.contains(Point2.pack(t.x, t.y))) return;
+        if(t.build != null && isHopBridge(t.block())){
+            if(occupied != null && !partOfThisCrossing(t.x, t.y, occupied)) return;
+            if(t.block() == bridge){
+                t.build.configure(config);
+                return;
+            }
+            extra.add(new BuildPlan(t.x, t.y, 0, bridge, config));
+            return;
+        }
+        extra.add(new BuildPlan(t.x, t.y, 0, bridge, config));
+    }
+
+    private static final ObjectSet<Building> noRemoving = new ObjectSet<>();
+
+    private static class NodePlace{
+        int x, y;
+        Block block;
+        NodePlace(int x, int y, Block block){
+            this.x = x;
+            this.y = y;
+            this.block = block;
+        }
+    }
+
+    /** Power node next to each phase bridge. Only empty tiles; large node if small does not fit. */
+    private static void addPhasePowerNodes(Seq<BuildPlan> extra, IntSet used, IntSet occupied, Tile from, Tile to, ItemBridge bridge){
+        if(bridge != Blocks.phaseConveyor && bridge != Blocks.phaseConduit) return;
+        if(!Blocks.powerNode.unlockedNow()) return;
+        IntSet blocked = occupied != null ? occupied : used;
+
+        if(linkExistingNode(from.x, from.y, blocked) && linkExistingNode(to.x, to.y, blocked)) return;
+
+        NodePlace a = findEmptyNodeSpot(from.x, from.y, blocked, used);
+        NodePlace b = findEmptyNodeSpot(to.x, to.y, blocked, used);
+        if(a != null && b != null && a.x == b.x && a.y == b.y && a.block == b.block) b = null;
+
+        if(a != null) markFootprint(used, a.block, a.x, a.y);
+        if(b != null) markFootprint(used, b.block, b.x, b.y);
+
+        emitPhaseNode(extra, a, from, to, b, true);
+        emitPhaseNode(extra, b, to, from, a, false);
+    }
+
+    /** Reuse a node already in range instead of placing. */
+    private static boolean linkExistingNode(int px, int py, IntSet occupied){
+        if(player == null) return false;
+        Building best = null;
+        float bestD = Float.MAX_VALUE;
+        float wx = px * tilesize, wy = py * tilesize;
+        for(Building b : player.team().data().getBuildings(Blocks.powerNode)){
+            if(b == null || b.power == null) continue;
+            if(occupied.contains(Point2.pack(b.tileX(), b.tileY()))) continue;
+            if(!nodesLinkable(b.block, b.tileX(), b.tileY(), px, py)) continue;
+            float d = Mathf.dst2(b.x, b.y, wx, wy);
+            if(d < bestD){ bestD = d; best = b; }
+        }
+        for(Building b : player.team().data().getBuildings(Blocks.powerNodeLarge)){
+            if(b == null || b.power == null) continue;
+            if(occupied.contains(Point2.pack(b.tileX(), b.tileY()))) continue;
+            if(!nodesLinkable(b.block, b.tileX(), b.tileY(), px, py)) continue;
+            float d = Mathf.dst2(b.x, b.y, wx, wy);
+            if(d < bestD){ bestD = d; best = b; }
+        }
+        if(best == null) return false;
+        int packed = Point2.pack(px, py);
+        if(!best.power.links.contains(packed)) best.configure(packed);
+        return true;
+    }
+
+    private static NodePlace findEmptyNodeSpot(int px, int py, IntSet occupied, IntSet used){
+        NodePlace s = searchEmptyNode(px, py, Blocks.powerNode, occupied, used, Math.max(2, (int)((PowerNode)Blocks.powerNode).laserRange));
+        if(s != null) return s;
+        if(Blocks.powerNodeLarge.unlockedNow()){
+            s = searchEmptyNode(px, py, Blocks.powerNodeLarge, occupied, used, Math.max(3, (int)((PowerNode)Blocks.powerNodeLarge).laserRange));
+            if(s != null) return s;
+        }
+        return null;
+    }
+
+    private static NodePlace searchEmptyNode(int px, int py, Block block, IntSet occupied, IntSet used, int maxDist){
+        for(int dist = 1; dist <= maxDist; dist++){
+            for(int dy = -dist; dy <= dist; dy++){
+                for(int dx = -dist; dx <= dist; dx++){
+                    if(Math.max(Math.abs(dx), Math.abs(dy)) != dist) continue;
+                    int x = px + dx, y = py + dy;
+                    if(!nodeTilesEmpty(block, x, y, occupied, used)) continue;
+                    if(!nodesLinkable(block, x, y, px, py)) continue;
+                    return new NodePlace(x, y, block);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean nodeTilesEmpty(Block block, int x, int y, IntSet occupied, IntSet used){
+        int off = (block.size - 1) / 2;
+        for(int dx = 0; dx < block.size; dx++){
+            for(int dy = 0; dy < block.size; dy++){
+                int tx = x + dx - off, ty = y + dy - off;
+                int packed = Point2.pack(tx, ty);
+                if(occupied.contains(packed) || used.contains(packed)) return false;
+                Tile t = world.tile(tx, ty);
+                if(t == null || t.build != null) return false;
+                if(t.block() != Blocks.air) return false;
+                if(t.floor().isDeep() && !block.placeableLiquid) return false;
+            }
+        }
+        return true;
+    }
+
+    private static void emitPhaseNode(Seq<BuildPlan> extra, NodePlace spot, Tile phase, Tile otherPhase, NodePlace otherNode, boolean linkBothIfSolo){
+        if(spot == null || phase == null) return;
+        Seq<Point2> links = new Seq<>();
+        links.add(new Point2(phase.x - spot.x, phase.y - spot.y));
+        if(linkBothIfSolo && otherNode == null && otherPhase != null
+            && nodesLinkable(spot.block, spot.x, spot.y, otherPhase.x, otherPhase.y)){
+            links.add(new Point2(otherPhase.x - spot.x, otherPhase.y - spot.y));
+        }
+        if(otherNode != null && nodesLinkable(spot.block, spot.x, spot.y, otherNode.x, otherNode.y)){
+            links.add(new Point2(otherNode.x - spot.x, otherNode.y - spot.y));
+        }
+        BuildPlan plan = new BuildPlan(spot.x, spot.y, 0, spot.block);
+        plan.config = links.toArray(Point2.class);
+        extra.add(plan);
+    }
+
+    private static boolean tryCrossHop(Seq<BuildPlan> extra, Seq<BuildPlan> breaks, IntSet used, IntSet occupied, Tile tile, int rot, Block host){
+        // Only phase-to-phase lines have empty gaps; copper/titanium/pipes must stop at the first break
+        // or the hop lands a phase bridge many tiles away.
+        boolean gaps = host == Blocks.phaseConveyor || host == Blocks.phaseConduit;
+        int max = Math.max(2, hostWalkRange(host));
+        // rot 0-3: from = behind (upstream), to = ahead (downstream) along the belt.
+        Tile from = walkCrossHost(tile.x, tile.y, rot, -1, occupied, max, host, gaps);
+        Tile to = walkCrossHost(tile.x, tile.y, rot, 1, occupied, max, host, gaps);
+        if(from == null || to == null) return false;
+        int dist = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
+        addBeltBridge(extra, breaks, used, pickCrossBridge(host, dist), from, to, occupied);
+        return used.contains(Point2.pack(from.x, from.y));
+    }
+
+    /** 0-3 facing of an existing hop, or -1. */
+    private static int rotationFromBridge(Tile tile, ItemBridge.ItemBridgeBuild ib){
+        if(ib.link != -1){
+            Tile o = world.tile(ib.link);
+            if(o != null && (o.x == tile.x || o.y == tile.y)) return tile.absoluteRelativeTo(o.x, o.y);
+        }
+        if(ib.incoming != null && ib.incoming.size > 0){
+            Tile o = world.tile(ib.incoming.first());
+            if(o != null) return o.absoluteRelativeTo(tile.x, tile.y);
+        }
+        return -1;
+    }
+
+    /** Conveyor/pipe facing (0-3). Looks at the tile, then neighbors, then hop-bridge links. */
+    private static int inferHostRotation(Tile tile, Block host, IntSet occupied){
+        if(tile.build != null){
+            if(isLowTierConveyor(tile.block()) || isConduitLine(tile.block())) return tile.build.rotation;
+            if(tile.build instanceof ItemBridge.ItemBridgeBuild ib){
+                int r = rotationFromBridge(tile, ib);
+                if(r >= 0) return r;
+            }
+        }
+        for(int dist = 1; dist <= 3; dist++){
+            for(int d = 0; d < 4; d++){
+                int nx = tile.x + Geometry.d4x(d) * dist;
+                int ny = tile.y + Geometry.d4y(d) * dist;
+                if(occupied != null && occupied.contains(Point2.pack(nx, ny))) continue;
+                Tile n = world.tile(nx, ny);
+                if(n == null || n.build == null) continue;
+                if(isStackConveyorLine(n.block())) continue;
+                if(!sameCrossHost(host, n.block())) continue;
+                if(isLowTierConveyor(n.block()) || isConduitLine(n.block())) return n.build.rotation;
+                if(n.build instanceof ItemBridge.ItemBridgeBuild ib){
+                    int r = rotationFromBridge(n, ib);
+                    if(r >= 0) return r;
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Stack conveyor line (plastanium / surge) stays. Existing belts / phase / pipes / surge
+     * that the line crosses become bridges hopping over it. Output node has no link.
      */
     public static void applyPlastaniumCrossBridges(Seq<BuildPlan> plans, ItemBridge bridge){
-        if(plans == null || plans.isEmpty() || bridge == null) return;
+        if(plans == null || plans.isEmpty()) return;
         if(!Core.settings.getBool("plastaniumcrossbridges", true)) return;
-        if(!bridge.unlockedNow()) return;
 
         IntSet occupied = new IntSet();
         for(BuildPlan p : plans){
@@ -158,32 +496,46 @@ public class Placement{
 
         IntSet used = new IntSet();
         Seq<BuildPlan> extra = new Seq<>();
-        int max = Math.max(2, bridge.range);
+        Seq<BuildPlan> breaks = new Seq<>();
+
+        // Demolish whatever the plastanium will sit on (pipes, belts, old hops) first —
+        // stack conveyors cannot replace liquids, so a lone P would otherwise leave the pipe.
+        for(BuildPlan p : plans){
+            if(p.breaking || p.block == null) continue;
+            Tile t = world.tile(p.x, p.y);
+            if(t != null && t.build != null && t.block() != p.block){
+                breaks.add(new BuildPlan(p.x, p.y));
+            }
+        }
 
         for(int i = 0; i < plans.size; i++){
             BuildPlan p = plans.get(i);
             Tile tile = world.tile(p.x, p.y);
-            if(tile == null || !isLowTierConveyor(tile.block())) continue;
+            if(tile == null) continue;
+            Block host = tile.block();
+            // Adjacent plastanium/surge is not a host — do not plant hop bridges on it.
+            if(isStackConveyorLine(host)) continue;
+            if(!isLowTierConveyor(host) && host != Blocks.phaseConveyor && host != Blocks.itemBridge
+                && !isConduitLine(host) && host != Blocks.phaseConduit && host != Blocks.bridgeConduit) continue;
 
-            int lineAx = planAxis(plans, i);
-            int beltRot = tile.build != null ? tile.build.rotation : -1;
-            // Prefer the existing belt's rotation when it is perpendicular to the plastanium line.
-            if(beltRot >= 0 && (lineAx < 0 || (beltRot & 1) != lineAx)){
-                Tile from = walkBeltHost(p.x, p.y, beltRot, -1, occupied, max);
-                Tile to = walkBeltHost(p.x, p.y, beltRot, 1, occupied, max);
-                addBeltBridge(extra, used, bridge, from, to);
+            int rot = inferHostRotation(tile, host, occupied);
+            if(rot >= 0){
+                tryCrossHop(extra, breaks, used, occupied, tile, rot, host);
                 continue;
             }
-
-            // Fallback: any axis that still has belt tiles on both sides and is not the plastanium line.
-            for(int axis = 0; axis <= 1; axis++){
-                if(lineAx == axis) continue;
-                Tile from = walkBeltHost(p.x, p.y, axis, -1, occupied, max);
-                Tile to = walkBeltHost(p.x, p.y, axis, 1, occupied, max);
-                addBeltBridge(extra, used, bridge, from, to);
+            // Unknown facing: hop perpendicular to the plastanium line, both ways.
+            int lineAx = planAxis(plans, i);
+            for(int ax = 0; ax <= 1; ax++){
+                if(lineAx == ax) continue;
+                if(tryCrossHop(extra, breaks, used, occupied, tile, ax, host)) break;
+                if(tryCrossHop(extra, breaks, used, occupied, tile, ax + 2, host)) break;
             }
         }
 
+        extra.removeAll(p -> occupied.contains(Point2.pack(p.x, p.y)));
+        for(int i = breaks.size - 1; i >= 0; i--){
+            plans.insert(0, breaks.get(i));
+        }
         plans.addAll(extra);
     }
 
@@ -217,11 +569,10 @@ public class Placement{
                 if(t == null) return false;
                 if(t.floor().isDeep() && !block.placeableLiquid) return false;
                 if(t.build != null){
-                    if(removing.contains(t.build)) continue;
-                    if(t.block().alwaysReplace) continue;
-                    return false;
+                    if(removing.contains(t.build)) continue; // node being relocated, tile will be empty
+                    return false; // never break other buildings
                 }
-                if(t.block() != Blocks.air && !t.block().alwaysReplace && t.solid()) return false;
+                if(t.block() != Blocks.air) return false;
             }
         }
         return true;
@@ -241,6 +592,21 @@ public class Placement{
                         return new Point2(x, y);
                     }
                 }
+            }
+        }
+        return null;
+    }
+
+    /** Empty tile for a node; if the original size does not fit, try the large node. */
+    private static Point2 findNodeSpotOrLarge(int cx, int cy, int sdx, int sdy, Block[] block, IntSet conveyor, IntSet used, ObjectSet<Building> removing, int maxDist){
+        Point2 p = findNodeSpot(cx, cy, sdx, sdy, block[0], conveyor, used, removing, maxDist);
+        if(p != null) return p;
+        if(block[0] != Blocks.powerNodeLarge && Blocks.powerNodeLarge.unlockedNow()){
+            int largeDist = Math.max(maxDist, (int)((PowerNode)Blocks.powerNodeLarge).laserRange);
+            p = findNodeSpot(cx, cy, sdx, sdy, Blocks.powerNodeLarge, conveyor, used, removing, largeDist);
+            if(p != null){
+                block[0] = Blocks.powerNodeLarge;
+                return p;
             }
         }
         return null;
@@ -300,19 +666,20 @@ public class Placement{
             int sdx = axis == 0 ? 0 : 1;
             int sdy = axis == 0 ? 1 : 0;
 
-            Point2 a = findNodeSpot(cx, cy, sdx, sdy, block, occupied, used, nodes, maxDist);
-            Point2 b = findNodeSpot(cx, cy, -sdx, -sdy, block, occupied, used, nodes, maxDist);
+            Block[] ba = {block}, bb = {block};
+            Point2 a = findNodeSpotOrLarge(cx, cy, sdx, sdy, ba, occupied, used, nodes, maxDist);
+            Point2 b = findNodeSpotOrLarge(cx, cy, -sdx, -sdy, bb, occupied, used, nodes, maxDist);
             if(a == null && b == null && axis == 0){
-                a = findNodeSpot(cx, cy, 1, 0, block, occupied, used, nodes, maxDist);
-                b = findNodeSpot(cx, cy, -1, 0, block, occupied, used, nodes, maxDist);
+                a = findNodeSpotOrLarge(cx, cy, 1, 0, ba, occupied, used, nodes, maxDist);
+                b = findNodeSpotOrLarge(cx, cy, -1, 0, bb, occupied, used, nodes, maxDist);
             }
 
-            if(a != null) markFootprint(used, block, a.x, a.y);
-            if(b != null) markFootprint(used, block, b.x, b.y);
+            if(a != null) markFootprint(used, ba[0], a.x, a.y);
+            if(b != null) markFootprint(used, bb[0], b.x, b.y);
 
             Seq<Point2> linksA = new Seq<>();
             Seq<Point2> linksB = new Seq<>();
-            if(a != null && b != null && nodesLinkable(block, a.x, a.y, b.x, b.y)){
+            if(a != null && b != null && nodesLinkable(ba[0], a.x, a.y, b.x, b.y)){
                 linksA.add(new Point2(b.x - a.x, b.y - a.y));
                 linksB.add(new Point2(a.x - b.x, a.y - b.y));
             }
@@ -325,17 +692,18 @@ public class Placement{
                 }
             }
 
-            int maxLinks = block instanceof PowerNode pn ? pn.maxNodes : 10;
-            if(linksA.size > maxLinks) linksA.truncate(maxLinks);
-            if(linksB.size > maxLinks) linksB.truncate(maxLinks);
+            int maxLinksA = ba[0] instanceof PowerNode pn ? pn.maxNodes : 10;
+            int maxLinksB = bb[0] instanceof PowerNode pn ? pn.maxNodes : 10;
+            if(linksA.size > maxLinksA) linksA.truncate(maxLinksA);
+            if(linksB.size > maxLinksB) linksB.truncate(maxLinksB);
 
             if(a != null){
-                BuildPlan pa = new BuildPlan(a.x, a.y, 0, block);
+                BuildPlan pa = new BuildPlan(a.x, a.y, 0, ba[0]);
                 if(linksA.size > 0) pa.config = linksA.toArray();
                 places.add(pa);
             }
             if(b != null){
-                BuildPlan pb = new BuildPlan(b.x, b.y, 0, block);
+                BuildPlan pb = new BuildPlan(b.x, b.y, 0, bb[0]);
                 if(linksB.size > 0) pb.config = linksB.toArray();
                 places.add(pb);
             }
@@ -936,7 +1304,7 @@ public class Placement{
                         break; // No need to check further back if this one is out of range
                     }
 
-                    if(placeable.get(other)){
+                    if(placeable.get(other) && !existingHopBetween(other, cur)){
                         int cost = dp[N + j] + bridgeCost + emptyPenalty;
                         if(dp[N + i] > cost){
                             dp[N + i] = cost;

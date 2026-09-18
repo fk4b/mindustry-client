@@ -190,7 +190,7 @@ class Migrations {
     }
 
     private fun migration14() {
-        // 1.6.0 port accidentally defaulted FD history overlays to unset.
+        // 1.6.0 port accidentally defaulted history overlays to unset.
         // Numpad/touchpad plus (NumLock) was KeyCode.plus and hid player block plans.
         val unset = KeyCode.unset.ordinal
         val plansKey = "keybind-default-keyboard-block_show_plans-key"

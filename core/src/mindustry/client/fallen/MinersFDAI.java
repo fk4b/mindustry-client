@@ -75,7 +75,7 @@ public class MinersFDAI {
     public static float unitRepairDoneHp = Core.settings.getFloat("fd-unitRepairDoneHp", 0.98f);
 
     public static float AIHelpRad = Core.settings.getFloat("AIHelpRad", 10f);
-    /** Avoid enemy turret range (+5 tiles) when auto-mining. */
+    /** Avoid enemy turret and armed-unit range (+5 tiles) when auto-mining. */
     public static boolean safeMining = Core.settings.getBool("fd-safeMining", false);
 
     private static boolean wasAutoMiningActive = false;
@@ -108,11 +108,20 @@ public class MinersFDAI {
     private static final IntSet routingToCore = new IntSet();
     private static final ObjectSet<Item> notifiedUnsafeOres = new ObjectSet<>();
 
-    /** Packed tile flags: enemy turret range + 5 tiles. Rebuilt every {@link #RED_SCAN_MS}. */
+    /** Packed tile flags: enemy turret + armed unit range + 5 tiles. Turrets every {@link #RED_SCAN_MS}, units every {@link #UNIT_SCAN_MS}. */
     private static boolean[] red;
+    /** Turret-only layer; unit ranges are painted on top of a copy. */
+    private static boolean[] turretRed;
     private static int redW, redH;
     private static long redScanAt = 0;
+    private static long unitScanAt = 0;
     private static boolean anyRed = false;
+    private static boolean turretAnyRed = false;
+    private static final long UNIT_SCAN_MS = 1000L;
+    /** Team cores ranked by clearance from the red zone (rebuilt with the scan). */
+    private static final Seq<Building> rankedCores = new Seq<>();
+    private static long rankedCoresAt = 0;
+    private static final Vec2 tmpCoreDest = new Vec2();
     /** All ore tiles of each resource that sit outside the red zone. */
     private static final ObjectMap<Item, Seq<Tile>> safeOres = new ObjectMap<>();
     private static int[] astarCame;
@@ -1517,7 +1526,7 @@ public class MinersFDAI {
         return control != null && control.input != null && control.input.isBuilding;
     }
 
-    // ================== Safe mining (avoid enemy turrets) ==================
+    // ================== Safe mining (avoid enemy turrets + armed units) ==================
 
     private static void clearSafeRouting() {
         routingUnits.clear();
@@ -1526,9 +1535,14 @@ public class MinersFDAI {
         routingToCore.clear();
         safeOres.clear();
         red = null;
+        turretRed = null;
         redW = redH = 0;
         redScanAt = 0;
+        unitScanAt = 0;
         anyRed = false;
+        turretAnyRed = false;
+        rankedCores.clear();
+        rankedCoresAt = 0;
         pendingMoveIds.clear();
         pendingMovePos.clear();
         routingBoosted.clear();
@@ -1564,7 +1578,7 @@ public class MinersFDAI {
         return inRedBounds(x, y) && red[pack(x, y)];
     }
 
-    /** True if (x,y) is inside an enemy turret range + 5 tiles. */
+    /** True if (x,y) is inside an enemy turret or armed unit range + 5 tiles. */
     public static boolean isPosDangerous(float x, float y) {
         ensureRedScan(false);
         if (red == null || world == null) return false;
@@ -1577,14 +1591,17 @@ public class MinersFDAI {
         return isRed(tile.x, tile.y);
     }
 
-    /** Full-map red zone + safe-ore index. At most once per 20 seconds. */
+    /** Full-map red zone + safe-ore index. Turrets at most once per 20s; units every 1s. */
     private static void ensureRedScan(boolean force) {
         if (world == null) return;
-        if (!force && red != null && redW == world.width() && redH == world.height()
-                && Time.timeSinceMillis(redScanAt) < RED_SCAN_MS) {
+        boolean sizeOk = red != null && redW == world.width() && redH == world.height();
+        if (force || !sizeOk || Time.timeSinceMillis(redScanAt) >= RED_SCAN_MS) {
+            scanRedZones();
             return;
         }
-        scanRedZones();
+        if (Time.timeSinceMillis(unitScanAt) >= UNIT_SCAN_MS) {
+            rescanEnemyUnits();
+        }
     }
 
     private static void scanRedZones() {
@@ -1607,6 +1624,12 @@ public class MinersFDAI {
             paintRedCircle(b.x, b.y, range);
         }
 
+        if (turretRed == null || turretRed.length != n) turretRed = new boolean[n];
+        System.arraycopy(red, 0, turretRed, 0, n);
+        turretAnyRed = anyRed;
+
+        paintEnemyUnitZones();
+
         if (n > 0 && (astarCame == null || astarCame.length != n)) {
             astarCame = new int[n];
             astarG = new float[n];
@@ -1614,7 +1637,36 @@ public class MinersFDAI {
         }
 
         rebuildSafeOres();
+        rankSafeCores();
         redScanAt = Time.millis();
+        unitScanAt = Time.millis();
+    }
+
+    /** Re-paint moving enemy units on top of the cached turret layer. */
+    private static void rescanEnemyUnits() {
+        if (turretRed == null || red == null || turretRed.length != red.length) {
+            scanRedZones();
+            return;
+        }
+        System.arraycopy(turretRed, 0, red, 0, red.length);
+        anyRed = turretAnyRed;
+        paintEnemyUnitZones();
+        rebuildSafeOres();
+        rankSafeCores();
+        unitScanAt = Time.millis();
+    }
+
+    private static void paintEnemyUnitZones() {
+        Team self = player != null ? player.team() : null;
+        float extra = safeMarginPx();
+        for (Unit u : Groups.unit) {
+            if (u == null || !u.isValid()) continue;
+            if (self != null && (u.team == self || u.team == Team.derelict)) continue;
+            if (u.type == null || !u.type.hasWeapons()) continue;
+            float range = Math.max(u.range(), u.type.maxRange);
+            if (range <= 0f) range = u.hitSize;
+            paintRedCircle(u.x, u.y, range + extra);
+        }
     }
 
     private static void paintRedCircle(float px, float py, float range) {
@@ -1699,6 +1751,94 @@ public class MinersFDAI {
         return null;
     }
 
+    /** Tiles of empty space around (tx, ty) before hitting the red zone. 0 = in/adjacent to danger. */
+    private static float tileClearance(int tx, int ty) {
+        if (!inRedBounds(tx, ty) || isRed(tx, ty)) return 0f;
+        int max = 24;
+        for (int r = 1; r <= max; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (isRed(tx + dx, ty - r) || isRed(tx + dx, ty + r)) return r;
+            }
+            for (int dy = -r + 1; dy <= r - 1; dy++) {
+                if (isRed(tx - r, ty + dy) || isRed(tx + r, ty + dy)) return r;
+            }
+        }
+        return max;
+    }
+
+    private static float coreClearance(Building c) {
+        return c == null ? 0f : tileClearance(c.tileX(), c.tileY());
+    }
+
+    private static void rankSafeCores() {
+        rankedCores.clear();
+        rankedCoresAt = Time.millis();
+        if (player == null || player.team() == null) return;
+        for (Building c : player.team().cores()) {
+            if (c != null && c.isValid()) rankedCores.add(c);
+        }
+        rankedCores.sort((a, b) -> Float.compare(coreClearance(b), coreClearance(a)));
+    }
+
+    private static void ensureRankedCores() {
+        if (rankedCores.isEmpty() || Time.timeSinceMillis(rankedCoresAt) > 1000L) {
+            rankSafeCores();
+        }
+    }
+
+    /** Drop-off point for a core: the core itself, or a nearby non-red tile if the core sits in danger. */
+    private static boolean coreSafeDest(Building c, Vec2 out) {
+        if (c == null || out == null) return false;
+        if (!isPosDangerous(c.x, c.y)) {
+            out.set(c.x, c.y);
+            return true;
+        }
+        Tile n = nearestNonRed(c.tileX(), c.tileY());
+        if (n == null) return false;
+        if (Mathf.dst(c.x, c.y, n.worldx(), n.worldy()) > 12f * tilesize) return false;
+        out.set(n.worldx(), n.worldy());
+        return true;
+    }
+
+    /**
+     * Safest team core this unit can actually reach without flying through the red zone.
+     * Prefers high clearance (far from turrets/units); among those, the closer one.
+     * Falls back to {@code unit.closestCore()} if nothing is safely reachable.
+     */
+    public static Building findSafestReachableCore(Unit u) {
+        if (u == null) {
+            return player != null && player.team() != null ? player.team().core() : null;
+        }
+        if (!safeMining || red == null || !anyRed) return u.closestCore();
+        ensureRedScan(false);
+        ensureRankedCores();
+
+        Building bestLos = null;
+        float bestLosScore = Float.NEGATIVE_INFINITY;
+        for (int i = 0; i < rankedCores.size; i++) {
+            Building c = rankedCores.get(i);
+            if (c == null || !c.isValid()) continue;
+            if (!coreSafeDest(c, tmpCoreDest)) continue;
+            float score = coreClearance(c) * 20f * tilesize - u.dst(tmpCoreDest.x, tmpCoreDest.y);
+            if (!segmentHitsRed(u.x, u.y, tmpCoreDest.x, tmpCoreDest.y) && score > bestLosScore) {
+                bestLosScore = score;
+                bestLos = c;
+            }
+        }
+        if (bestLos != null) return bestLos;
+
+        int tries = 0;
+        for (int i = 0; i < rankedCores.size && tries < 4; i++) {
+            Building c = rankedCores.get(i);
+            if (c == null || !c.isValid()) continue;
+            if (!coreSafeDest(c, tmpCoreDest)) continue;
+            tries++;
+            Seq<Vec2> path = astarAvoidRed(u.x, u.y, tmpCoreDest.x, tmpCoreDest.y);
+            if (path != null && path.size > 0) return c;
+        }
+        return u.closestCore();
+    }
+
     private static Vec2 worldPos(int tx, int ty) {
         return new Vec2(tx * tilesize + tilesize / 2f, ty * tilesize + tilesize / 2f);
     }
@@ -1725,34 +1865,39 @@ public class MinersFDAI {
         Seq<Tile> list = safeOres.get(item);
         if (list == null || list.isEmpty()) return null;
         UnitType type = unit != null ? unit.type : null;
-        float ox, oy;
-        if (unit != null) {
-            ox = unit.x;
-            oy = unit.y;
-        } else if (player != null && player.team() != null && player.team().core() != null) {
-            ox = player.team().core().x;
-            oy = player.team().core().y;
-        } else {
-            ox = oy = 0f;
-        }
+        Building home = unit != null ? findSafestReachableCore(unit)
+                : (player != null && player.team() != null ? player.team().core() : null);
+        float hx = home != null ? home.x : (unit != null ? unit.x : 0f);
+        float hy = home != null ? home.y : (unit != null ? unit.y : 0f);
+        float ux = unit != null ? unit.x : hx;
+        float uy = unit != null ? unit.y : hy;
 
-        Tile bestClear = null, bestAny = null;
-        float dClear = Float.MAX_VALUE, dAny = Float.MAX_VALUE;
+        Tile bestHomeClear = null, bestUnitClear = null, bestHome = null;
+        float dHomeClear = Float.MAX_VALUE, dUnitClear = Float.MAX_VALUE, dHome = Float.MAX_VALUE;
         for (int i = 0; i < list.size; i++) {
             Tile t = list.get(i);
             if (!tileMinesItem(t, item, type)) continue;
             if (isTileDangerous(t)) continue;
-            float d = Mathf.dst2(ox, oy, t.worldx(), t.worldy());
-            if (d < dAny) {
-                dAny = d;
-                bestAny = t;
+            float twx = t.worldx(), twy = t.worldy();
+            float dh = Mathf.dst2(hx, hy, twx, twy);
+            float du = Mathf.dst2(ux, uy, twx, twy);
+            boolean clear = unit == null || !segmentHitsRed(ux, uy, twx, twy);
+            if (dh < dHome) {
+                dHome = dh;
+                bestHome = t;
             }
-            if (d < dClear && !segmentHitsRed(ox, oy, t.worldx(), t.worldy())) {
-                dClear = d;
-                bestClear = t;
+            if (clear && dh < dHomeClear) {
+                dHomeClear = dh;
+                bestHomeClear = t;
+            }
+            if (clear && du < dUnitClear) {
+                dUnitClear = du;
+                bestUnitClear = t;
             }
         }
-        return bestClear != null ? bestClear : bestAny;
+        if (bestHomeClear != null) return bestHomeClear;
+        if (bestUnitClear != null) return bestUnitClear;
+        return bestHome;
     }
 
     /** Used by MinerAI / MinePath when safe mode is on. */
@@ -1887,8 +2032,12 @@ public class MinersFDAI {
             if (assigned == null) assigned = getMiningItem(u, null);
 
             if (depositing) {
-                Building core = u.closestCore();
-                if (core != null && segmentHitsRed(u.x, u.y, core.x, core.y)) {
+                Building core = findSafestReachableCore(u);
+                if (core == null) core = u.closestCore();
+                if (core == null) continue;
+                Building closest = u.closestCore();
+                boolean wrongCore = closest != null && closest.id != core.id;
+                if (wrongCore || segmentHitsRed(u.x, u.y, core.x, core.y) || isPosDangerous(u.x, u.y)) {
                     startRouteToCore(u, core);
                 }
                 continue;
@@ -1899,7 +2048,8 @@ public class MinersFDAI {
             Tile dest = findSafeOre(u, assigned);
             if (dest == null) {
                 disableMineResource(assigned, Core.bundle.get("client.fd.safemine.reason.turrets"));
-                Building core = u.closestCore();
+                Building core = findSafestReachableCore(u);
+                if (core == null) core = u.closestCore();
                 if (core != null) startRouteToCore(u, core);
                 continue;
             }
@@ -1919,7 +2069,7 @@ public class MinersFDAI {
             }
 
             boolean vanillaSafe = false;
-            Building core = u.closestCore();
+            Building core = findSafestReachableCore(u);
             if (core != null && Vars.indexer != null) {
                 try {
                     Tile vanilla = u.type.mineFloor ? Vars.indexer.findClosestOre(core.x, core.y, assigned) : null;
@@ -1953,7 +2103,8 @@ public class MinersFDAI {
     /** Pull a unit out of the red zone to the nearest safe ore (or a non-red tile). Never command into red. */
     private static void extractFromRed(Unit u, boolean depositing, IntSeq arrived) {
         if (depositing) {
-            Building core = u.closestCore();
+            Building core = findSafestReachableCore(u);
+            if (core == null) core = u.closestCore();
             if (core != null) startRouteToCore(u, core);
             return;
         }
@@ -1962,7 +2113,8 @@ public class MinersFDAI {
         Tile dest = assigned != null ? findSafeOre(u, assigned) : null;
         if (dest == null && assigned != null) {
             disableMineResource(assigned, Core.bundle.get("client.fd.safemine.reason.turrets"));
-            Building core = u.closestCore();
+            Building core = findSafestReachableCore(u);
+            if (core == null) core = u.closestCore();
             if (core != null) {
                 startRouteToCore(u, core);
                 return;

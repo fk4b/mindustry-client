@@ -24,6 +24,7 @@ import mindustry.*;
 import mindustry.client.claj.*;
 import mindustry.client.fallen.*;
 import mindustry.client.navigation.*;
+import mindustry.client.tool.*;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
 import mindustry.editor.*;
@@ -55,7 +56,7 @@ public class UI implements ApplicationListener, Loadable{
     public HintsFragment hints;
     public PerformanceFragment perffrag;
 
-    // FD / fallen client UI
+    // morj client UI
     public PanelFragment panelfragment;
     public PlayerBlockListFragment listblockfrag;
     public HistoryFragment historyFrag;
@@ -65,7 +66,6 @@ public class UI implements ApplicationListener, Loadable{
     public WaveInfoFrag waveInfoFrag;
     public MapInfoFrag mapInfoFrag;
     public LogicUnitControlFrag logicUnitControlFrag;
-    public ProductionAnalyzerFrag prodAnalyzer;
     public LogicSearchFrag logicSearchFrag;
     public QuickSchemFrag quickSchemFrag;
 
@@ -106,6 +106,8 @@ public class UI implements ApplicationListener, Loadable{
 
     // Client related
     public SchematicBrowserDialog schematicBrowser;
+    public ToolSchematicBrowserDialog toolSchematics;
+    public ToolChatOverlay toolChat;
     public UnitPicker unitPicker;
     public ClajManagerDialog clajManager;
     public ClajJoinDialog clajJoin;
@@ -245,7 +247,6 @@ public class UI implements ApplicationListener, Loadable{
         waveInfoFrag = new WaveInfoFrag();
         mapInfoFrag = new MapInfoFrag();
         logicUnitControlFrag = new LogicUnitControlFrag();
-        prodAnalyzer = new ProductionAnalyzerFrag();
         logicSearchFrag = new LogicSearchFrag();
         quickSchemFrag = new QuickSchemFrag();
 
@@ -274,6 +275,8 @@ public class UI implements ApplicationListener, Loadable{
         mods = new ModsDialog();
         schematics = new SchematicsDialog();
         schematicBrowser = new SchematicBrowserDialog();
+        toolSchematics = new ToolSchematicBrowserDialog();
+        toolChat = new ToolChatOverlay();
         logic = new LogicDialog();
         fullText = new FullTextDialog();
         campaignComplete = new CampaignCompleteDialog();
@@ -310,10 +313,11 @@ public class UI implements ApplicationListener, Loadable{
         waveInfoFrag.build(hudGroup);
         mapInfoFrag.build(hudGroup);
         logicUnitControlFrag.build(hudGroup);
-        prodAnalyzer.build(hudGroup);
         logicSearchFrag.build(hudGroup);
         favFrag.build(hudGroup);
         quickSchemFrag.build(hudGroup);
+        toolChat.build();
+        if(Core.settings.getBool("toolglobalchat", true)) toolChat.start();
         PanelFragment.startInit();
         perffrag.build(group);
         new FadeInFragment().build(group);

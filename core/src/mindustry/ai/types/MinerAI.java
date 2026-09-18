@@ -24,7 +24,7 @@ public class MinerAI extends AIController{
 
     @Override
     public void updateMovement(){
-        Building core = unit.closestCore();
+        Building core = MinersFDAI.safeMining ? MinersFDAI.findSafestReachableCore(unit) : unit.closestCore();
 
         if(!unit.canMine() || core == null) return;
 

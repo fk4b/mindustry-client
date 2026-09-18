@@ -58,6 +58,11 @@ public class Conduit extends LiquidBlock implements Autotiler{
     }
 
     @Override
+    public boolean canReplace(Block other){
+        return super.canReplace(other) && !(other instanceof ItemBridge) && !(other instanceof DirectionBridge);
+    }
+
+    @Override
     public void init(){
         super.init();
 
@@ -140,11 +145,27 @@ public class Conduit extends LiquidBlock implements Autotiler{
     public void handlePlacementLine(Seq<BuildPlan> plans){
         if(bridgeReplacement == null) return;
 
+        // Leave belts / stack conveyors / item bridges in place. A gap in the pipe line
+        // makes calculateBridges hop pipe-to-pipe instead of putting a liquid bridge on the belt.
+        plans.removeAll(p -> isBeltObstacle(p));
+        if(plans.isEmpty()) return;
+
         if(rotBridgeReplacement instanceof DirectionBridge duct){
             Placement.calculateBridges(plans, duct, true, b -> b instanceof Conduit);
         }else{
             Placement.calculateBridges(plans, (ItemBridge)bridgeReplacement, true, b -> b instanceof Conduit);
         }
+
+        // calculateBridges may still mark a liquid bridge on a belt tile — drop those
+        plans.removeAll(p -> p.block instanceof LiquidBridge && isBeltObstacle(p));
+    }
+
+    private static boolean isBeltObstacle(BuildPlan p){
+        Tile t = world.tile(p.x, p.y);
+        if(t == null) return false;
+        Block b = t.block();
+        return Placement.isLowTierConveyor(b) || Placement.isStackConveyorLine(b)
+            || b == Blocks.itemBridge || b == Blocks.phaseConveyor;
     }
 
     @Override
