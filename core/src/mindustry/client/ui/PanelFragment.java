@@ -14,6 +14,8 @@ import arc.scene.event.ClickListener;
 import arc.scene.event.InputEvent;
 import arc.scene.event.InputListener;
 import arc.scene.style.TextureRegionDrawable;
+import arc.scene.event.Touchable;
+import arc.scene.style.Drawable;
 import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
@@ -29,7 +31,11 @@ import mindustry.client.navigation.BuildPath;
 import mindustry.client.navigation.MinePath;
 import mindustry.client.navigation.Navigation;
 import mindustry.client.navigation.RepairPath;
+import mindustry.client.fallen.assistai.PolySettingsDialog;
+import mindustry.client.fallen.assistai.SelfBuilderAI;
 import mindustry.client.utils.AutoTransfer;
+import mindustry.client.utils.BuilderAssist;
+import mindustry.client.utils.GlobalChat;
 import mindustry.content.*;
 import mindustry.core.NetClient;
 import mindustry.entities.Units;
@@ -105,6 +111,14 @@ public class PanelFragment extends Table{
     public static final Seq<Unit> followers = new Seq<>();
     private static int syncTimer = 0;
 
+    /** Your own unit rebuilds, heals and helps. Right click opens the settings. */
+    public static boolean polyAiMode = Core.settings.getBool("polyAiMode", false);
+    public static final SelfBuilderAI aiNotPolyAi = new SelfBuilderAI();
+    /** Right click on the power button: connect grids once a minute, clean extra links every 5. */
+    public static boolean autoFixPower = false;
+    private static final Interval fixPowerTimer = new Interval();
+    private static int fixPowerRuns;
+
     public static boolean mineMonos = true;
     public static boolean minePolys = false;
     public static boolean minePulss = true;
@@ -126,6 +140,7 @@ public class PanelFragment extends Table{
             if(!Vars.state.isMenu()) {
 //                FDAutoFill.update();
                 CustomBuildLogic.update();
+                if(autoFixPower && state.isGame() && fixPowerTimer.get(60f * 60f)) fixPowerQuiet();
             }
         });
 
@@ -208,10 +223,18 @@ public class PanelFragment extends Table{
     }
 
 
+    /** Automatic power fix: silent when nothing to connect; every fifth run also removes extra links. */
+    private static void fixPowerQuiet(){
+        fixPowerRuns++;
+        ClientVars.clientCommandHandler.handleMessage(fixPowerRuns % 5 == 0 ? "!fixpower c qc" : "!fixpower c q", player);
+    }
+
     public static void startInit() {
         mindustry.client.fallen.ActivityLogger.init();
         mindustry.client.fallen.FdLogicQol.init();
         mindustry.client.fallen.MinersFDAI.init();
+        BuilderAssist.init();
+        GlobalChat.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -224,432 +247,320 @@ public class PanelFragment extends Table{
         fdpanel.setZIndex(index);
     }
 
-    /** Equal-size assist-type toggle; unit icon forced small so mega/quasar do not blow up the grid. */
-    private static void addAssistTypeBtn(Table t, ImageButton.ImageButtonStyle style, UnitType type,
-                                         float cell, float iconSize, Boolp enabled, Boolc set, String tooltip){
-        TextureRegionDrawable icon = new TextureRegionDrawable(type.uiIcon);
-        // Force min size so Table does not expand to full unit sprite (mega/quasar)
-        icon.setMinWidth(iconSize);
-        icon.setMinHeight(iconSize);
-        var cellBtn = t.button(icon, style, () -> {
-            boolean next = !enabled.get();
-            set.get(next);
-            // turning a type on also enables master assist so the button actually does something
-            if(next && !MinersFDAI.autoAssistBuild){
-                MinersFDAI.setAutoAssistBuild(true);
-            }
-        }).size(cell).name("assist-" + type.name).tooltip(tooltip);
-        ImageButton b = cellBtn.get();
-        b.resizeImage(iconSize);
-        b.getImage().setScaling(Scaling.fit);
-        b.update(() -> {
-            boolean on = enabled.get() && MinersFDAI.autoAssistBuild;
-            b.setChecked(enabled.get());
-            b.getImage().setColor(on ? Color.acid : Color.white);
-        });
-    }
-
+    private int panelTab = Mathf.clamp(Core.settings.getInt("morj-panel-tab", 0), 0, 4);
+    private Table panelPage;
+    private static final int panelCols = 4;
+    private static final Color panelDim = new Color(1f, 1f, 1f, 0.38f);
+    private static Drawable panelOnBg;
+    private static Button.ButtonStyle panelBtnStyle;
     public void build(Group parent){
         if(Items.copper != null) loadMiningPrefs();
         parent.fill(full -> {
             fdpanel = full;
+            full.touchable = Touchable.childrenOnly;
             full.center().left().visible(() -> ui.hudfrag.shown);
-            fdpanel.table(t -> {
-                ImageButton.ImageButtonStyle sstyle = Styles.clearNonei;
-                ImageButton.ImageButtonStyle sstylet = Styles.clearNoneTogglei;
-                t.defaults().size(settings.getInt("buttonsizefdpamel", 30) * 1f);
-                t.label(() -> {
-                    if (player == null || player.unit() == null) return "HP: -/-";
-                    return "HP:" + Mathf.floor(player.unit().health * 10) / 10f + "/" + Mathf.floor(player.unit().maxHealth * 10) / 10f;
-                }).height(17f);
-                t.row();
-                t.label(() -> {
-                    if (player == null || player.unit() == null) return "Shield: -";
-                    return "Shield:" + Mathf.floor(player.unit().shield * 10) / 10f;
-                }).height(17f);
+            full.table(Tex.pane, shell -> {
+                shell.margin(6f).top();
+                shell.defaults().growX();
 
-                t.row();
-
-                t.table(tb->{
-                    tb.button(Icon.wrenchSmall, sstylet, ()->{
-                        minePolys = !minePolys;
-                        MinersFDAI.forceReassign();
-                    }).tooltip("@client.fdpanel.minepolys").update(i -> i.setChecked(minePolys)).width(settings.getInt("buttonsizefdpamel", 30)).height(settings.getInt("buttonsizefdpamel", 30) / 2f);
-                    tb.row();
-
-                    tb.button(Icon.modeSurvivalSmall, sstylet, MinersFDAI::toggle)
-                            .update(b -> {
-                                boolean on = MinersFDAI.autoMiningActive;
-                                b.setChecked(on);
-                                b.getImage().setColor(on ? Color.cyan : Color.white);
-                            }).tooltip("@client.fdpanel.automine")
-                            .width(settings.getInt("buttonsizefdpamel", 30))
-                            .height(settings.getInt("buttonsizefdpamel", 30) / 2f);
-
-                });
-                t.table(tb->{
-                    tb.defaults().size(settings.getInt("buttonsizefdpamel", 30) / 2f);
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.sand, !isOreEnabled(Items.sand)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.sand))).name("minesand").tooltip("@client.fdpanel.minesand");
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.coal, !isOreEnabled(Items.coal)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.coal))).name("minecoal").tooltip("@client.fdpanel.minecoal");
-                    tb.row();
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.lead, !isOreEnabled(Items.lead)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.lead))).name("minelead").tooltip("@client.fdpanel.minelead");
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.copper, !isOreEnabled(Items.copper)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.copper))).name("minecopper").tooltip("@client.fdpanel.minecopper");
-                });
-
-                t.table(tb->{
-                    tb.defaults().size(settings.getInt("buttonsizefdpamel", 30) / 2f);
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.scrap, !isOreEnabled(Items.scrap)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.scrap))).name("minescrap").tooltip("@client.fdpanel.minescrap");
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.beryllium, !isOreEnabled(Items.beryllium)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.beryllium))).name("Beryllium").tooltip("@client.fdpanel.mineberyl");
-
-                    tb.row();
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.titanium, !isOreEnabled(Items.titanium)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.titanium))).name("minetitan").tooltip("@client.fdpanel.minetitan");
-
-                    tb.button(Icon.mapSmall, sstylet, () -> setOreEnabled(Items.graphite, !isOreEnabled(Items.graphite)))
-                            .update(i -> i.setChecked(isOreEnabled(Items.graphite))).name("mineGraphiticwall").tooltip("@client.fdpanel.minegraphitic");
-
-                });
-
-                // Heal (top) + AI build-assist master (bottom) — same cell size as other full buttons.
-                // Per-type Poly/Pulsar/Mega/Quasar toggles live in Trash (unit sprites break this grid).
-                t.table(tb -> {
-                    float sz = settings.getInt("buttonsizefdpamel", 30);
-                    tb.button(Icon.distributionSmall, sstyle, () -> {
-                        currentfollowmode = 3;
-                        Navigation.follow(new RepairPath(), true);
-                    }).name("healer").tooltip("@client.fdpanel.heal")
-                            .width(sz).height(sz / 2f);
-                    tb.row();
-                    tb.button(Icon.hammerSmall, sstylet, () ->
-                                    MinersFDAI.setAutoAssistBuild(!MinersFDAI.autoAssistBuild))
-                            .update(b -> {
-                                boolean on = MinersFDAI.autoAssistBuild;
-                                b.setChecked(on);
-                                b.getImage().setColor(on ? Color.acid : Color.white);
-                            }).name("aiassistbuild").tooltip("@client.fdpanel.assistbuild")
-                            .width(sz).height(sz / 2f);
-                });
-
-                t.button(Icon.distributionSmall, sstyle, () -> {
-                    currentfollowmode = 2;
-                    Navigation.follow(new BuildPath("self"));
-                }).name("builder").tooltip("@client.fdpanel.selfbuild");
-
-                t.button(Icon.terminalSmall, sstylet, () -> {
-                    eneblemining = !eneblemining;
-                    if(eneblemining) startmining();
-                    else Navigation.stopFollowing();
-                }).update(i -> i.setChecked(eneblemining)).name("miner").tooltip("@client.fdpanel.mine");
-
-                // Toggle "auto mine on join" setting (same as Client settings)
-                t.button(Icon.downloadSmall, sstylet, () -> {
-                    boolean on = !Core.settings.getBool("automineonjoin", false);
-                    Core.settings.put("automineonjoin", on);
-                    if(on){
-                        pendingAutoMine = true;
-                        tryAutoMineOnJoin();
-                        if(!eneblemining && canStartAutoMine()){
-                            eneblemining = true;
-                            startmining();
+                shell.table(bars -> {
+                    bars.defaults().height(16f).growX().pad(1f);
+                    bars.add(new Bar(
+                        () -> {
+                            Unit u = player == null ? null : player.unit();
+                            if(u == null) return "HP";
+                            return "HP " + Mathf.round(u.health) + "/" + Mathf.round(u.maxHealth);
+                        },
+                        () -> Pal.health,
+                        () -> player == null || player.unit() == null ? 0f : Mathf.clamp(player.unit().healthf())
+                    )).row();
+                    bars.add(new Bar(
+                        () -> {
+                            Unit u = player == null ? null : player.unit();
+                            return "Щит " + (u == null ? 0 : Mathf.round(u.shield));
+                        },
+                        () -> Pal.accent,
+                        () -> {
+                            Unit u = player == null ? null : player.unit();
+                            return u == null ? 0f : Mathf.clamp(u.shield / Math.max(u.maxHealth, 1f));
                         }
-                    }else{
-                        pendingAutoMine = false;
+                    ));
+                }).padBottom(4f).row();
+
+                shell.table(tabs -> {
+                    tabs.defaults().height(26f).growX().pad(1f);
+                    String[] keys = {"client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"};
+                    for(int i = 0; i < keys.length; i++){
+                        int tab = i;
+                        tabs.button(Core.bundle.get(keys[i]), Styles.flatt, () -> showPanelTab(tab))
+                            .checked(b -> panelTab == tab)
+                            .update(b -> b.getLabel().setFontScale(0.72f));
                     }
-                }).update(i -> i.setChecked(Core.settings.getBool("automineonjoin", false)))
-                .name("automineonjoin").tooltip("@client.fdpanel.automineonjoin");
+                }).padBottom(4f).row();
 
-                t.row();
+                panelPage = new Table();
+                shell.add(panelPage).growX().left();
+                showPanelTab(panelTab);
+            }).padTop(Core.settings.getInt("yoffssetfdpamel", -200)).left();
+        });
+    }
 
-                // Build-assist types — own row, same cell size as the rest; icons forced small (no full-body sprites)
-                {
-                    float sz = settings.getInt("buttonsizefdpamel", 30);
-                    float icon = sz * 0.55f;
-                    addAssistTypeBtn(t, sstylet, UnitTypes.poly, sz, icon,
-                            () -> MinersFDAI.assistBuildPoly, MinersFDAI::setAssistBuildPoly, "@client.fdpanel.assistpoly");
-                    addAssistTypeBtn(t, sstylet, UnitTypes.pulsar, sz, icon,
-                            () -> MinersFDAI.assistBuildPulsar, MinersFDAI::setAssistBuildPulsar, "@client.fdpanel.assistpulsar");
-                    addAssistTypeBtn(t, sstylet, UnitTypes.mega, sz, icon,
-                            () -> MinersFDAI.assistBuildMega, MinersFDAI::setAssistBuildMega, "@client.fdpanel.assistmega");
-                    addAssistTypeBtn(t, sstylet, UnitTypes.quasar, sz, icon,
-                            () -> MinersFDAI.assistBuildQuasar, MinersFDAI::setAssistBuildQuasar, "@client.fdpanel.assistquasar");
+    private void showPanelTab(int tab){
+        panelTab = Mathf.clamp(tab, 0, 4);
+        settings.put("morj-panel-tab", panelTab);
+        if(panelPage == null) return;
+        panelPage.clear();
+        panelPage.top().left();
+        switch(panelTab){
+            case 0 -> pageMine(panelPage);
+            case 1 -> pageBuild(panelPage);
+            case 2 -> pageView(panelPage);
+            case 3 -> pageFight(panelPage);
+            default -> pageServer(panelPage);
+        }
+    }
 
-                    // Conveyor placement pathfinding (game setting) — same cell size
-                    t.button(Icon.diagonalSmall, sstylet, () -> {
-                        boolean on = !settings.getBool("conveyorpathfinding", true);
-                        settings.put("conveyorpathfinding", on);
-                    }).update(b -> {
-                        boolean on = settings.getBool("conveyorpathfinding", true);
-                        b.setChecked(on);
-                        b.getImage().setColor(on ? Color.acid : Color.white);
-                    }).name("conveyorpathfind").tooltip("@client.fdpanel.conveyorpathfind")
-                            .size(sz);
-
-                    t.button(Icon.link, sstylet, () -> {
-                        boolean on = !settings.getBool("plastaniumcrossbridges", true);
-                        settings.put("plastaniumcrossbridges", on);
-                    }).update(b -> {
-                        boolean on = settings.getBool("plastaniumcrossbridges", true);
-                        b.setChecked(on);
-                        b.getImage().setColor(on ? Color.acid : Color.white);
-                    }).name("plastaniumpathfind").tooltip("@client.fdpanel.plastaniumpathfind")
-                            .size(sz);
-
-                    // Safe mining: skip enemy turret range + 5 tiles
-                    t.button(Icon.defenseSmall, sstylet, () ->
-                                    MinersFDAI.setSafeMining(!MinersFDAI.safeMining))
-                            .update(b -> {
-                                boolean on = MinersFDAI.safeMining;
-                                b.setChecked(on);
-                                b.getImage().setColor(on ? Color.acid : Color.white);
-                            }).name("safemine").tooltip("@client.fdpanel.safemine")
-                            .size(sz);
-                }
-
-                t.row();
-
-                t.button(Icon.effect, sstylet, () -> {
-                    boolean on = !settings.getBool("smarttransparency", false);
-                    settings.put("smarttransparency", on);
-                }).update(b -> {
-                    boolean on = settings.getBool("smarttransparency", false);
-                    b.setChecked(on);
-                    b.getImage().setColor(on ? Color.acid : Color.white);
-                }).name("smarttransparency").tooltip("@client.fdpanel.smarttransparency");
-
-                // Keep equal-size buttons per row so the panel stays a regular grid
-                t.button(Icon.eyeOffSmall, sstyle, () -> {
-                    enableLight = !enableLight;
-                }).name("light").tooltip("@client.fdpanel.light");
-
-                t.button(Icon.planetSmall, sstylet, () -> {
-                    viewunitshealth = !viewunitshealth;
-                }).update(i -> i.setChecked(viewunitshealth)).name("viewunitshealth").tooltip("@client.fdpanel.unitshealth");
-
-                t.button(Icon.unitsSmall, sstylet, () -> {
-                    viewprogressunit = !viewprogressunit;
-                }).update(i -> i.setChecked(viewprogressunit)).name("ubprogress").tooltip("@client.fdpanel.unitprogress");
-
-                t.button(Icon.craftingSmall, sstylet, () -> {
-                    viewprogresbuild = !viewprogresbuild;
-                }).update(i -> i.setChecked(viewprogresbuild)).name("bbprogress").tooltip("@client.fdpanel.buildprogress");
-
-                t.button(Icon.chartBar, sstylet, () -> {
-                    viewEfficiency = !viewEfficiency;
-                }).update(i -> i.setChecked(viewEfficiency)).name("vefficiency").tooltip("@client.fdpanel.efficiency");
-
-                t.button(Icon.unitsSmall, sstylet, () -> {
-                    viewunitseffects = !viewunitseffects;
-                }).update(i -> i.setChecked(viewunitseffects)).name("viewunitseffects").tooltip("@client.fdpanel.uniteffects");
-
-                t.row();
-
-                t.button(Icon.eyeSmall, sstyle, this::checkunits).tooltip("@client.fdpanel.eye.units");
-
-                t.button(Icon.eyeSmall, sstyle, this::checkcores).tooltip("@client.fdpanel.eye.cores");
-
-                t.button(Icon.eyeSmall, sstyle, this::checkspawns).tooltip("@client.fdpanel.eye.spawns");
-
-                t.button(Icon.eyeSmall, sstyle, this::checkvoids).tooltip("@client.fdpanel.eye.voids");
-
-                t.button(Icon.eyeSmall, sstyle, this::checksources).tooltip("@client.fdpanel.eye.sources");
-
-                t.button(Icon.eyeSmall, sstyle, this::checkworldprocc).tooltip("@client.fdpanel.eye.worldproc");
-
-                // Next wave composition (like Eye of Sauron: public chat only if "Unit in chat" is on)
-                t.button(Icon.wavesSmall, sstyle, this::checkNextWave).name("nextwave").tooltip("@client.fdpanel.eye.wave");
-
-                t.row();
-
-                t.button(Icon.refreshSmall, sstyle, () -> {
-                    Call.sendChatMessage("/sync");
-                }).name("sync").tooltip("@client.fdpanel.sync");
-
-                t.button(Icon.hammerSmall, sstyle, () -> {
-                    Call.sendChatMessage("/vote y");
-                }).name("vote").tooltip("@client.fdpanel.vote");
-
-//                t.button(Icon.itchioSmall, sstyle, () -> {
-//                    Call.sendChatMessage("/rtv");
-//                }).name("rtv").tooltip("/rtv");
-
-                ImageButton rtv = t.button(Icon.itchioSmall, Styles.clearNoneTogglei, () -> {}).update(i -> i.setChecked(rtvKey)).tooltip("@client.fdpanel.rtv").get();
-                rtv.addListener(new InputListener() {
-                    @Override public boolean touchDown(InputEvent e, float x, float y, int p, KeyCode b) {
-                        if (b == KeyCode.mouseLeft) {
-                            Call.sendChatMessage("/rtv");
-                            return true;
-                        } else
-                        if (b == KeyCode.mouseRight) {
-                            rtvKey = !rtvKey;
-                            return true;
-                        }
-                        return false;
-                    }
-                });
-
-//                t.button(Icon.wavesSmall, sstyle, () -> {
-//                    Call.sendChatMessage("/rtv wave");
-//                }).name("rtv wave").tooltip("/rtv wave");
-
-                ImageButton rtvWave = t.button(Icon.wavesSmall, Styles.clearNoneTogglei, () -> {}).update(i -> i.setChecked(rtvWaveKey)).tooltip("@client.fdpanel.rtvwave").get();
-                rtvWave.addListener(new InputListener() {
-                    @Override public boolean touchDown(InputEvent e, float x, float y, int p, KeyCode b) {
-                        if (b == KeyCode.mouseLeft) {
-                            Call.sendChatMessage("/rtv wave");
-                            return true;
-                        } else
-                        if (b == KeyCode.mouseRight) {
-                            rtvWaveKey = !rtvWaveKey;
-                            return true;
-                        }
-                        return false;
-                    }
-                });
-
-
-                t.button(Icon.menuSmall, sstyle, () -> {
-                    Call.sendChatMessage("/history");
-                }).name("history").tooltip("@client.fdpanel.history");
-
-                t.button(Icon.rotate, sstyle, () -> {
-                    Call.sendChatMessage("/elite");
-                }).name("elite").tooltip("@client.fdpanel.elite");
-
-                t.row();
-
-                t.button(Icon.starSmall, sstylet, () -> {
-                    settings.put("smarttargeting", !settings.getBool("smarttargeting"));
-                }).update(i -> i.setChecked(settings.getBool("smarttargeting"))).name("smarttargeting").tooltip("@client.fdpanel.smarttargeting");
-
-                t.button(Icon.cancelSmall, sstylet, () -> {
-                    settings.put("ignoreunit", !settings.getBool("ignoreunit"));
-                }).update(i -> i.setChecked(settings.getBool("ignoreunit"))).name("ignoreunit").tooltip("@client.fdpanel.ignoreunit");
-
-                t.button(Icon.cancelSmall, sstylet, () -> {
-                    settings.put("ignoreheal", !settings.getBool("ignoreheal"));
-                }).update(i -> i.setChecked(settings.getBool("ignoreheal"))).name("ignoreheal").tooltip("@client.fdpanel.ignoreheal");
-                t.button(Icon.craftingSmall, sstylet, () -> {
-                    AutoTransfer.enabled ^= true;
-                    new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(AutoTransfer.enabled ? "mod.enabled" : "mod.disabled"));
-                    Core.settings.put("autotransfer", !settings.getBool("autotransfer"));
-                }).update(i -> i.setChecked(settings.getBool("autotransfer"))).name("autotransfer").tooltip("@client.fdpanel.autotransfer");
-
-                t.button(Icon.lineSmall, sstylet, () -> {
-                    FDAutoShoot.viewUnitAim = !FDAutoShoot.viewUnitAim;
-                }).update(i -> i.setChecked(FDAutoShoot.viewUnitAim)).name("vaim").tooltip("@client.fdpanel.unitaim");
-
-//                t.button(Icon.warningSmall, sstylet, () -> {
-//                    enemyComing = !enemyComing;
-//                }).update(i -> i.setChecked(enemyComing)).name("enemyComing").tooltip("Warn about impudent enemies");
-
-                t.row();
-
-                t.button(Icon.powerSmall, sstylet, () -> {
-                    String message = "!fixpower c";
-                    CommandHandler.CommandResponse response = ClientVars.clientCommandHandler.handleMessage(message, player);
-                }).update(i -> i.setChecked(settings.getBool("fixpower"))).name("fixpower").tooltip("@client.fdpanel.fixpower");
-
-
-                t.button(Icon.unitsSmall, sstyle, () -> {
-                    String message = "!uc " + UnitTypes.mega.localizedName;
-                    ClientVars.clientCommandHandler.handleMessage(message, player);
-                }).name("mega").tooltip("@client.fdpanel.mega");
-
-                t.button(Icon.fileTextSmall, sstyle, () -> {
-                    String message = "!fixcode r";
-                    CommandHandler.CommandResponse response = ClientVars.clientCommandHandler.handleMessage(message, player);
-                }).name("fixcode").tooltip("@client.fdpanel.fixcode");
-
-                t.row();
-
-                t.button(Icon.diagonalSmall, sstylet, () -> {
-                    if(!settings.getBool("afkmode")){
+    private void pageMine(Table page){
+        Table grid = grid(page);
+        int[] col = {0};
+        ore(grid, col, Items.copper, "@client.fdpanel.minecopper");
+        ore(grid, col, Items.lead, "@client.fdpanel.minelead");
+        ore(grid, col, Items.titanium, "@client.fdpanel.minetitan");
+        ore(grid, col, Items.sand, "@client.fdpanel.minesand");
+        ore(grid, col, Items.coal, "@client.fdpanel.minecoal");
+        ore(grid, col, Items.scrap, "@client.fdpanel.minescrap");
+        ore(grid, col, Items.beryllium, "@client.fdpanel.mineberyl");
+        ore(grid, col, Items.graphite, "@client.fdpanel.minegraphitic");
+        tile(grid, col, Icon.units, bundle.get("client.morj.btn.polys"), "@client.fdpanel.minepolys",
+            () -> minePolys, () -> { minePolys = !minePolys; MinersFDAI.forceReassign(); }, null);
+        tile(grid, col, Icon.production, bundle.get("client.morj.btn.automine"), "@client.fdpanel.automine",
+            () -> MinersFDAI.autoMiningActive, MinersFDAI::toggle, null);
+        tile(grid, col, Icon.terminal, bundle.get("client.morj.btn.mine"), "@client.fdpanel.mine",
+            () -> eneblemining, () -> {
+                eneblemining = !eneblemining;
+                if(eneblemining) startmining();
+                else Navigation.stopFollowing();
+            }, null);
+        tile(grid, col, Icon.download, bundle.get("client.morj.btn.onjoin"), "@client.fdpanel.automineonjoin",
+            () -> settings.getBool("automineonjoin", false), () -> {
+                boolean on = !settings.getBool("automineonjoin", false);
+                settings.put("automineonjoin", on);
+                if(on){
+                    pendingAutoMine = true;
+                    tryAutoMineOnJoin();
+                    if(!eneblemining && canStartAutoMine()){
                         eneblemining = true;
                         startmining();
-                    } else {Navigation.stopFollowing();}
-                    settings.put("afkmode", !settings.getBool("afkmode"));
-                    new Toast(1).add(bundle.get("setting.afkmode.name") + ": " + bundle.get((settings.getBool("afkmode") ? "mod.enabled" : "mod.disabled")));
-                }).update(i -> i.setChecked(settings.getBool("afkmode"))).name("AFK").tooltip("@client.fdpanel.afk");
+                    }
+                }else{
+                    pendingAutoMine = false;
+                }
+            }, null);
+        tile(grid, col, Icon.defense, bundle.get("client.morj.btn.safe"), "@client.fdpanel.safemine",
+            () -> MinersFDAI.safeMining, () -> MinersFDAI.setSafeMining(!MinersFDAI.safeMining), null);
+        tile(grid, col, Icon.pause, bundle.get("client.morj.btn.afk"), "@client.fdpanel.afk",
+            () -> settings.getBool("afkmode"), () -> {
+                if(!settings.getBool("afkmode")){
+                    eneblemining = true;
+                    startmining();
+                }else{
+                    Navigation.stopFollowing();
+                }
+                settings.put("afkmode", !settings.getBool("afkmode"));
+                new Toast(1).add(bundle.get("setting.afkmode.name") + ": " + bundle.get(settings.getBool("afkmode") ? "mod.enabled" : "mod.disabled"));
+            }, null);
+        tile(grid, col, Icon.add, bundle.get("client.morj.btn.heal"), "@client.fdpanel.heal",
+            null, () -> {
+                currentfollowmode = 3;
+                Navigation.follow(new RepairPath(), true);
+            }, null);
+        tile(grid, col, Icon.hammer, bundle.get("client.morj.btn.self"), "@client.fdpanel.selfbuild",
+            null, () -> {
+                currentfollowmode = 2;
+                Navigation.follow(new BuildPath("self"));
+            }, null);
+    }
 
-                t.button(Icon.cancelSmall, sstylet, () -> {
-                    settings.put("placeSchematicWithCleanup", !settings.getBool("placeSchematicWithCleanup"));
-                }).update(i -> i.setChecked(settings.getBool("placeSchematicWithCleanup"))).name("placeSchematicWithCleanup").tooltip("@client.fdpanel.schemcleanup");
+    private void pageBuild(Table page){
+        Table grid = grid(page);
+        int[] col = {0};
+        assist(grid, col, UnitTypes.poly, bundle.get("client.morj.btn.poly"), "@client.fdpanel.assistpoly",
+            () -> MinersFDAI.assistBuildPoly, MinersFDAI::setAssistBuildPoly);
+        assist(grid, col, UnitTypes.pulsar, bundle.get("client.morj.btn.pulsar"), "@client.fdpanel.assistpulsar",
+            () -> MinersFDAI.assistBuildPulsar, MinersFDAI::setAssistBuildPulsar);
+        assist(grid, col, UnitTypes.mega, bundle.get("client.morj.btn.mega"), "@client.fdpanel.assistmega",
+            () -> MinersFDAI.assistBuildMega, MinersFDAI::setAssistBuildMega);
+        assist(grid, col, UnitTypes.quasar, bundle.get("client.morj.btn.quasar"), "@client.fdpanel.assistquasar",
+            () -> MinersFDAI.assistBuildQuasar, MinersFDAI::setAssistBuildQuasar);
+        tile(grid, col, Icon.hammer, bundle.get("client.morj.btn.assist"), "@client.fdpanel.assistbuild",
+            () -> MinersFDAI.autoAssistBuild, () -> MinersFDAI.setAutoAssistBuild(!MinersFDAI.autoAssistBuild), null);
+        tile(grid, col, Icon.diagonal, bundle.get("client.morj.btn.path"), "@client.fdpanel.conveyorpathfind",
+            () -> settings.getBool("conveyorpathfinding", true), () -> settings.put("conveyorpathfinding", !settings.getBool("conveyorpathfinding", true)), null);
+        tile(grid, col, Icon.link, bundle.get("client.morj.btn.plast"), "@client.fdpanel.plastaniumpathfind",
+            () -> settings.getBool("plastaniumcrossbridges", true), () -> settings.put("plastaniumcrossbridges", !settings.getBool("plastaniumcrossbridges", true)), null);
+        tile(grid, col, new TextureRegionDrawable(UnitTypes.poly.uiIcon), bundle.get("client.morj.btn.polyai"), "@client.fdpanel.polyai",
+            () -> polyAiMode, () -> {
+                polyAiMode = !polyAiMode;
+                settings.put("polyAiMode", polyAiMode);
+                if(!polyAiMode){
+                    aiNotPolyAi.stopAfk();
+                    aiNotPolyAi.clearAiPlans();
+                }
+            }, () -> PolySettingsDialog.instance.show());
+        tile(grid, col, new TextureRegionDrawable(UnitTypes.nova.uiIcon), bundle.get("client.morj.btn.nova"), "@client.fdpanel.novaassist",
+            () -> BuilderAssist.enabled, BuilderAssist::toggle, BuilderAssist::showSettings);
+        tile(grid, col, Icon.planet, bundle.get("client.morj.btn.chat"), "@client.fdpanel.glchat",
+            null, GlobalChatDialog::showDialog, null);
+        tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.schem"), "@client.fdpanel.schemcleanup",
+            () -> settings.getBool("placeSchematicWithCleanup"), () -> settings.put("placeSchematicWithCleanup", !settings.getBool("placeSchematicWithCleanup")), null);
+    }
 
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    settings.put("mobilegayming", !settings.getBool("mobilegayming"));
-//                }).update(i -> i.setChecked(settings.getBool("mobilegayming"))).name("mobilegayming").tooltip("mobilegayming");
+    private void pageView(Table page){
+        Table grid = grid(page);
+        int[] col = {0};
+        tile(grid, col, Icon.eyeOff, bundle.get("client.morj.btn.fade"), "@client.fdpanel.smarttransparency",
+            () -> settings.getBool("smarttransparency", false), () -> settings.put("smarttransparency", !settings.getBool("smarttransparency", false)), null);
+        tile(grid, col, Icon.eyeOff, bundle.get("client.morj.btn.light"), "@client.fdpanel.light",
+            () -> enableLight, () -> enableLight = !enableLight, null);
+        tile(grid, col, Icon.add, bundle.get("client.morj.btn.hp"), "@client.fdpanel.unitshealth",
+            () -> viewunitshealth, () -> viewunitshealth = !viewunitshealth, null);
+        tile(grid, col, Icon.units, bundle.get("client.morj.btn.uprogress"), "@client.fdpanel.unitprogress",
+            () -> viewprogressunit, () -> viewprogressunit = !viewprogressunit, null);
+        tile(grid, col, Icon.crafting, bundle.get("client.morj.btn.bprogress"), "@client.fdpanel.buildprogress",
+            () -> viewprogresbuild, () -> viewprogresbuild = !viewprogresbuild, null);
+        tile(grid, col, Icon.chartBar, bundle.get("client.morj.btn.eff"), "@client.fdpanel.efficiency",
+            () -> viewEfficiency, () -> viewEfficiency = !viewEfficiency, null);
+        tile(grid, col, Icon.effect, bundle.get("client.morj.btn.status"), "@client.fdpanel.uniteffects",
+            () -> viewunitseffects, () -> viewunitseffects = !viewunitseffects, null);
+        tile(grid, col, Icon.box, bundle.get("client.morj.btn.core"), "@client.fdpanel.coreitems",
+            () -> settings.getBool("coreitems"), () -> settings.put("coreitems", !settings.getBool("coreitems")), null);
+        tile(grid, col, Icon.units, bundle.get("client.morj.btn.scanunits"), "@client.fdpanel.eye.units", null, this::checkunits, null);
+        tile(grid, col, Icon.commandRally, bundle.get("client.morj.btn.scancores"), "@client.fdpanel.eye.cores", null, this::checkcores, null);
+        tile(grid, col, Icon.modeAttack, bundle.get("client.morj.btn.scanspawn"), "@client.fdpanel.eye.spawns", null, this::checkspawns, null);
+        tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.scanvoid"), "@client.fdpanel.eye.voids", null, this::checkvoids, null);
+        tile(grid, col, Icon.upload, bundle.get("client.morj.btn.scansource"), "@client.fdpanel.eye.sources", null, this::checksources, null);
+        tile(grid, col, Icon.logic, bundle.get("client.morj.btn.scanproc"), "@client.fdpanel.eye.worldproc", null, this::checkworldprocc, null);
+        tile(grid, col, Icon.waves, bundle.get("client.morj.btn.wave"), "@client.fdpanel.eye.wave", null, this::checkNextWave, null);
+        tile(grid, col, Icon.chat, bundle.get("client.morj.btn.uchat"), "@client.fdpanel.unitatchat",
+            () -> settings.getBool("unitatchat"), () -> settings.put("unitatchat", !settings.getBool("unitatchat")), null);
+    }
 
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    settings.put("fd_autofill", !settings.getBool("fd_autofill"));
-//                }).update(i -> i.setChecked(settings.getBool("fd_autofill"))).name("fd_autofill").tooltip("fd_autofill");
+    private void pageFight(Table page){
+        Table grid = grid(page);
+        int[] col = {0};
+        tile(grid, col, Icon.star, bundle.get("client.morj.btn.aim"), "@client.fdpanel.smarttargeting",
+            () -> settings.getBool("smarttargeting"), () -> settings.put("smarttargeting", !settings.getBool("smarttargeting")), null);
+        tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.ignunit"), "@client.fdpanel.ignoreunit",
+            () -> settings.getBool("ignoreunit"), () -> settings.put("ignoreunit", !settings.getBool("ignoreunit")), null);
+        tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.ignheal"), "@client.fdpanel.ignoreheal",
+            () -> settings.getBool("ignoreheal"), () -> settings.put("ignoreheal", !settings.getBool("ignoreheal")), null);
+        tile(grid, col, Icon.line, bundle.get("client.morj.btn.uaim"), "@client.fdpanel.unitaim",
+            () -> FDAutoShoot.viewUnitAim, () -> FDAutoShoot.viewUnitAim = !FDAutoShoot.viewUnitAim, null);
+        tile(grid, col, new TextureRegionDrawable(UnitTypes.mega.uiIcon), bundle.get("client.morj.btn.ucmega"), "@client.fdpanel.mega",
+            null, () -> ClientVars.clientCommandHandler.handleMessage("!uc " + UnitTypes.mega.localizedName, player), null);
+    }
 
-                t.button(Icon.chatSmall, sstylet, () -> {
-                    settings.put("unitatchat", !settings.getBool("unitatchat"));
-                }).update(i -> i.setChecked(settings.getBool("unitatchat"))).name("unitatchat").tooltip("@client.fdpanel.unitatchat");
+    private void pageServer(Table page){
+        Table grid = grid(page);
+        int[] col = {0};
+        tile(grid, col, Icon.refresh, bundle.get("client.morj.btn.sync"), "@client.fdpanel.sync",
+            null, () -> Call.sendChatMessage("/sync"), null);
+        tile(grid, col, Icon.ok, bundle.get("client.morj.btn.vote"), "@client.fdpanel.vote",
+            null, () -> Call.sendChatMessage("/vote y"), null);
+        tile(grid, col, Icon.map, bundle.get("client.morj.btn.rtv"), "@client.fdpanel.rtv",
+            () -> rtvKey, () -> Call.sendChatMessage("/rtv"), () -> rtvKey = !rtvKey);
+        tile(grid, col, Icon.waves, bundle.get("client.morj.btn.rtvwave"), "@client.fdpanel.rtvwave",
+            () -> rtvWaveKey, () -> Call.sendChatMessage("/rtv wave"), () -> rtvWaveKey = !rtvWaveKey);
+        tile(grid, col, Icon.book, bundle.get("client.morj.btn.history"), "@client.fdpanel.history",
+            null, () -> Call.sendChatMessage("/history"), null);
+        tile(grid, col, Icon.rotate, bundle.get("client.morj.btn.elite"), "@client.fdpanel.elite",
+            null, () -> Call.sendChatMessage("/elite"), null);
+        tile(grid, col, Icon.crafting, bundle.get("client.morj.btn.transfer"), "@client.fdpanel.autotransfer",
+            () -> settings.getBool("autotransfer"), () -> {
+                AutoTransfer.enabled ^= true;
+                new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(AutoTransfer.enabled ? "mod.enabled" : "mod.disabled"));
+                settings.put("autotransfer", !settings.getBool("autotransfer"));
+            }, null);
+        tile(grid, col, Icon.power, bundle.get("client.morj.btn.power"), "@client.fdpanel.fixpower",
+            () -> autoFixPower, () -> ClientVars.clientCommandHandler.handleMessage("!fixpower c", player), () -> {
+                autoFixPower = !autoFixPower;
+                fixPowerTimer.reset(0, 0f);
+                fixPowerRuns = 0;
+            });
+        tile(grid, col, Icon.logic, bundle.get("client.morj.btn.fixcode"), "@client.fdpanel.fixcode",
+            null, () -> ClientVars.clientCommandHandler.handleMessage("!fixcode r", player), null);
+    }
 
-                // Core resources toggle (same size as other panel buttons)
-                t.button(Icon.boxSmall, sstylet, () -> {
-                    Core.settings.put("coreitems", !Core.settings.getBool("coreitems"));
-                }).update(i -> i.setChecked(Core.settings.getBool("coreitems"))).name("coreitems").tooltip("@client.fdpanel.coreitems");
+    private static Table grid(Table page){
+        Table grid = new Table();
+        grid.left().top();
+        page.add(grid).left().growX();
+        return grid;
+    }
 
-//                t.button(Icon.mapSmall, sstylet, () -> {
-//                    triEnabled = !triEnabled;
-//                    if (!triEnabled) {
-//                        // При выключении отпускаем юнитов (очищаем планы)
-//                        for(Unit u : followers) {
-//                            if(u.isValid()) u.plans.clear();
-//                        }
-//                        followers.clear();
-//                    }
-//                }).update(i -> i.setChecked(triEnabled)).name("triEnabled").tooltip("triEnabled");
+    private void ore(Table grid, int[] col, Item item, String tip){
+        tile(grid, col, new TextureRegionDrawable(item.uiIcon), item.localizedName, tip,
+            () -> isOreEnabled(item), () -> setOreEnabled(item, !isOreEnabled(item)), null);
+    }
 
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    Core.settings.put("steal_map", !Core.settings.getBool("steal_map"));
-//                }).update(i -> i.setChecked(Core.settings.getBool("steal_map"))).name("steal_map").tooltip("steal_map");
-//
-//
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    scanAttackMaps();
-//                }).name("scanAttackMaps").tooltip("scanAttackMaps");
-//
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    listMaps();
-//                }).name("listMaps").tooltip("listMaps");
-//
-//                t.button(Icon.trelloSmall, sstylet, () -> {
-//                    deleteAttackMaps();
-//                }).name("deleteAttackMaps").tooltip("deleteAttackMaps");
+    private void assist(Table grid, int[] col, UnitType type, String label, String tip, Boolp enabled, Boolc set){
+        tile(grid, col, new TextureRegionDrawable(type.uiIcon), label, tip, enabled, () -> {
+            boolean next = !enabled.get();
+            set.get(next);
+            if(next && !MinersFDAI.autoAssistBuild) MinersFDAI.setAutoAssistBuild(true);
+        }, null);
+    }
 
-//                if(Core.settings.getBool("OneLoliToRuleThemAll", false)){
-//                    t.row();
-//
-//                    t.button(Icon.warningSmall, sstylet, () -> {
-//                        Core.settings.put("fd-ai", !Core.settings.getBool("fd-ai"));
-//                    }).update(i -> i.setChecked(Core.settings.getBool("fd-ai", false))).name("fd-ai").tooltip("fd-ai");
-//
-//                    t.button(Icon.warningSmall, sstylet, () -> {
-//                        Core.settings.put("fd-ai-foos", !Core.settings.getBool("fd-ai-foos"));
-//                    }).update(i -> i.setChecked(Core.settings.getBool("fd-ai-foos", false))).name("fd-ai-foos").tooltip("fd-ai-foos");
-//
-//                    t.button(Icon.trelloSmall, sstyle, () -> {
-//                        Vars.ui.ai.getSettings().show();
-//                    }).name("ai-settings").tooltip("ai-settings");
-//                }
-
-
-            }).padTop(Core.settings.getInt("yoffssetfdpamel",  -200) * 1f);
+    /** Icon with a short caption. Left click runs the action, right click the optional extra. A null state means a one-shot button. */
+    private void tile(Table grid, int[] col, Drawable drawable, String label, String tip, Boolp state, Runnable left, Runnable right){
+        if(col[0] == panelCols){
+            grid.row();
+            col[0] = 0;
+        }
+        if(panelBtnStyle == null){
+            panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.32f);
+            panelBtnStyle = new Button.ButtonStyle();
+            panelBtnStyle.up = Styles.none;
+            panelBtnStyle.over = Styles.flatOver;
+            panelBtnStyle.down = Styles.flatOver;
+            panelBtnStyle.checked = panelOnBg;
+        }
+        float iconSize = Math.max(18f, settings.getInt("buttonsizefdpamel", 30) * 0.7f);
+        Button button = new Button(panelBtnStyle);
+        button.top().margin(1f, 2f, 2f, 2f);
+        Image image = new Image(drawable);
+        image.setScaling(Scaling.fit);
+        button.add(image).size(iconSize).padTop(1f).row();
+        Label caption = button.add(label).growX().padTop(1f).get();
+        caption.setFontScale(0.62f);
+        caption.setEllipsis(true);
+        caption.setAlignment(arc.util.Align.center);
+        String baseTip = tip != null && tip.startsWith("@") ? bundle.get(tip.substring(1)) : tip;
+        final String shown = right == null ? baseTip : baseTip + "\n[lightgray]" + bundle.get("client.morj.right");
+        button.addListener(new Tooltip(t -> {
+            t.background(Styles.black6).margin(4f);
+            t.add(shown).wrap().width(280f);
+        }));
+        button.update(() -> {
+            boolean on = state != null && state.get();
+            button.setChecked(on);
+            image.setColor(state == null || on ? Color.white : panelDim);
         });
+        button.addListener(new InputListener(){
+            @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
+                if(key == KeyCode.mouseRight && right != null){
+                    right.run();
+                    return true;
+                }
+                if(key == KeyCode.mouseLeft && left != null){
+                    left.run();
+                    return true;
+                }
+                return false;
+            }
+        });
+        grid.add(button).size(iconSize + 30f, iconSize + 24f).pad(1f);
+        col[0]++;
     }
 
     /** Delegates to {@link MinersFDAI} (kept for any external call sites). */

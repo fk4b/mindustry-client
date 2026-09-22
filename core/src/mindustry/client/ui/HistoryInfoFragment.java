@@ -16,7 +16,7 @@ public class HistoryInfoFragment extends Table{
         add(img);
         Label label = new Label("");
         add(label).height(126);
-        visible(() -> Core.settings.getBool("tilehud"));
+        visible(() -> Core.settings.getBool("historyfragment"));
         var builder = new StringBuilder();
         update(() -> {
             var record  = TileRecords.INSTANCE.getHistory();

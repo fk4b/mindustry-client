@@ -25,6 +25,8 @@ class MinePath @JvmOverloads constructor(
     private var coreIdle = false
     private var bestItem: Item? = null
     var tile: Tile? = null
+    /** When set, only ore that passes this check is mined (poly mode stays out of turret range). */
+    @JvmField var oreFilter: arc.func.Boolf<Tile>? = null
 
     init {
         val split = args.lowercase().split("\\s".toRegex())
@@ -144,6 +146,12 @@ class MinePath @JvmOverloads constructor(
                 items.remove(bestItem)
             }
             safe
+        } else if (oreFilter != null) {
+            val safe = MinersFDAI.findSafeOreFor(player.unit(), bestItem)
+            if (safe == null || !oreFilter!!.get(safe)) {
+                items.remove(bestItem)
+                null
+            } else safe
         } else {
             indexer.findClosestMineableOre(player.unit(), bestItem)
         }

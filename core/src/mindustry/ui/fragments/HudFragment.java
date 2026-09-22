@@ -348,6 +348,10 @@ public class HudFragment{
         parent.fill(t -> {
             t.visible(() -> shown() && Core.settings.getBool("minimap")); // FINISHME: Only hide minimap when doing so, use a collapser to shrink it maybe? Idk
             t.name = "minimap/position";
+            // real-time player logs (setting is read when the UI is built, so a restart applies it)
+            if(Core.settings.getBool("historyfragment")){
+                t.add(new HistoryInfoFragment()).name("log").maxWidth(500f).top();
+            }
             //tile hud
             t.add(new TileInfoFragment()).name("tilehud").top();
             //minimap

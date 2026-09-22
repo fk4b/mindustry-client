@@ -239,6 +239,10 @@ public class ItemBridge extends Block{
         public void playerPlaced(Object config){
             super.playerPlaced(config);
 
+            // Bridges placed over a plastanium line keep only the link from their plan
+            // and must not become the next reverse-autolink target.
+            if(mindustry.client.utils.PlastaniumCrossings.skipAutoLink(tile)) return;
+
             // Plans that already carry a config (including Integer -1 = no link) must not
             // reverse-autolink lastBuild — that is what crossed parallel hops.
             if(config == null){

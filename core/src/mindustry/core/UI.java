@@ -107,7 +107,6 @@ public class UI implements ApplicationListener, Loadable{
     // Client related
     public SchematicBrowserDialog schematicBrowser;
     public ToolSchematicBrowserDialog toolSchematics;
-    public ToolChatOverlay toolChat;
     public UnitPicker unitPicker;
     public ClajManagerDialog clajManager;
     public ClajJoinDialog clajJoin;
@@ -276,7 +275,6 @@ public class UI implements ApplicationListener, Loadable{
         schematics = new SchematicsDialog();
         schematicBrowser = new SchematicBrowserDialog();
         toolSchematics = new ToolSchematicBrowserDialog();
-        toolChat = new ToolChatOverlay();
         logic = new LogicDialog();
         fullText = new FullTextDialog();
         campaignComplete = new CampaignCompleteDialog();
@@ -316,8 +314,6 @@ public class UI implements ApplicationListener, Loadable{
         logicSearchFrag.build(hudGroup);
         favFrag.build(hudGroup);
         quickSchemFrag.build(hudGroup);
-        toolChat.build();
-        if(Core.settings.getBool("toolglobalchat", true)) toolChat.start();
         PanelFragment.startInit();
         perffrag.build(group);
         new FadeInFragment().build(group);

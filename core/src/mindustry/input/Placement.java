@@ -176,7 +176,7 @@ public class Placement{
             Block b = t.block();
             if(isStackConveyorLine(b)) continue;
             if(sameCrossHost(host, b)){
-                // Far hop of the previous plastanium row is still this crossing (touches that P).
+                // Far hop of another plastanium road — do not steal it.
                 if(isHopBridge(b) && occupied != null && !partOfThisCrossing(x, y, occupied)) return null;
                 return t;
             }
@@ -185,6 +185,34 @@ public class Placement{
             return null;
         }
         return null;
+    }
+
+    /** Plastanium tiles (plans + already built) in a row along rot, including (x, y). */
+    private static int countStrip(int x, int y, int rot, IntSet occupied){
+        int n = 0;
+        if(occupied != null && occupied.contains(Point2.pack(x, y))) n++;
+        else{
+            Tile t = world.tile(x, y);
+            if(t != null && isStackConveyorLine(t.block())) n++;
+        }
+        for(int dir = -1; dir <= 1; dir += 2){
+            int cx = x, cy = y;
+            for(int i = 0; i < 16; i++){
+                cx += Geometry.d4x(rot) * dir;
+                cy += Geometry.d4y(rot) * dir;
+                if(occupied != null && occupied.contains(Point2.pack(cx, cy))){
+                    n++;
+                    continue;
+                }
+                Tile t = world.tile(cx, cy);
+                if(t != null && isStackConveyorLine(t.block())){
+                    n++;
+                    continue;
+                }
+                break;
+            }
+        }
+        return n;
     }
 
     private static int hostWalkRange(Block host){
@@ -200,17 +228,17 @@ public class Placement{
         return r;
     }
 
-    private static ItemBridge pickCrossBridge(Block host, int dist){
+    private static ItemBridge pickCrossBridge(Block host, int dist, int strip){
         if(isLiquidFamily(host)){
             ItemBridge liquid = (ItemBridge)Blocks.bridgeConduit;
             ItemBridge phase = (ItemBridge)Blocks.phaseConduit;
-            if((host == Blocks.phaseConduit || dist > liquid.range) && phase.unlockedNow()) return phase;
+            if(phase.unlockedNow() && (host == Blocks.phaseConduit || dist > liquid.range || strip >= 4)) return phase;
             return liquid.unlockedNow() ? liquid : null;
         }
         ItemBridge items = (ItemBridge)Blocks.itemBridge;
         ItemBridge phase = (ItemBridge)Blocks.phaseConveyor;
-        // Already a phase hop, or item-bridge range is too short: both ends become phase.
-        if((host == Blocks.phaseConveyor || dist > items.range) && phase.unlockedNow()) return phase;
+        // 4+ plastanium in a row, already a phase hop, or item-bridge range is too short.
+        if(phase.unlockedNow() && (host == Blocks.phaseConveyor || dist > items.range || strip >= 4)) return phase;
         return items.unlockedNow() ? items : null;
     }
 
@@ -294,6 +322,17 @@ public class Placement{
         return adjacentToOccupied(x, y, strip);
     }
 
+    private static boolean existingConfigMatches(Building build, Object config){
+        if(build instanceof ItemBridge.ItemBridgeBuild ib){
+            if(config instanceof Integer i) return ib.link == i;
+            if(config instanceof Point2 p) return ib.link == Point2.pack(ib.tile.x + p.x, ib.tile.y + p.y);
+        }
+        if(build.power != null && config instanceof Integer packed){
+            return build.power.links.contains(packed);
+        }
+        return false;
+    }
+
     /**
      * Keep existing hop endpoints (only re-link). Place a new bridge on belt/pipe.
      * Never demolish the far hop of the previous plastanium row.
@@ -303,9 +342,13 @@ public class Placement{
         if(t.build != null && isHopBridge(t.block())){
             if(occupied != null && !partOfThisCrossing(t.x, t.y, occupied)) return;
             if(t.block() == bridge){
-                t.build.configure(config);
+                if(!existingConfigMatches(t.build, config)){
+                    extra.add(new BuildPlan(t.x, t.y, 0, bridge, config));
+                }
                 return;
             }
+            // item bridge → phase (4+ plastanium): break then place, validPlace-replace is not enough
+            breaks.add(new BuildPlan(t.x, t.y));
             extra.add(new BuildPlan(t.x, t.y, 0, bridge, config));
             return;
         }
@@ -330,7 +373,7 @@ public class Placement{
         if(!Blocks.powerNode.unlockedNow()) return;
         IntSet blocked = occupied != null ? occupied : used;
 
-        if(linkExistingNode(from.x, from.y, blocked) && linkExistingNode(to.x, to.y, blocked)) return;
+        if(linkExistingNode(from.x, from.y, blocked, extra) && linkExistingNode(to.x, to.y, blocked, extra)) return;
 
         NodePlace a = findEmptyNodeSpot(from.x, from.y, blocked, used);
         NodePlace b = findEmptyNodeSpot(to.x, to.y, blocked, used);
@@ -344,7 +387,7 @@ public class Placement{
     }
 
     /** Reuse a node already in range instead of placing. */
-    private static boolean linkExistingNode(int px, int py, IntSet occupied){
+    private static boolean linkExistingNode(int px, int py, IntSet occupied, Seq<BuildPlan> extra){
         if(player == null) return false;
         Building best = null;
         float bestD = Float.MAX_VALUE;
@@ -365,7 +408,9 @@ public class Placement{
         }
         if(best == null) return false;
         int packed = Point2.pack(px, py);
-        if(!best.power.links.contains(packed)) best.configure(packed);
+        if(!best.power.links.contains(packed)){
+            extra.add(new BuildPlan(best.tileX(), best.tileY(), 0, best.block, packed));
+        }
         return true;
     }
 
@@ -436,7 +481,8 @@ public class Placement{
         Tile to = walkCrossHost(tile.x, tile.y, rot, 1, occupied, max, host, gaps);
         if(from == null || to == null) return false;
         int dist = Math.max(Math.abs(to.x - from.x), Math.abs(to.y - from.y));
-        addBeltBridge(extra, breaks, used, pickCrossBridge(host, dist), from, to, occupied);
+        int strip = countStrip(tile.x, tile.y, rot, occupied);
+        addBeltBridge(extra, breaks, used, pickCrossBridge(host, dist, strip), from, to, occupied);
         return used.contains(Point2.pack(from.x, from.y));
     }
 

@@ -23,6 +23,7 @@ import mindustry.async.*;
 import mindustry.client.*;
 import mindustry.client.antigrief.*;
 import mindustry.client.navigation.*;
+import mindustry.client.utils.*;
 import mindustry.client.navigation.waypoints.*;
 import mindustry.content.*;
 import mindustry.core.*;
@@ -1928,8 +1929,36 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         }
     }
 
+    /** Reconfigure an already-built block from a plan. True = plan consumed. */
+    private boolean queueExistingPlanConfig(BuildPlan plan){
+        if(plan == null || plan.block == null || plan.config == null) return false;
+        Tile tile = world.tiles.get(plan.x, plan.y);
+        if(tile == null) return false;
+        Building build = tile.build;
+        if(build == null || build instanceof ConstructBuild) return false;
+        if(tile.block() != plan.block || build.tileX() != plan.x || build.tileY() != plan.y) return false;
+        if(!existingPlanConfigMatches(build, plan.config)){
+            configs.add(new ConfigRequest(build, plan.config));
+        }
+        return true;
+    }
+
+    private static boolean existingPlanConfigMatches(Building build, Object config){
+        if(build instanceof ItemBridge.ItemBridgeBuild ib){
+            if(config instanceof Integer i) return ib.link == i;
+            if(config instanceof Point2 p) return ib.link == Point2.pack(ib.tile.x + p.x, ib.tile.y + p.y);
+        }
+        if(build.power != null && config instanceof Integer packed){
+            return build.power.links.contains(packed);
+        }
+        Object existing = build.config();
+        if(config instanceof Object[] pa && existing instanceof Object[] ea) return Arrays.deepEquals(pa, ea);
+        return Objects.equals(config, existing);
+    }
+
     protected void flushSelectPlans(Seq<BuildPlan> plans){
         for(BuildPlan plan : plans){
+            if(queueExistingPlanConfig(plan)) continue;
             if(plan.block != null && validPlace(plan.x, plan.y, plan.block, plan.rotation, null, true)){
                 BuildPlan other = getPlan(plan.x, plan.y, plan.block.size, null);
                 if(other == null){
@@ -1967,6 +1996,8 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         }
         for(BuildPlan plan : plans){
             if (plan.block == null) continue;
+            // Bridges and deferred conveyors of a confirmed plastanium line. Not while the plans are only frozen.
+            if(!freeze && PlastaniumCrossings.flushed(plan)) continue;
 
             if (removeFrozen) {
                 plan.bounds(Tmp.r1);
@@ -1981,6 +2012,11 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
 
             if (plan.breaking) {
                 tryBreakBlock(plan.x, plan.y, freeze);
+                continue;
+            }
+
+            // Already-built same block: apply config on confirm, never while dragging the line.
+            if(queueExistingPlanConfig(plan)){
                 continue;
             }
 

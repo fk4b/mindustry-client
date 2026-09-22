@@ -8,7 +8,8 @@ open class ConfigRequest @JvmOverloads constructor(@JvmField val x: Int, @JvmFie
 
     override fun run() {
         val tile = Vars.world?.tile(x, y) ?: return
-        if (isRotate) Call.rotateBlock(Vars.player, tile.build, value as Boolean)
-        else Call.tileConfig(Vars.player, tile.build, value)
+        val build = tile.build ?: return
+        if (isRotate) Call.rotateBlock(Vars.player, build, value as Boolean)
+        else Call.tileConfig(Vars.player, build, value)
     }
 }

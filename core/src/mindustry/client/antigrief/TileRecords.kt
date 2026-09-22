@@ -37,17 +37,21 @@ object TileRecords {
                 if (!sameMap) {
                     records = Array(Vars.world.width()) { x -> Array(Vars.world.height()) { y -> TileRecord(x, y) } }
                     joinTime = Instant.now()
+                    history.clear()
                 }
                 NetworkTileLogs.onWorldLoad(sameMap)
             }
         }
 
         Events.on(EventType.BlockBuildBeginEventBefore::class.java) {
+            val unit = it.unit
             if (it.newBlock == null || it.newBlock == Blocks.air) {
+                if (unit != null && unit.isPlayer) addLogH(TileBreakLog(unit.toInteractor(), it.tile.block()))
                 it.tile.getLinkedTiles { tile ->
                     addLog(tile, TileBreakLog(it.unit.toInteractor(), tile.block()))
                 }
             } else { // FINISHME: slightly very inefficient?
+                if (unit != null && unit.isPlayer) addLogH(TilePlacedLog(unit.toInteractor(), it.newBlock, -1, null, true))
                 it.tile.getLinkedTilesAs(it.newBlock) { tile ->
                     val log = TilePlacedLog(it.unit.toInteractor(), it.newBlock, it.rotation, null, tile == it.tile)
                     addLog(tile, log)?.apply {
@@ -79,6 +83,7 @@ object TileRecords {
         Events.on(EventType.ConfigEvent::class.java) { // FINISHME: Check if last was NodeLinkAddedTileLog and combine as needed.
             val build = it.tile // Horrible misnomer
             val constructor = if (it.player == null && build.tile.block() is PowerNode) ::NodeLinkAddedTileLog else ::ConfigureTileLog
+            if (it.player != null) addLogH(ConfigureTileLog(it.player.toInteractor(), build.tile.block(), build.rotation, it.value))
             build.tile.getLinkedTiles { tile ->
                 addLog(tile, constructor(it.player.toInteractor(), tile.block(),build.rotation, it.value))?.apply {
                     configuration = it.previous
@@ -124,6 +129,7 @@ object TileRecords {
         Events.on(EventType.BuildRotateEvent::class.java) {
             val player = it.unit?.player ?: return@on
             val direction = rotationDirection(it.previous, it.build.rotation)
+            addLogH(RotateTileLog(player.toInteractor(), it.build.block, it.build.rotation, direction))
             it.build.tile.getLinkedTiles { tile ->
                 addLog(tile, RotateTileLog(player.toInteractor(), it.build.block, it.build.rotation, direction))?.apply {
                     rotation = it.previous
@@ -139,6 +145,22 @@ object TileRecords {
     private fun addLog(tile: Tile, log: TileLog): TileState? {
         val logs = this[tile] ?: return null
         return logs.add(log, tile)
+    }
+
+    private fun addLogH(log: TileLog) {
+        if (history.size > 7) history.removeAt(0)
+        var done = false
+        val text = log.toShortString()
+        for (i in history.indices) {
+            if (history[i].startsWith(text)) {
+                val tail = history[i].substring(text.length + 2)
+                val count = tail.toIntOrNull()?.plus(1) ?: 1
+                history[i] = "$text x$count"
+                done = true
+                break
+            }
+        }
+        if (!done) history.add("$text x1")
     }
 
     fun show(tile: Tile) {

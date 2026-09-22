@@ -1420,6 +1420,33 @@ public class DesktopInput extends InputHandler{
     }
 
     protected void updateMovement(Unit unit, boolean ignoreKeys){ // Heavily modified to support navigation
+        if(mindustry.client.ui.PanelFragment.polyAiMode){
+            if(unit == null || player.dead()) return;
+            mindustry.client.ui.PanelFragment.aiNotPolyAi.unit(unit);
+            if(mindustry.client.ui.PanelFragment.aiNotPolyAi.updateAfk()){
+                player.shooting = false;
+                unit.controlWeapons(true, false);
+                mindustry.client.CursorHide.applyReportedCursor(unit);
+                return;
+            }
+            mindustry.client.ui.PanelFragment.aiNotPolyAi.updateMovement();
+            boolean healing = mindustry.client.ui.PanelFragment.aiNotPolyAi.healing();
+            if(healing){
+                Building target = mindustry.client.ui.PanelFragment.aiNotPolyAi.healTarget;
+                unit.aim(target.x, target.y);
+                if(unit.type.faceTarget) unit.lookAt(target);
+            }else if(unit.moving()){
+                unit.lookAt(unit.vel().angle());
+            }else{
+                unit.lookAt(unit.prefRotation());
+            }
+            player.shooting = healing;
+            unit.controlWeapons(true, healing);
+            if(!healing && !mindustry.client.CursorHide.shouldHide()) unit.aim(Core.input.mouseWorld());
+            mindustry.client.CursorHide.applyReportedCursor(unit);
+            return;
+        }
+
         boolean omni = unit.type.omniMovement;
 
         float speed = unit.speed();
