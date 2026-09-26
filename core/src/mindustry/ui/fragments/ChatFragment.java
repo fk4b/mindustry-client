@@ -438,8 +438,11 @@ public class ChatFragment extends Table{
         String message = chatfield.getText().trim();
         clearChatInput();
 
-        //avoid sending prefix-empty messages
-        if(message.isEmpty() || (message.startsWith(mode.prefix) && message.substring(mode.prefix.length()).isEmpty())) return;
+        //avoid sending prefix-empty messages; an attached image still needs a line to hang the id on
+        if(message.isEmpty() || (message.startsWith(mode.prefix) && message.substring(mode.prefix.length()).isEmpty())){
+            if(!UploadDialog.INSTANCE.hasImage()) return;
+            message = mode.prefix.isEmpty() ? "." : mode.normalizedPrefix() + ".";
+        }
 
         if(history.size < 2 || !history.get(1).equals(message)) history.insert(1, message.replaceFirst("^" + mode.normalizedPrefix(), ""));
 

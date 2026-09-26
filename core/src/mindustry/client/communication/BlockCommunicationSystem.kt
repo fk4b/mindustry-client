@@ -48,6 +48,13 @@ object BlockCommunicationSystem : CommunicationSystem() {
         return build
     }
 
+    /** Logic processor or message block that can carry an image. Plugin networking is separate. */
+    fun canCarryImages(): Boolean {
+        findProcessor()
+        findMessage()
+        return logicAvailable || messageAvailable || ClientVars.pluginVersion != -1f
+    }
+
     fun findMessage(): MessageBlock.MessageBuild? {
         val build = Units.findAllyTile(Vars.player.team(), Vars.player.x, Vars.player.y, Float.MAX_VALUE / 2) { tile ->
             val build = tile as? MessageBlock.MessageBuild ?: return@findAllyTile false
@@ -72,13 +79,12 @@ object BlockCommunicationSystem : CommunicationSystem() {
 
         val bytes: ByteArray
         try {
-            bytes = Base32768Coder.decode(
-                message.removePrefix(ClientVars.MESSAGE_BLOCK_PREFIX + "\n")
-                    .split("\n").joinToString("") {
-                        it.removePrefix("print \"").removeSuffix("\"")
-                    }
-            ).run { sliceArray(0 until size - 1) }  // FINISHME wtf
-
+            // Payload is the print lines after LOGIC_PREFIX. The chat-auth prefix is a different block.
+            val payload = message.removePrefix(LOGIC_PREFIX).split("\n").joinToString("") {
+                it.removePrefix("print \"").removeSuffix("\"")
+            }
+            if (payload.isEmpty()) return
+            bytes = Base32768Coder.decode(payload).run { sliceArray(0 until size - 1) }
         } catch (exception: Exception) {
             return
         }

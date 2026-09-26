@@ -147,9 +147,26 @@ object Main : ApplicationListener {
 
                 is ImageTransmission -> {
                     Log.debug("Received image transmission")
-                    val msg = findMessage(transmission.message) ?: return@addListener
-                    msg.attachments.add(Texture(transmission.image)).shrink()
-                    transmission.image.dispose()
+                    fun attach(): Boolean {
+                        if (transmission.image.isDisposed) return true
+                        val msg = findMessage(transmission.message) ?: return false
+                        msg.attachments.add(Texture(transmission.image)).shrink()
+                        transmission.image.dispose()
+                        return true
+                    }
+                    // The chat line often arrives after the first logic packet, especially for the sender.
+                    if (!attach()) {
+                        var attempts = 0
+                        arc.util.Timer.schedule(object : arc.util.Timer.Task() {
+                            override fun run() {
+                                attempts++
+                                if (attach() || attempts >= 20) {
+                                    if (!transmission.image.isDisposed) transmission.image.dispose()
+                                    cancel()
+                                }
+                            }
+                        }, 0.25f, 0.25f)
+                    }
                 }
 
                 is SchematicTransmission -> {

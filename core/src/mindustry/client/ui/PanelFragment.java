@@ -68,7 +68,7 @@ public class PanelFragment extends Table{
     /** Resource flags for mining AI (public for MinersFDAI / settings). */
     public static boolean minecopper = false, minelead = false, minetitan = false,
             minesand = false, minecoal = false, minescrap = false;
-    private static boolean mineBerylliumwall, mineGraphiticwall;
+    private static boolean mineBerylliumwall;
 
     public static Item[] ALL_MINE_ORES = {};
     public static final ObjectSet<Item> enabledOres = new ObjectSet<>();
@@ -330,7 +330,6 @@ public class PanelFragment extends Table{
         ore(grid, col, Items.coal, "@client.fdpanel.minecoal");
         ore(grid, col, Items.scrap, "@client.fdpanel.minescrap");
         ore(grid, col, Items.beryllium, "@client.fdpanel.mineberyl");
-        ore(grid, col, Items.graphite, "@client.fdpanel.minegraphitic");
         tile(grid, col, Icon.units, bundle.get("client.morj.btn.polys"), "@client.fdpanel.minepolys",
             () -> minePolys, () -> { minePolys = !minePolys; MinersFDAI.forceReassign(); }, null);
         tile(grid, col, Icon.production, bundle.get("client.morj.btn.automine"), "@client.fdpanel.automine",
@@ -1256,10 +1255,17 @@ public class PanelFragment extends Table{
         if(ALL_MINE_ORES.length == 0 || ALL_MINE_ORES[0] == null){
             ALL_MINE_ORES = new Item[]{
                 Items.copper, Items.lead, Items.sand, Items.coal, Items.scrap,
-                Items.titanium, Items.thorium, Items.beryllium, Items.graphite, Items.tungsten
+                Items.titanium, Items.beryllium
             };
         }
         return ALL_MINE_ORES;
+    }
+
+    /** Thorium, graphite and tungsten are not on the panel: support units cannot mine them. */
+    static boolean isListedMineOre(Item it){
+        if(it == null) return false;
+        for(Item ore : allMineOres()) if(ore == it) return true;
+        return false;
     }
 
     public static boolean isOreEnabled(Item it){
@@ -1303,7 +1309,7 @@ public class PanelFragment extends Table{
     }
 
     public static void setOreEnabled(Item it, boolean on, boolean save){
-        if(it == null) return;
+        if(!isListedMineOre(it)) return;
         if(on) enabledOres.add(it);
         else enabledOres.remove(it);
         syncLegacyOreFlags();
@@ -1326,7 +1332,7 @@ public class PanelFragment extends Table{
     }
 
     public static void toggleUnitOre(UnitType type, Item it){
-        if(type == null || it == null) return;
+        if(type == null || !isListedMineOre(it)) return;
         ObjectSet<Item> s = oresFor(type);
         if(s.contains(it)) s.remove(it);
         else s.add(it);
@@ -1367,7 +1373,7 @@ public class PanelFragment extends Table{
         String raw = Core.settings.getString("fd-ores", "copper,lead,sand,coal,titanium");
         for(String n : raw.split(",")){
             Item it = content.items().find(i -> i.name.equals(n.trim()));
-            if(it != null) enabledOres.add(it);
+            if(isListedMineOre(it)) enabledOres.add(it);
         }
         if(enabledOres.isEmpty()){
             enabledOres.addAll(Items.copper, Items.lead, Items.sand, Items.coal, Items.titanium);
@@ -1389,12 +1395,12 @@ public class PanelFragment extends Table{
         if(raw == null || raw.trim().isEmpty()) raw = def;
         for(String n : raw.split(",")){
             Item it = content.items().find(i -> i.name.equals(n.trim()));
-            if(it != null) s.add(it);
+            if(isListedMineOre(it)) s.add(it);
         }
         if(s.isEmpty() && def != null){
             for(String n : def.split(",")){
                 Item it = content.items().find(i -> i.name.equals(n.trim()));
-                if(it != null) s.add(it);
+                if(isListedMineOre(it)) s.add(it);
             }
         }
     }
@@ -1433,7 +1439,6 @@ public class PanelFragment extends Table{
         minecoal = enabledOres.contains(Items.coal);
         minescrap = enabledOres.contains(Items.scrap);
         mineBerylliumwall = enabledOres.contains(Items.beryllium);
-        mineGraphiticwall = enabledOres.contains(Items.graphite);
         itemtomine.clear();
         for(Item it : enabledOres) itemtomine.add(it);
     }

@@ -7,6 +7,7 @@ import mindustry.*;
 import mindustry.ai.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.client.*;
+import mindustry.client.utils.*;
 import mindustry.content.*;
 import mindustry.core.GameState.*;
 import mindustry.ctype.*;
@@ -508,7 +509,7 @@ public class Logic implements ApplicationListener{
 
         PerfCounter.stateUpdate.begin();
 
-        Events.fire(Trigger.update);
+        SafeEvents.fire(Trigger.update);
         universe.updateGlobal();
 
         if(Core.settings.modified() && !state.isPlaying()){

@@ -46,12 +46,16 @@ object UploadDialog : BaseDialog("@client.uploadtitle") { // FINISHME: Somehow s
 
         Events.on(EventType.SendChatMessageEvent::class.java) {
             if (images.isEmpty()) return@on
-            val id = InvisibleCharCoder.decode(it.message.takeLast(2)).run { (get(0).toUByte().toUInt() shl 8) or get(1).toUByte().toUInt() }.toShort()
+            val tail = it.message.takeLast(2)
+            if (tail.length < 2) return@on
+            val idBytes = InvisibleCharCoder.decode(tail)
+            if (idBytes.size < 2) return@on
+            val id = ((idBytes[0].toUByte().toUInt() shl 8) or idBytes[1].toUByte().toUInt()).toShort()
             Vars.ui.showInfoToast(Core.bundle.format("client.uploadingimages", images.size), 3f)
             var doneCount = 0
             val imgs = images.groupBy { img -> img.width * img.height > 1920 * 1080 }
             imgs[true]?.forEach(Pixmap::dispose) // Anything over 1920 * 1080
-            if (!BlockCommunicationSystem.logicAvailable && ClientVars.pluginVersion == -1F) {
+            if (!BlockCommunicationSystem.canCarryImages()) {
                 Vars.ui.chatfrag.addMessage(Core.bundle["client.placelogic"])
                 imgs[false]?.forEach(Pixmap::dispose)
             } else {
