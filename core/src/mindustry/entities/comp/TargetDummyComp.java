@@ -18,6 +18,7 @@ abstract class TargetDummyComp implements Unitc, Healthc{
 
     @Override
     public void rawDamage(float amount){
+        if(amount > 0f) mindustry.client.morj.DamageNumbers.hit(self(), amount, false, maxHealth());
         if(building instanceof TargetDummyBuild td){
             td.dummyHit(amount);
         }

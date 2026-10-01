@@ -186,6 +186,7 @@ public class Conduit extends LiquidBlock implements Autotiler{
         @Override
         public void draw(){
             draw(false);
+            mindustry.client.morj.DuctMarks.mark(this);
         }
 
         public void draw(boolean under){

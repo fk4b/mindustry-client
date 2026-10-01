@@ -5,11 +5,13 @@ import arc.func.*;
 import arc.graphics.*;
 import arc.input.*;
 import arc.scene.actions.*;
+import arc.scene.event.*;
 import arc.scene.ui.*;
 import arc.scene.ui.TextButton.*;
 import arc.scene.ui.layout.*;
 import arc.util.*;
 import mindustry.client.communication.*;
+import mindustry.client.morj.*;
 import mindustry.core.GameState.*;
 import mindustry.ctype.*;
 import mindustry.game.*;
@@ -28,6 +30,9 @@ import static mindustry.logic.LCanvas.*;
 
 public class LogicDialog extends BaseDialog{
     public LCanvas canvas;
+    Table editorRow;
+    public Table liveVars;
+    public Table suggestBar;
     Cons<String> consumer = s -> {};
     boolean privileged;
     @Nullable LExecutor executor;
@@ -50,8 +55,11 @@ public class LogicDialog extends BaseDialog{
             wasPortrait = Core.graphics.isPortrait();
         });
         hidden(() -> {
+            String tag = executor != null && executor.build != null ? executor.build.tag : null;
+            LogicEditor.onClose(canvas, tag);
             if (executor != null && !Core.input.shift() && (executor.team == player.team() || !net.client())) consumer.get(canvas.save());
         });
+        shown(() -> LogicEditor.onOpen(canvas));
         onResize(() -> {
             if(wasRows != LCanvas.isCompact() || wasPortrait != Core.graphics.isPortrait()){
                 setup();
@@ -68,9 +76,33 @@ public class LogicDialog extends BaseDialog{
             }
         });
 
-        add(canvas).grow().name("canvas");
+        editorRow = new Table();
+        editorRow.add(canvas).grow();
+        liveVars = new Table();
+        editorRow.add(liveVars).growY().width(0f);
+        add(editorRow).grow().name("canvas");
+        row();
+        suggestBar = new Table();
+        add(suggestBar).growX().height(0f);
         row();
         add(buttons).growX().name("canvas");
+        update(() -> LogicEditor.tick(canvas));
+
+        addCaptureListener(new InputListener(){
+            @Override
+            public boolean keyDown(InputEvent event, KeyCode keycode){
+                if(!LogicAssist.enabled() || !Core.input.ctrl() || Core.input.alt()) return false;
+                if(keycode == KeyCode.z && !Core.input.shift() && LogicEditor.undo(canvas)){
+                    event.stop();
+                    return true;
+                }
+                if((keycode == KeyCode.y || (keycode == KeyCode.z && Core.input.shift())) && LogicEditor.redo(canvas)){
+                    event.stop();
+                    return true;
+                }
+                return false;
+            }
+        });
     }
 
     public static Color typeColor(LVar s, Color color){
@@ -144,6 +176,25 @@ public class LogicDialog extends BaseDialog{
                             ui.showException(e);
                         }
                     }).marginLeft(12f).disabled(b -> Core.app.getClipboardText() == null).row();
+
+                    if(LogicAssist.enabled()){
+                        t.button("@client.logic.pasteschem", Icon.paste, style, () -> {
+                            dialog.hide();
+                            LogicAssist.pasteFromSchematic(canvas);
+                        }).marginLeft(12f).row();
+                        t.button("@client.logic.find", Icon.zoom, style, () -> {
+                            dialog.hide();
+                            LogicEditor.openFind(canvas);
+                        }).marginLeft(12f).row();
+                        t.button("@client.logic.backup", Icon.upload, style, () -> {
+                            String tag = executor != null && executor.build != null ? executor.build.tag : null;
+                            LogicEditor.backupNow(canvas, tag);
+                        }).marginLeft(12f).row();
+                        t.button("@client.logic.backups", Icon.download, style, () -> {
+                            dialog.hide();
+                            LogicEditor.openBackups(canvas);
+                        }).marginLeft(12f).row();
+                    }
 
                     t.button("@logic.restart", Icon.refresh, style, () -> {
                         forceRestart = true;
@@ -252,6 +303,19 @@ public class LogicDialog extends BaseDialog{
 
         buttons.button("@add", Icon.add, () -> showAddDialog(canvas.statements.getChildren().size))
             .disabled(t -> (executor != null && executor.team != player.team() && net.client() && !state.isEditor()) || canvas.statements.getChildren().size >= LExecutor.maxInstructions);
+
+        boolean showVars = LogicAssist.enabled() && shouldShowVariables();
+        Cell<Table> cell = editorRow.getCell(liveVars);
+        if(cell != null) cell.width(showVars ? 220f : 0f);
+        liveVars.visible = showVars;
+        if(showVars) LogicAssist.fillVars(liveVars, executor);
+        else liveVars.clearChildren();
+
+        if(LogicAssist.enabled()){
+            buttons.label(() -> canvas.statements.getChildren().size + " / " + LExecutor.maxInstructions).padLeft(8f).update(label ->
+                label.setColor(canvas.statements.getChildren().size >= LExecutor.maxInstructions ? Pal.remove : Color.lightGray)
+            );
+        }
     }
 
     public boolean shouldShowVariables(){

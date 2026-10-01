@@ -13,7 +13,6 @@ import arc.util.*;
 import mindustry.*;
 import mindustry.client.ClientVars;
 import mindustry.client.ui.PanelFragment;
-import mindustry.client.utils.AutoTransfer;
 import mindustry.content.*;
 import mindustry.gen.*;
 import arc.scene.style.TextureRegionDrawable;
@@ -155,68 +154,6 @@ public class TrashDialog extends BaseDialog {
             addSlider(tas, "@client.fdtrash.assistdistance", 0, 50, 1,
                     Core.settings.getFloat("assistdistance"),
                     v -> Core.settings.put("assistdistance", v), "px");
-        }).left().row();
-
-        all.add("@client.fdtrash.autotransfer").left().padTop(10).row();
-        addSeparator(Pal.accent);
-        all.table(ttt -> {
-            ttt.defaults().left().pad(4);
-
-
-            ttt.check("@client.fdtrash.at.enabled", Core.settings.getBool("autotransfer", false), b -> {
-                Core.settings.put("autotransfer", b);
-                AutoTransfer.enabled = b;
-            }).row();
-
-            ttt.check("@client.fdtrash.at.fromcores", Core.settings.getBool("autotransfer-fromcores", true), b -> {
-                Core.settings.put("autotransfer-fromcores", b);
-                AutoTransfer.Settings.setFromCores(b);
-            }).row();
-
-            ttt.check("@client.fdtrash.at.fromcontainers", Core.settings.getBool("autotransfer-fromcontainers", true), b -> {
-                Core.settings.put("autotransfer-fromcontainers", b);
-                AutoTransfer.Settings.setFromContainers(b);
-            }).row();
-
-            addSlider(ttt, "@client.fdtrash.at.mincore", 0, 5000, 1,
-                    (float)Core.settings.getInt("autotransfer-mincoreitems", 10),
-                    v -> {
-                        Core.settings.put("autotransfer-mincoreitems", v.intValue());
-                        AutoTransfer.Settings.setMinCoreItems(v.intValue());
-                    }, "");
-
-            addSlider(ttt, "@client.fdtrash.at.delay", 0, 500, 1,
-                    Core.settings.getFloat("autotransfer-transferdelay", 60F),
-                    v -> {
-                        Core.settings.put("autotransfer-transferdelay", v);
-                        AutoTransfer.Settings.setDelay(v);
-                    }, " ticks");
-
-
-            all.add("@client.fdtrash.autotransfer.filters").left().padTop(5).row();
-            all.table(filters -> {
-                filters.defaults().left().pad(4);
-
-                filters.check("@client.fdtrash.at.t_turrets", Core.settings.getBool("autotransfer-t-turrets"), b -> {
-                    Core.settings.put("autotransfer-t-turrets", b);
-                });
-
-                filters.check("@client.fdtrash.at.t_prod", Core.settings.getBool("autotransfer-t-prod"), b -> {
-                    Core.settings.put("autotransfer-t-prod", b);
-                });
-
-                filters.row();
-
-                filters.check("@client.fdtrash.at.t_units", Core.settings.getBool("autotransfer-t-units"), b -> {
-                    Core.settings.put("autotransfer-t-units", b);
-                });
-
-                filters.check("@client.fdtrash.at.t_recons", Core.settings.getBool("autotransfer-t-recons"), b -> {
-                    Core.settings.put("autotransfer-t-recons", b);
-                });
-                addSeparator(Pal.gray);
-            }).left().row();
-
         }).left().row();
 
         addSeparator(Pal.accent);

@@ -46,7 +46,7 @@ public class WaveInfoFrag extends Table {
         Events.on(EventType.WaveEvent.class, e -> rebuild());
 
 
-        visible(() -> ui.hudfrag.shown && visible && state.isGame() && Core.settings.getBool("wavefragment", false));
+        visible(() -> ui.hudfrag.shown && visible && state.isGame() && Core.settings.getBool("waveinfo", true));
 
         table(Styles.black6, main -> {
             main.table(ctrl -> {

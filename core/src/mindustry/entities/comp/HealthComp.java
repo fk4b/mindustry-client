@@ -73,6 +73,7 @@ abstract class HealthComp implements Entityc, Posc{
 
         health -= amount;
         hitTime = 1f;
+        if(amount > 0f) mindustry.client.morj.DamageNumbers.hit(self(), amount, false, maxHealth);
         if(health <= 0 && !dead){
             kill();
         }
@@ -109,6 +110,7 @@ abstract class HealthComp implements Entityc, Posc{
     void heal(float amount){
         health += amount;
         clampHealth();
+        if(amount > 0f) mindustry.client.morj.DamageNumbers.hit(self(), amount, true, maxHealth);
     }
 
     /** Heals by a 0-1 fraction of max health. */

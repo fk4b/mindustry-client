@@ -28,6 +28,7 @@ import mindustry.world.meta.*;
 import static mindustry.Vars.*;
 
 public class MassDriver extends Block{
+    static final Color guideColor = Color.valueOf("ff8c66");
     public float range;
     public float rotateSpeed = 5f;
     public float translation = 7f;
@@ -276,6 +277,17 @@ public class MassDriver extends Block{
             Draw.rect(region,
             x + Angles.trnsx(rotation + 180f, reloadCounter * knockback),
             y + Angles.trnsy(rotation + 180f, reloadCounter * knockback), rotation - 90);
+
+            if(Core.settings.getBool("massdriverline", true) && linkValid()){
+                Building target = world.build(link);
+                if(target != null){
+                    Draw.z(Layer.power + 1f);
+                    Drawf.dashLine(guideColor, x, y, target.x, target.y);
+                    float mx = (x + target.x) / 2f, my = (y + target.y) / 2f;
+                    Drawf.arrow(mx, my, target.x, target.y, size * tilesize * 0.55f, 3f, guideColor);
+                    Draw.reset();
+                }
+            }
         }
 
         @Override

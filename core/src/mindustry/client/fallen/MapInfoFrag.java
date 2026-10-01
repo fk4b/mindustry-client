@@ -56,7 +56,7 @@ public class MapInfoFrag extends Table {
         setSize(w, h);
 
         this.touchable = Touchable.childrenOnly;
-        visible(() -> ui.hudfrag.shown && visible && state.isGame());
+        visible(() -> ui.hudfrag.shown && visible && state.isGame() && Core.settings.getBool("mapinfofrag", true));
 
         table(Styles.black6, main -> {
             // ВЕРХНЯЯ ПАНЕЛЬ

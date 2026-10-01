@@ -2079,6 +2079,8 @@ abstract class BuildingComp implements Posc, Teamc, Healthc, Buildingc, Timerc, 
             health -= handleDamage(damage);
         }
 
+        if(damage > 0f) mindustry.client.morj.DamageNumbers.hit(self(), damage, false, maxHealth);
+
         healthChanged();
 
         if(health <= 0){

@@ -543,6 +543,32 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("client-experimentals", false);
 
         client.category("fallen");
+        client.checkPref("mapmarkers", true);
+        client.checkPref("waveinfo", true);
+        client.checkPref("mapinfofrag", true);
+        client.checkPref("projectors", false);
+        client.checkPref("mi2map", false);
+        client.sliderPref("hiddenitemopacity", 70, 0, 100, 5, s -> s == 0 ? "@off" : s + "%");
+        client.checkPref("damagepopups", true);
+        client.checkPref("damagepopupsplayer", true);
+        client.checkPref("damagepopupsheal", false);
+        client.sliderPref("damagepopupsminhp", 600, 0, 5000, 50, s -> s == 0 ? "@off" : String.valueOf(s));
+        client.checkPref("massdriverline", true);
+        client.checkPref("logicassist", true);
+        client.sliderPref("logicmemorycols", 10, 2, 15, 1, s -> String.valueOf(s));
+        client.sliderPref("logicmemorydecimals", 0, 0, 8, 1, s -> String.valueOf(s));
+        client.checkPref("transportscan", false);
+        client.checkPref("oreadsorb", true);
+        client.checkPref("rtsgroups", true);
+        client.sliderPref("rtswound", 50, 10, 90, 5, s -> s + "%");
+        client.checkPref("powergrid", true);
+        client.checkPref("overdrivepreview", true);
+        client.checkPref("ductcolor", false);
+        client.checkPref("procref", true);
+        client.checkPref("procstatus", true);
+        client.checkPref("corechart", true);
+        client.checkPref("wavepath", true);
+        client.checkPref("wavehp", true);
         client.sliderPref("placefragwidth", 7, 3, 10, 1, String::valueOf, v -> {
             if(ui != null && ui.hudfrag != null && ui.hudfrag.blockfrag.toggler != null){
                 ui.hudfrag.blockfrag.rebuild();
@@ -552,7 +578,6 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("historyfragment", false);
         client.checkPref("quickschems", false);
         client.checkPref("wavefragment", false);
-        client.checkPref("mapinfofrag", false);
         client.checkPref("unitcontrolfragment", false);
         client.checkPref("hidejoinleave", false);
         client.checkPref("placeSchematicWithCleanup", false);

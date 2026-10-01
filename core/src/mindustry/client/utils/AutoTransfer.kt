@@ -9,9 +9,12 @@ import mindustry.client.ClientVars.*
 import mindustry.client.navigation.*
 import mindustry.content.*
 import mindustry.entities.bullet.*
+import mindustry.game.*
 import mindustry.gen.*
 import mindustry.graphics.*
 import mindustry.type.*
+import mindustry.world.*
+import mindustry.world.blocks.defense.*
 import mindustry.world.blocks.defense.turrets.*
 import mindustry.world.blocks.power.NuclearReactor.*
 import mindustry.world.blocks.production.*
@@ -19,6 +22,7 @@ import mindustry.world.blocks.production.Drill.*
 import mindustry.world.blocks.production.GenericCrafter.*
 import mindustry.world.blocks.storage.*
 import mindustry.world.blocks.storage.Unloader.*
+import mindustry.world.blocks.units.*
 import mindustry.world.consumers.*
 import kotlin.math.*
 
@@ -36,19 +40,179 @@ class AutoTransfer {
         var minTransfer = -1
         var drain = false
         var drainToContainers = false
+        private val fallbackPriority = arrayOf(
+            "silicon", "surge-alloy", "phase-fabric", "plastanium", "thorium",
+            "pyratite", "blast-compound", "spore-pod", "titanium", "graphite",
+            "metaglass", "coal", "beryllium", "tungsten", "oxide", "carbide",
+            "copper", "lead", "sand", "scrap"
+        )
+        @JvmField var priorityOrder: Array<String> = fallbackPriority.copyOf()
+        private val fallbackCategories = arrayOf("defense", "factory", "units", "recon", "other")
+        @JvmField var categoryOrder: Array<String> = fallbackCategories.copyOf()
+        /** Category ids that must not be filled. Empty means every type is on. */
+        @JvmField var disabledCategories: Array<String> = emptyArray()
+        /** Freshly placed defense turrets are filled until this Time.time, without the usual pause. */
+        @JvmField var defenseRushUntil = 0f
+        private var defenseListen = false
 
         fun init() {
             // Main settings
             enabled = Core.settings.getBool("autotransfer", false)
             fromCores = Core.settings.getBool("autotransfer-fromcores", true)
             fromContainers = Core.settings.getBool("autotransfer-fromcontainers", true)
-            minCoreItems = Core.settings.getInt("autotransfer-mincoreitems", 100)
+            minCoreItems = Core.settings.getInt("autotransfer-mincoreitems", 10)
             delay = Core.settings.getFloat("autotransfer-transferdelay", 60F)
             minTransferTotal = Core.settings.getInt("autotransfer-mintransfertotal", 10)
             minTransfer = Core.settings.getInt("autotransfer-mintransfer", 2)
             // Drain settings, undocumented for now as drain is still experimental
             drain = Core.settings.getBool("autotransfer-drain", false)
             drainToContainers = Core.settings.getBool("autotransfer-draintocontainers", false)
+            reloadPriority()
+            reloadCategories()
+            reloadFilters()
+            listenDefense()
+        }
+
+        /** True only when the first enabled destination type is defense. */
+        @JvmStatic
+        fun defenseFirst(): Boolean {
+            for (id in categoryOrder) {
+                if (id !in disabledCategories) return id == "defense"
+            }
+            return false
+        }
+
+        private fun listenDefense() {
+            if (defenseListen) return
+            defenseListen = true
+            Events.on(EventType.BlockBuildEndEvent::class.java) { e ->
+                if (!enabled || e.breaking) return@on
+                val p = player ?: return@on
+                val u = p.unit() ?: return@on
+                if (p.dead() || e.team != p.team()) return@on
+                val tile = e.tile ?: return@on
+                if (!u.within(tile, itemTransferRange)) return@on
+                val block = tile.block()
+                if (block !is ItemTurret || categoryId(block) != "defense" || !allows(block) || !defenseFirst()) return@on
+                defenseRushUntil = Time.time + 240f
+            }
+        }
+
+        @JvmStatic
+        fun reloadPriority() {
+            val raw = Core.settings.getString("autotransfer-priority", "")
+            priorityOrder = if (raw.isBlank()) fallbackPriority.copyOf()
+            else raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toTypedArray()
+        }
+
+        @JvmStatic
+        fun prioritySnapshot(): Array<String> = priorityOrder.copyOf()
+
+        @JvmStatic
+        fun savePriority(order: Array<String>) {
+            priorityOrder = order.copyOf()
+            Core.settings.put("autotransfer-priority", order.joinToString(","))
+        }
+
+        @JvmStatic
+        fun resetPriority() {
+            savePriority(fallbackPriority.copyOf())
+            saveCategories(fallbackCategories.copyOf())
+            disabledCategories = emptyArray()
+            Core.settings.put("autotransfer-off", "")
+        }
+
+        @JvmStatic
+        fun categorySnapshot(): Array<String> = categoryOrder.copyOf()
+
+        @JvmStatic
+        fun saveCategories(order: Array<String>) {
+            categoryOrder = order.copyOf()
+            Core.settings.put("autotransfer-cats", order.joinToString(","))
+        }
+
+        @JvmStatic
+        fun reloadCategories() {
+            val known = fallbackCategories
+            val raw = Core.settings.getString("autotransfer-cats", "")
+            if (raw.isNullOrBlank()) {
+                categoryOrder = known.copyOf()
+                return
+            }
+            val parsed = raw.split(',').map { it.trim() }.filter { it in known }.distinct().toMutableList()
+            for (id in known) if (id !in parsed) {
+                var insert = parsed.size
+                val at = known.indexOf(id)
+                for (i in at - 1 downTo 0) {
+                    val prev = parsed.indexOf(known[i])
+                    if (prev >= 0) {
+                        insert = prev + 1
+                        break
+                    }
+                }
+                parsed.add(insert, id)
+            }
+            categoryOrder = parsed.toTypedArray()
+        }
+
+        /** Old trash checkboxes meant “none checked = fill everything”. A saved off-list replaces them. */
+        @JvmStatic
+        fun reloadFilters() {
+            if (Core.settings.has("autotransfer-off")) {
+                val raw = Core.settings.getString("autotransfer-off", "")
+                disabledCategories = raw.split(',').map { it.trim() }.filter { it in fallbackCategories }.distinct().toTypedArray()
+                return
+            }
+            val old = listOf(
+                "autotransfer-t-turrets" to "defense",
+                "autotransfer-t-prod" to "factory",
+                "autotransfer-t-units" to "units",
+                "autotransfer-t-recons" to "recon"
+            )
+            val anyOn = old.any { Core.settings.has(it.first) && Core.settings.getBool(it.first) }
+            if (!anyOn) {
+                disabledCategories = emptyArray()
+                return
+            }
+            val off = old.filter { !Core.settings.getBool(it.first, false) }.map { it.second }.toMutableList()
+            off.add("other")
+            disabledCategories = off.toTypedArray()
+        }
+
+        @JvmStatic
+        fun categoryEnabled(id: String): Boolean = id !in disabledCategories
+
+        @JvmStatic
+        fun setCategoryEnabled(id: String, on: Boolean) {
+            if (id !in fallbackCategories) return
+            val next = disabledCategories.toMutableList()
+            if (on) next.remove(id) else if (id !in next) next.add(id)
+            disabledCategories = next.toTypedArray()
+            Core.settings.put("autotransfer-off", disabledCategories.joinToString(","))
+        }
+
+        @JvmStatic
+        fun allows(block: Block): Boolean = categoryId(block) !in disabledCategories
+
+        /** Lower rank is filled first. Defense, factories and unit factories are separate from the item list. */
+        @JvmStatic
+        fun catRank(block: Block): Int {
+            val index = categoryOrder.indexOf(categoryId(block))
+            return if (index < 0) 100 else index
+        }
+
+        private fun categoryId(block: Block): String = when (block) {
+            is BaseTurret, is MendProjector, is RegenProjector, is ForceProjector,
+            is OverdriveProjector, is ShockwaveTower, is RepairTurret, is Wall -> "defense"
+            is Reconstructor -> "recon"
+            is UnitBlock, is UnitAssembler -> "units"
+            is GenericCrafter, is Separator -> "factory"
+            else -> "other"
+        }
+
+        private fun rank(item: Item): Int {
+            val index = priorityOrder.indexOf(item.name)
+            return if (index < 0) 10_000 else index
         }
     }
 
@@ -58,9 +222,16 @@ class AutoTransfer {
     var timer = 0F
     val counts = IntArray(content.items().size)
     val ammoCounts = IntArray(content.items().size)
+    /** Best destination category that still needs each item. Lower is earlier in the category list. */
+    val itemCat = IntArray(content.items().size)
     val dpsCounts = FloatArray(content.items().size)
     var core: Building? = null
     var justTransferred = false
+    /** 0 idle, 1 dumping a wrong stack, 2 waiting for ammo, 3 waiting until a deposit changes the stack. */
+    private var rushPhase = 0
+    private var rushPhaseUntil = 0f
+    private var rushPhaseItem: Item? = null
+    private var rushStackAmount = 0
 
     fun draw() {
         if (!debug || player.unit().item() == null) return
@@ -71,78 +242,208 @@ class AutoTransfer {
     }
 
     fun update() {
-        if (!enabled) return
+        if (!enabled) {
+            defenseRushUntil = 0f
+            rushPhase = 0
+            return
+        }
         if (state.rules.onlyDepositCore) return
+        if (player == null || player.dead() || player.unit() == null) return
+        if (!defenseFirst()) {
+            defenseRushUntil = 0f
+            rushPhase = 0
+        } else if (rushPhase != 0) {
+            val heldNow = player.unit().item()
+            val amountNow = player.unit().stack.amount
+            val timedOut = Time.time > rushPhaseUntil
+            val done = when (rushPhase) {
+                1 -> heldNow == null || timedOut
+                2 -> (heldNow == rushPhaseItem && amountNow > 0) || timedOut
+                else -> amountNow < rushStackAmount || heldNow == null || timedOut
+            }
+            if (!done) return
+            rushPhase = 0
+            rushPhaseItem = null
+        }
         if (ratelimitRemaining <= 1) return // Leave one config for other stuff
-        if (player.dead()) return
-        player.unit()?.item() ?: return
-        timer += Time.delta
-        if (timer < delay) return
-        timer -= delay
+        val rush = defenseRushUntil > 0f && Time.time <= defenseRushUntil
+        if (!rush) {
+            if (defenseRushUntil > 0f) defenseRushUntil = 0f
+            timer += Time.delta
+            if (timer < delay) return
+        }
         counts.fill(0) // reset needed item counters
         ammoCounts.fill(0)
         dpsCounts.fill(0f)
-        if (!justTransferred && drain && drain()) return
+        itemCat.fill(Int.MAX_VALUE)
+        if (!rush && !justTransferred && drain && drain()) {
+            timer = 0f
+            return
+        }
         justTransferred = false
-        transfer()
+        if (transfer(rush)) timer = 0f
     }
 
-    /** Transfers items from core/containers into buildings */
-    private fun transfer() {
+    /** One in-flight ammo action, so a rush does not send another request every frame. */
+    private fun armRush(phase: Int, want: Item?, stackBefore: Int) {
+        rushPhase = phase
+        rushPhaseItem = want
+        rushPhaseUntil = Time.time + 50f
+        rushStackAmount = stackBefore
+        defenseRushUntil = Time.time + 240f
+    }
+
+    /**
+     * One Extended UI action per pause: deposit the held stack, put a wrong stack back, or take one item.
+     * Category order picks the building. The item list picks the resource inside that building.
+     * Returns true when a packet was sent.
+     */
+    private fun transfer(rush: Boolean): Boolean {
         core = if (fromCores) player.closestCore() else null
         if (Navigation.currentlyFollowing is MinePath) { // Only allow autotransfer + minepath when within mineTransferRange
-            if (core != null && (Navigation.currentlyFollowing as MinePath).tile?.within(core, mineTransferRange - tilesize * 10) != true) return
+            if (core != null && (Navigation.currentlyFollowing as MinePath).tile?.within(core, mineTransferRange - tilesize * 10) != true) return false
         } // Ngl this looks spaghetti
 
-        val buildTree = player.team().data().buildingTree ?: return
-        var held = player.unit().stack.amount
+        val buildTree = player.team().data().buildingTree ?: return false
+        val unit = player.unit() ?: return false
+        val heldItem = unit.item()
+        val held = unit.stack.amount
 
-        buildTree.intersect(player.x - itemTransferRange, player.y - itemTransferRange, itemTransferRange * 2, itemTransferRange * 2, builds.clear()) // grab all buildings in range
+        buildTree.intersect(player.x - buildingRange, player.y - buildingRange, buildingRange * 2, buildingRange * 2, builds.clear())
 
-        if (fromContainers && (core == null || !player.within(core, itemTransferRange))) core = containers.selectFrom(builds) { it.block is StorageBlock && (item == null || it.items.has(item)) }.min { it -> it.dst(player) }
+        if (fromContainers && (core == null || !player.within(core, buildingRange))) core = containers.selectFrom(builds) { it.block is StorageBlock && (item == null || it.items.has(item)) }.min { it -> it.dst(player) }
 
-        builds.retainAll { it.block.findConsumer<Consume?> { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic } != null && it !is NuclearReactorBuild && player.within(it, itemTransferRange) }
-            .sort { b -> -b.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit()).toFloat() }
-            .forEach {
-                if (ratelimitRemaining <= 1) return@forEach
-
-                held = depositIntoBuilding(it, held)
-
-                val minItems = if (core is CoreBlock.CoreBuild) minCoreItems else 1 // FINISHME: Is this else 1 right? It seems odd...
-                if (core != null) { // Automatically take needed item from core
-                    processTransferTarget(it, minItems)
-                }
-            }
-        var maxID = 0 // FINISHME: Also include the items from nearby containers since otherwise we night never find those items
-        for (i in 1 until counts.size) {
-            if (counts[i] > counts[maxID]) maxID = i
+        builds.retainAll {
+            it.block.findConsumer<Consume?> { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic } != null
+                && it !is NuclearReactorBuild
+                && player.within(it, buildingRange)
+                && allows(it.block)
         }
-
-        var maxAmmoID = 0
-        // FINISHME: This should prob be `(ammoCount+count)/2F > counts[maxID]` or something
-        val doAmmo = ammoCounts.any { (it + 1) / 2F > counts[maxID] } // If ammo requirements are over half as much as other requirements, we prioritize ammo
-        if (doAmmo) { // FINISHME: We should also prioritize ammo when turrets are empty probably?
-            for (i in 1 until counts.size) {
-                if (dpsCounts[i] > dpsCounts[maxAmmoID]) maxAmmoID = i
+        if (rush) {
+            builds.retainAll { it.block is ItemTurret && categoryId(it.block) == "defense" }
+            if (builds.size == 0) {
+                defenseRushUntil = 0f
+                timer = 0f
+                return false
             }
         }
 
-        item =
-            if (doAmmo && ammoCounts[maxAmmoID] >= minTransferTotal) content.item(maxAmmoID)
-            else if (counts[maxID] >= minTransferTotal) content.item(maxID)
-            else null
+        val source = core
+        var wantItem: Item? = null
+        var wantBuild: Building? = null
+        var wantCat = Int.MAX_VALUE
+        var wantRank = Int.MAX_VALUE
+        var wantDist = Float.MAX_VALUE
+        if (source != null) {
+            builds.each { build ->
+                val need = neededItem(build, source, unit) ?: return@each
+                val cat = catRank(build.block)
+                val itemRank = rank(need)
+                val dist = build.dst(unit)
+                val better = cat < wantCat || (cat == wantCat && (itemRank < wantRank || (itemRank == wantRank && dist < wantDist)))
+                if (!better) return@each
+                wantCat = cat
+                wantRank = itemRank
+                wantDist = dist
+                wantItem = need
+                wantBuild = build
+            }
+        }
 
-        Time.run(delay/2F) {
-            if (player.unit() == null) return@run // FINISHME: Should we reset the delay?
-            if (item != null && core != null && player.within(core, itemTransferRange) && ratelimitRemaining > 1) {
-                if (held > 0 && item != player.unit().stack.item && (!net.server() || player.unit().stack.amount > 0)) Call.transferInventory(player, core)
-                else if (held == 0 || item != player.unit().stack.item || counts[maxID] > held) Call.requestItem(player, core, item, Int.MAX_VALUE)
-                item = null
+        if (held > 0 && heldItem != null) {
+            val dest = when {
+                wantItem == heldItem && wantBuild != null && wantBuild.acceptStack(heldItem, held, unit) >= 5 -> wantBuild
+                wantItem == null -> leftoverTarget(unit, heldItem, held)
+                else -> null
+            }
+            if (dest != null && ratelimitRemaining > 1) {
+                Call.transferInventory(player, dest)
                 justTransferred = true
-            } else {
-                timer = delay
+                if (rush) armRush(3, heldItem, held)
+                return true
+            }
+            if (wantItem != null && wantItem != heldItem && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
+                Call.transferInventory(player, source)
+                if (net.server() && (player.unit()?.stack?.amount ?: 0) > 0) Call.dropItem(0f)
+                justTransferred = true
+                if (rush) armRush(1, wantItem, held)
+                return true
+            }
+            if (rush && wantItem == null) {
+                defenseRushUntil = 0f
+                timer = 0f
+            }
+            return false
+        }
+
+        if (wantItem != null && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
+            Call.requestItem(player, source, wantItem, 999)
+            item = null
+            justTransferred = true
+            if (rush) armRush(2, wantItem, held)
+            return true
+        }
+        if (rush) {
+            defenseRushUntil = 0f
+            timer = 0f
+        }
+        return false
+    }
+
+    /** Extended UI: a turret is filled only while its ammo is empty. Other blocks use the current recipe. Item rank picks which resource. */
+    private fun neededItem(build: Building, source: Building, unit: mindustry.gen.Unit): Item? {
+        val block = build.block
+        val minHave = if (source is CoreBlock.CoreBuild) minCoreItems else 1
+        var best: Item? = null
+        var bestRank = Int.MAX_VALUE
+        fun consider(candidate: Item?) {
+            if (candidate == null || candidate == Items.blastCompound) return
+            if (!source.items.has(candidate, minHave)) return
+            if (build.acceptStack(candidate, 20, unit) < 5) return
+            val itemRank = rank(candidate)
+            if (itemRank < bestRank) {
+                bestRank = itemRank
+                best = candidate
             }
         }
+        if (block is ItemTurret) {
+            if (build !is ItemTurret.ItemTurretBuild || !build.ammo.isEmpty) return null
+            block.ammoTypes.each { ammoItem, _ -> consider(ammoItem) }
+            return best
+        }
+        if (block is UnitFactory && build is UnitFactory.UnitFactoryBuild) {
+            if (build.currentPlan < 0 || build.currentPlan >= block.plans.size) return null
+            for (stack in block.plans.get(build.currentPlan).requirements) consider(stack.item)
+            return best
+        }
+        when (val cons = block.findConsumer<Consume> { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic }) {
+            is ConsumeItems -> {
+                if (cons.booster) return null
+                for (stack in cons.items) consider(stack.item)
+            }
+            is ConsumeItemFilter -> content.items().each { candidate -> if (cons.filter.get(candidate)) consider(candidate) }
+            is ConsumeItemDynamic -> for (stack in cons.items.get(build)) consider(stack.item)
+            else -> return null
+        }
+        return best
+    }
+
+    /** A held stack nobody is waiting on still goes into the earliest category that can take at least 5. */
+    private fun leftoverTarget(unit: mindustry.gen.Unit, heldItem: Item, held: Int): Building? {
+        var best: Building? = null
+        var bestCat = Int.MAX_VALUE
+        var bestDist = Float.MAX_VALUE
+        builds.each { build ->
+            if (build.acceptStack(heldItem, held, unit) < 5) return@each
+            val cat = catRank(build.block)
+            val dist = build.dst(unit)
+            if (best == null || cat < bestCat || (cat == bestCat && dist < bestDist)) {
+                best = build
+                bestCat = cat
+                bestDist = dist
+            }
+        }
+        return best
     }
 
     /** Transfers outputs from blocks into core/containers */
@@ -227,7 +528,7 @@ class AutoTransfer {
                 var held = counts[maxID] // FINISHME: This number will probably be wrong, we should somehow fix this to save ratelimit
                 nonContainerBuilds.forEach {
                     if (ratelimitRemaining <= 1) return@forEach
-                    held = depositIntoBuilding(it, held)
+                    held = depositIntoBuilding(it, held, player.unit()?.item())
                 }
             }
         }
@@ -283,12 +584,12 @@ class AutoTransfer {
     }
 
     /** Attempts to make a deposit. Returns the remaining [held] value. */
-    private fun depositIntoBuilding(build: Building, held: Int): Int {
-        if (held <= 0
-        || player.unit().item() == Items.blastCompound && build.block.findConsumer<ConsumeItems> { it is ConsumeItemExplode } != null // Don't explode things
-        || build.block.findConsumer<ConsumeItems> { it.booster && it is ConsumeItems && it.items.any { it.item == player.unit().item()} } != null // Don't provide boosters
+    private fun depositIntoBuilding(build: Building, held: Int, heldItem: Item?): Int {
+        if (held <= 0 || heldItem == null
+        || heldItem == Items.blastCompound && build.block.findConsumer<ConsumeItems> { it is ConsumeItemExplode } != null // Don't explode things
+        || build.block.findConsumer<ConsumeItems> { it.booster && it is ConsumeItems && it.items.any { it.item == heldItem } } != null // Don't provide boosters
         ) return held
-        val accepted = build.acceptStack(player.unit().item(), player.unit().stack.amount, player.unit())
+        val accepted = build.acceptStack(heldItem, player.unit().stack.amount, player.unit())
 
         if (accepted <= 0) return held // FINISHME: Shouldn't we be enforcing minTransfer here too?
         Call.transferInventory(player, build)
@@ -298,6 +599,11 @@ class AutoTransfer {
     /** Adds the possible deposits for the [build] to [counts], [ammoCounts], and [dpsCounts] as needed. */
     private fun processTransferTarget(build: Building, minItems: Int) {
         fun hasMinItems(item: Item, min: Int = minItems) = minItems == 0 || core!!.items.has(item, min)
+        val rank = catRank(build.block)
+        fun mark(item: Item) {
+            val id = item.id.toInt()
+            if (rank < itemCat[id]) itemCat[id] = rank
+        }
 
         when (val cons = build.block.findConsumer<Consume> { (it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic) && it !is ConsumeItemExplode } ?: build.block.findConsumer { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic }) { // Cursed af
             is ConsumeItems -> {
@@ -306,6 +612,7 @@ class AutoTransfer {
                     val acceptedC = build.acceptStack(i.item, build.getMaximumAccepted(i.item), player.unit())
                     if (acceptedC >= minTransfer && hasMinItems(i.item, max(i.amount, minItems))) {
                         counts[i.item.id.toInt()] += acceptedC
+                        mark(i.item)
                     }
                 }
             }
@@ -319,6 +626,7 @@ class AutoTransfer {
                         } else {
                             counts[i.id.toInt()] += acceptedC
                         }
+                        mark(i)
                     }
                 }
             }
@@ -327,6 +635,7 @@ class AutoTransfer {
                     val acceptedC = build.getMaximumAccepted(i.item) - build.items.get(i.item)
                     if (acceptedC >= minTransfer && hasMinItems(i.item, max(i.amount, minItems))) {
                         counts[i.item.id.toInt()] += acceptedC
+                        mark(i.item)
                     }
                 }
             }

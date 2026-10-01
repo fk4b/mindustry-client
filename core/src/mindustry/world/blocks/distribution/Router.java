@@ -1,10 +1,13 @@
 package mindustry.world.blocks.distribution;
 
+import arc.graphics.g2d.*;
 import arc.math.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.client.morj.*;
 import mindustry.content.*;
 import mindustry.gen.*;
+import mindustry.graphics.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.blocks.*;
@@ -23,14 +26,16 @@ public class Router extends Block{
         group = BlockGroup.transportation;
         unloadable = false;
         noUpdateDisabled = true;
-        drawCached = true;
-        drawDynamic = false;
+        // Items inside the router have to animate, so the sprite is drawn every frame.
+        drawCached = false;
+        drawDynamic = true;
     }
 
     public class RouterBuild extends Building implements ControlBlock{
         protected byte[] cycles = new byte[Vars.content.items().size];
         public Item lastItem;
         public Tile lastInput;
+        public Building lastTarget;
         public float time;
         public @Nullable BlockUnitc unit;
 
@@ -62,6 +67,7 @@ public class Router extends Block{
             if(lastItem != null){
                 time += 1f / speed * delta();
                 Building target = getTileTarget(lastItem, lastInput, false);
+                if(target != null) lastTarget = target;
 
                 if(target != null && (time >= 1f || !(target.block instanceof Router || target.block.instantTransfer))){
                     getTileTarget(lastItem, lastInput, true);
@@ -88,6 +94,22 @@ public class Router extends Block{
             lastItem = item;
             time = 0f;
             lastInput = source.tile;
+        }
+
+        @Override
+        public void draw(){
+            super.draw();
+            float a = HiddenItems.alpha;
+            if(a < 0.01f || lastItem == null) return;
+            Building target = lastTarget;
+            float tx = target != null && target.isValid() ? target.x : x;
+            float ty = target != null && target.isValid() ? target.y : y;
+            float p = Mathf.clamp(time);
+            Draw.z(Layer.blockOver);
+            Draw.color();
+            Draw.alpha(a);
+            Draw.rect(lastItem.fullIcon, Mathf.lerp(x, tx, p), Mathf.lerp(y, ty, p), 4f, 4f);
+            Draw.reset();
         }
 
         @Override

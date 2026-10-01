@@ -279,17 +279,20 @@ public class MinimapRenderer{
         Draw.reset();
 
         //TODO autoscale markers
-        state.rules.objectives.eachRunning(obj -> {
-            for(var marker : obj.markers){
-                if(marker.minimap != -1){
-                    marker.draw(1);
+        if(Core.settings.getBool("mapmarkers", true)){
+            state.rules.objectives.eachRunning(obj -> {
+                for(var marker : obj.markers){
+                    if(marker.minimap != -1){
+                        marker.draw(1);
+                    }
                 }
+            });
+            for(var marker : state.markers.mapMarkers){
+                marker.draw(1);
             }
-        });
-        for(var marker : state.markers.mapMarkers){
-            marker.draw(1);
         }
         Draw.reset();
+        mindustry.client.morj.PowerGrids.draw(scaleFactor, fullView);
 
         Draw.trans(Tmp.m2);
     }

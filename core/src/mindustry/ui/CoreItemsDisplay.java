@@ -7,6 +7,7 @@ import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import mindustry.client.morj.*;
 import mindustry.core.*;
 import mindustry.type.*;
 import mindustry.world.blocks.storage.CoreBlock.*;
@@ -20,6 +21,7 @@ public class CoreItemsDisplay extends Table{
     private static final int trackSteps = 6;
     public static boolean trackItems = Core.settings != null && Core.settings.getBool("trackcoreitems") && net != null && !net.server();
     private final Bits usedItems = new Bits();
+    private boolean chartShown;
     private CoreBuild core;
     public CoreItemDisplayMode mode = CoreItemDisplayMode.disabled;
     private final CoreItemTracker inputItems = new CoreItemTracker(), totalItems = new CoreItemTracker();
@@ -37,6 +39,7 @@ public class CoreItemsDisplay extends Table{
 
     void rebuild(){
         clear();
+        chartShown = Core.settings.getBool("corechart", true);
         if(!usedItems.isEmpty()){
             background(Styles.black6);
             margin(4);
@@ -56,6 +59,11 @@ public class CoreItemsDisplay extends Table{
 
             if(content.items().contains(item -> core != null && core.items.get(item) > 0 && !usedItems.getAndSet(item.id))){
                 rebuild();
+            }
+            boolean wantChart = Core.settings.getBool("corechart", true);
+            if(wantChart != chartShown){
+                chartShown = wantChart;
+                Core.app.post(this::rebuild);
             }
         });
 
@@ -84,6 +92,10 @@ public class CoreItemsDisplay extends Table{
             }
         }
 
+        if(chartShown && !usedItems.isEmpty()){
+            row();
+            add(CoreChart.widget()).growX().height(58f).colspan(8).padTop(3f);
+        }
     }
 
     public void addItem(Item item, int amount){

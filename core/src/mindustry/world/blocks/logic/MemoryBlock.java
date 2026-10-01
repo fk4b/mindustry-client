@@ -1,12 +1,19 @@
 package mindustry.world.blocks.logic;
 
+import arc.*;
+import arc.graphics.*;
+import arc.math.*;
+import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.util.*;
 import arc.util.io.*;
+import mindustry.client.morj.*;
 import mindustry.gen.*;
+import mindustry.graphics.*;
 import mindustry.io.*;
 import mindustry.io.TypeIO.*;
 import mindustry.logic.*;
+import mindustry.ui.*;
 import mindustry.world.*;
 import mindustry.world.meta.*;
 
@@ -204,27 +211,59 @@ public class MemoryBlock extends Block{
             }
         }
 
+        public String memoryText(int index, int decimals){
+            if(index < 0 || index >= objectMemory.length) return "";
+            Object value = objectMemory[index];
+            if(value == sentinel) return LogicAssist.formatNum(numberMemory[index], decimals);
+            if(value == null) return "null";
+            return String.valueOf(value);
+        }
+
         @Override
         public void display(Table table) {
             super.display(table);
-            table.row();
-            table.label(() -> {
-                StringBuilder sb = new StringBuilder();
-                final int maxRows = 8;
-                for(int i = 0; i < Math.min(memoryCapacity, maxRows); i ++){
-                    if(objectMemory[i] == sentinel){
-                        sb.append(numberMemory[i]);
-                    } else if(objectMemory[i] == null){
-                        //this should never happen, i think, but just to be safe -bala
-                        sb.append("null");
-                    } else {
-                        sb.append(objectMemory[i].toString());
+            if(!LogicAssist.enabled()){
+                table.row();
+                table.label(() -> {
+                    StringBuilder sb = new StringBuilder();
+                    final int maxRows = 8;
+                    for(int i = 0; i < Math.min(memoryCapacity, maxRows); i ++){
+                        sb.append(memoryText(i, 4)).append('\n');
                     }
-                    sb.append("\n");
+                    if(memoryCapacity > maxRows) sb.append("...");
+                    return sb.toString();
+                });
+                return;
+            }
+
+            int cols = Mathf.clamp(Core.settings.getInt("logicmemorycols", 10), 2, 15);
+            int decimals = Mathf.clamp(Core.settings.getInt("logicmemorydecimals", 0), 0, 8);
+            table.row();
+            table.table(grid -> {
+                grid.left();
+                for(int i = 0; i < memoryCapacity; i++){
+                    if(i > 0 && i % cols == 0) grid.row();
+                    int index = i;
+                    TextButton cell = grid.button("", Styles.flatBordert, () ->
+                        Core.app.setClipboardText(memoryText(index, 8))
+                    ).size(50f, 26f).pad(1f).get();
+                    cell.getLabel().setFontScale(0.65f);
+                    Label label = cell.getLabel();
+                    final String[] prev = {null};
+                    label.update(() -> {
+                        String text = memoryText(index, decimals);
+                        if(text.length() > 7) text = text.substring(0, 7);
+                        if(!text.equals(prev[0])){
+                            boolean flash = prev[0] != null;
+                            prev[0] = text;
+                            label.setText(text);
+                            if(flash) label.setColor(Pal.accent);
+                        }else{
+                            label.color.lerp(Color.white, 0.08f);
+                        }
+                    });
                 }
-                if(memoryCapacity > maxRows) sb.append("...");
-                return sb.toString();
-            });
+            }).left();
         }
     }
 }

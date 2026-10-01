@@ -104,6 +104,7 @@ public class ShieldWall extends Wall{
             shield -= shieldTaken;
             if(shieldTaken > 0){
                 hit = 1f;
+                mindustry.client.morj.DamageNumbers.hit(this, shieldTaken, false, maxHealth);
             }
 
             //shield was destroyed, needs to go down

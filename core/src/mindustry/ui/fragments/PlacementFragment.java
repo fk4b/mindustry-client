@@ -17,6 +17,7 @@ import arc.util.*;
 import mindustry.ai.*;
 import mindustry.ai.types.*;
 import mindustry.client.*;
+import mindustry.client.morj.*;
 import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.entities.*;
@@ -574,6 +575,7 @@ public class PlacementFragment{
                             int[] logicedCounts = countBox[1];
 
                             u.clearChildren();
+                            if(RtsGroups.enabled()) RtsGroups.buttons(u);
                             var units = control.input.selectedUnits;
                             if(units.size > 0){
                                 usedCommands.clear();
@@ -727,6 +729,11 @@ public class PlacementFragment{
                                     }).fillX().padTop(4f).left();
                                 }
                             }else{
+                                // Leaving these set makes update() rebuild the bar every frame, so the RTS buttons never receive a second click.
+                                usedCommands.clear();
+                                usedStances.clear();
+                                commands.clear();
+                                stances.clear();
                                 u.add(Core.bundle.get("commandmode.nounits")).color(Color.lightGray).growX().center().labelAlign(Align.center).pad(6);
                             }
                         };

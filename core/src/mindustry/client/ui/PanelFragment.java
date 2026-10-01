@@ -35,6 +35,7 @@ import mindustry.client.fallen.assistai.PolySettingsDialog;
 import mindustry.client.fallen.assistai.SelfBuilderAI;
 import mindustry.client.utils.AutoTransfer;
 import mindustry.client.utils.BuilderAssist;
+import mindustry.client.morj.*;
 import mindustry.client.utils.GlobalChat;
 import mindustry.content.*;
 import mindustry.core.NetClient;
@@ -140,6 +141,13 @@ public class PanelFragment extends Table{
             if(!Vars.state.isMenu()) {
 //                FDAutoFill.update();
                 CustomBuildLogic.update();
+                HiddenItems.refresh();
+                OreAdsorb.update();
+                DuctMarks.refresh();
+                ProcessorUse.update();
+                WavePath.update();
+                WaveHealth.update();
+                CoreChart.update();
                 if(autoFixPower && state.isGame() && fixPowerTimer.get(60f * 60f)) fixPowerQuiet();
             }
         });
@@ -151,6 +159,13 @@ public class PanelFragment extends Table{
                 FDAutoShoot.drawTarget();
                 FDAutoShoot.drawUnitAim();
                 FDAutoShoot.update();
+                DamageNumbers.draw();
+                TransportScan.draw();
+                OverdrivePreview.draw();
+                ProjectorRanges.draw();
+                ProcessorUse.draw();
+                ProcessorStatus.draw();
+                WavePath.draw();
             }
         });
 
@@ -239,76 +254,212 @@ public class PanelFragment extends Table{
         Log.info("Start init");
     }
 
-    void rebuild(){         //category does not change on rebuild anymore, only on new world load
+    public void rebuild(){         //category does not change on rebuild anymore, only on new world load
         Group group = fdpanel.parent;
         int index = fdpanel.getZIndex();
+        boolean keep = placedPanel && panelShell != null && panelShell.getHeight() > 1f;
+        float keepX = keep ? panelShell.x : 0f;
+        float keepTop = keep ? panelShell.y + panelShell.getHeight() : 0f;
         fdpanel.remove();
         build(group);
         fdpanel.setZIndex(index);
+        if(keep && panelShell != null){
+            panelShell.invalidateHierarchy();
+            panelShell.pack();
+            panelShell.setPosition(keepX, keepTop - panelShell.getHeight());
+            clampPanel();
+            savePanel();
+            placedPanel = true;
+        }
     }
 
     private int panelTab = Mathf.clamp(Core.settings.getInt("morj-panel-tab", 0), 0, 4);
     private Table panelPage;
-    private static final int panelCols = 4;
+    private Table panelShell;
+    private TextButton panelTray;
+    private boolean placedPanel;
+    private boolean pagesRegistered;
+    private final Seq<QueuedTile> tileQueue = new Seq<>();
+    private int tileReg;
+    private final Seq<PanelIcon> icons = new Seq<>();
+    private final ObjectSet<String> iconIds = new ObjectSet<>();
+    private int regTab;
+
+    public static final class PanelIcon{
+        public final String id, label, caption;
+        public final int reg, tab;
+        public PanelIcon(String id, String label, String caption, int reg, int tab){
+            this.id = id;
+            this.label = label;
+            this.caption = caption;
+            this.reg = reg;
+            this.tab = tab;
+        }
+    }
+
+    private static final class QueuedTile{
+        String id, label, tip;
+        Drawable drawable;
+        Boolp state;
+        Runnable left, right;
+        int reg;
+    }
+
+    public Seq<PanelIcon> catalog(){
+        return icons;
+    }
+
+    public int currentTab(){
+        return panelTab;
+    }
+
+    public Seq<PanelIcon> tabIcons(int tab){
+        Seq<PanelIcon> out = new Seq<>();
+        for(PanelIcon icon : icons) if(icon.tab == tab) out.add(icon);
+        out.sort(Structs.comparingInt(icon -> {
+            int index = PanelLayout.index(icon.id);
+            return index >= PanelLayout.unordered ? PanelLayout.unordered + icon.reg : index;
+        }));
+        return out;
+    }
+
+    /** Builds every tab once so the button list exists before a tab is opened. */
+    public void registerPages(){
+        if(pagesRegistered || Items.copper == null) return;
+        pagesRegistered = true;
+        pageMine(new Table());
+        pageBuild(new Table());
+        pageView(new Table());
+        pageFight(new Table());
+        pageServer(new Table());
+        tileQueue.clear();
+    }
     private static final Color panelDim = new Color(1f, 1f, 1f, 0.38f);
     private static Drawable panelOnBg;
     private static Button.ButtonStyle panelBtnStyle;
     public void build(Group parent){
         if(Items.copper != null) loadMiningPrefs();
+        registerPages();
+        placedPanel = false;
         parent.fill(full -> {
             fdpanel = full;
             full.touchable = Touchable.childrenOnly;
-            full.center().left().visible(() -> ui.hudfrag.shown);
-            full.table(Tex.pane, shell -> {
-                shell.margin(6f).top();
-                shell.defaults().growX();
+            full.visible(() -> ui.hudfrag.shown);
 
-                shell.table(bars -> {
-                    bars.defaults().height(16f).growX().pad(1f);
-                    bars.add(new Bar(
-                        () -> {
-                            Unit u = player == null ? null : player.unit();
-                            if(u == null) return "HP";
-                            return "HP " + Mathf.round(u.health) + "/" + Mathf.round(u.maxHealth);
-                        },
-                        () -> Pal.health,
-                        () -> player == null || player.unit() == null ? 0f : Mathf.clamp(player.unit().healthf())
-                    )).row();
-                    bars.add(new Bar(
-                        () -> {
-                            Unit u = player == null ? null : player.unit();
-                            return "Щит " + (u == null ? 0 : Mathf.round(u.shield));
-                        },
-                        () -> Pal.accent,
-                        () -> {
-                            Unit u = player == null ? null : player.unit();
-                            return u == null ? 0f : Mathf.clamp(u.shield / Math.max(u.maxHealth, 1f));
-                        }
-                    ));
-                }).padBottom(4f).row();
+            panelShell = new Table(Tex.pane);
+            panelShell.margin(6f).top();
+            panelShell.defaults().growX();
+            panelShell.touchable = Touchable.enabled;
 
-                shell.table(tabs -> {
-                    tabs.defaults().height(26f).growX().pad(1f);
-                    String[] keys = {"client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"};
-                    for(int i = 0; i < keys.length; i++){
-                        int tab = i;
-                        tabs.button(Core.bundle.get(keys[i]), Styles.flatt, () -> showPanelTab(tab))
-                            .checked(b -> panelTab == tab)
-                            .update(b -> b.getLabel().setFontScale(0.72f));
+            panelShell.table(head -> {
+                ImageButton drag = head.button(Icon.move, Styles.cleari, () -> {}).size(28f).tooltip("@client.morj.drag").get();
+                float[] last = new float[2];
+                drag.addListener(new InputListener(){
+                    @Override public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
+                        last[0] = x;
+                        last[1] = y;
+                        return true;
                     }
-                }).padBottom(4f).row();
+                    @Override public void touchDragged(InputEvent event, float x, float y, int pointer){
+                        panelShell.moveBy(x - last[0], y - last[1]);
+                        clampPanel();
+                    }
+                    @Override public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button){
+                        savePanel();
+                    }
+                });
+                head.add("morj").growX().left().get().setFontScale(0.85f);
+                head.button(Icon.list, Styles.cleari, PanelConfigDialog::open).size(28f).tooltip("@client.morj.panelcfg");
+                head.button(Icon.left, Styles.cleari, this::toggleTray).size(28f).tooltip("@client.morj.tray");
+            }).growX().padBottom(2f).row();
 
-                panelPage = new Table();
-                shell.add(panelPage).growX().left();
-                showPanelTab(panelTab);
-            }).padTop(Core.settings.getInt("yoffssetfdpamel", -200)).left();
+            panelShell.table(bars -> {
+                bars.defaults().height(16f).growX().pad(1f);
+                bars.add(new Bar(
+                    () -> {
+                        Unit u = player == null ? null : player.unit();
+                        if(u == null) return "HP";
+                        return "HP " + Mathf.round(u.health) + "/" + Mathf.round(u.maxHealth);
+                    },
+                    () -> Pal.health,
+                    () -> player == null || player.unit() == null ? 0f : Mathf.clamp(player.unit().healthf())
+                )).row();
+                bars.add(new Bar(
+                    () -> {
+                        Unit u = player == null ? null : player.unit();
+                        return "Щит " + (u == null ? 0 : Mathf.round(u.shield));
+                    },
+                    () -> Pal.accent,
+                    () -> {
+                        Unit u = player == null ? null : player.unit();
+                        return u == null ? 0f : Mathf.clamp(u.shield / Math.max(u.maxHealth, 1f));
+                    }
+                ));
+            }).padBottom(4f).row();
+
+            panelShell.table(tabs -> {
+                tabs.defaults().height(26f).growX().pad(1f);
+                String[] keys = {"client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"};
+                for(int i = 0; i < keys.length; i++){
+                    int tab = i;
+                    tabs.button(Core.bundle.get(keys[i]), Styles.flatt, () -> showPanelTab(tab))
+                        .checked(b -> panelTab == tab)
+                        .update(b -> b.getLabel().setFontScale(0.72f));
+                }
+            }).padBottom(4f).row();
+
+            panelPage = new Table();
+            panelShell.add(panelPage).growX().left();
+            full.addChild(panelShell);
+
+            panelTray = new TextButton(Core.bundle.get("client.morj.traybtn"), Styles.flatt);
+            panelTray.clicked(this::toggleTray);
+            panelTray.setSize(88f, 36f);
+            full.addChild(panelTray);
+
+            full.update(() -> {
+                if(panelShell == null) return;
+                if(!placedPanel && Core.graphics.getHeight() > 0){
+                    panelShell.pack();
+                    if(Core.settings.has("morj-panel-x")){
+                        panelShell.setPosition(Core.settings.getFloat("morj-panel-x"), Core.settings.getFloat("morj-panel-y"));
+                    }else{
+                        float y = Core.graphics.getHeight() / 2f + Core.settings.getInt("yoffssetfdpamel", -200) - panelShell.getHeight() / 2f;
+                        panelShell.setPosition(8f, y);
+                    }
+                    placedPanel = true;
+                }
+                clampPanel();
+                boolean tray = Core.settings.getBool("morj-panel-tray", false);
+                panelShell.visible = !tray;
+                panelTray.visible = tray;
+                if(tray){
+                    panelTray.setPosition(panelShell.x, panelShell.y + Math.max(0f, panelShell.getHeight() - panelTray.getHeight()));
+                }
+            });
+            showPanelTab(panelTab);
         });
+    }
+
+    private void toggleTray(){
+        Core.settings.put("morj-panel-tray", !Core.settings.getBool("morj-panel-tray", false));
+    }
+
+    private void clampPanel(){
+        if(panelShell == null || panelShell.getWidth() < 1f) return;
+        float maxX = Math.max(0f, Core.graphics.getWidth() - panelShell.getWidth());
+        float maxY = Math.max(0f, Core.graphics.getHeight() - panelShell.getHeight());
+        panelShell.setPosition(Mathf.clamp(panelShell.x, 0f, maxX), Mathf.clamp(panelShell.y, 0f, maxY));
     }
 
     private void showPanelTab(int tab){
         panelTab = Mathf.clamp(tab, 0, 4);
         settings.put("morj-panel-tab", panelTab);
         if(panelPage == null) return;
+        // A taller page keeps the top edge and extends downward.
+        boolean anchor = placedPanel && panelShell != null && panelShell.getHeight() > 1f;
+        float top = anchor ? panelShell.y + panelShell.getHeight() : 0f;
+        float x = anchor ? panelShell.x : 0f;
         panelPage.clear();
         panelPage.top().left();
         switch(panelTab){
@@ -318,9 +469,25 @@ public class PanelFragment extends Table{
             case 3 -> pageFight(panelPage);
             default -> pageServer(panelPage);
         }
+        if(panelShell != null){
+            panelShell.invalidateHierarchy();
+            panelShell.pack();
+            if(anchor){
+                panelShell.setPosition(x, top - panelShell.getHeight());
+                clampPanel();
+                savePanel();
+            }
+        }
+    }
+
+    private void savePanel(){
+        if(panelShell == null) return;
+        Core.settings.put("morj-panel-x", panelShell.x);
+        Core.settings.put("morj-panel-y", panelShell.y);
     }
 
     private void pageMine(Table page){
+        regTab = 0;
         Table grid = grid(page);
         int[] col = {0};
         ore(grid, col, Items.copper, "@client.fdpanel.minecopper");
@@ -378,9 +545,11 @@ public class PanelFragment extends Table{
                 currentfollowmode = 2;
                 Navigation.follow(new BuildPath("self"));
             }, null);
+        flush(grid, 0);
     }
 
     private void pageBuild(Table page){
+        regTab = 1;
         Table grid = grid(page);
         int[] col = {0};
         assist(grid, col, UnitTypes.poly, bundle.get("client.morj.btn.poly"), "@client.fdpanel.assistpoly",
@@ -412,11 +581,23 @@ public class PanelFragment extends Table{
             null, GlobalChatDialog::showDialog, null);
         tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.schem"), "@client.fdpanel.schemcleanup",
             () -> settings.getBool("placeSchematicWithCleanup"), () -> settings.put("placeSchematicWithCleanup", !settings.getBool("placeSchematicWithCleanup")), null);
+        flush(grid, 1);
     }
 
     private void pageView(Table page){
+        regTab = 2;
         Table grid = grid(page);
         int[] col = {0};
+        tile(grid, col, Icon.map, bundle.get("client.morj.btn.markers"), "@client.fdpanel.mapmarkers",
+            () -> settings.getBool("mapmarkers", true), () -> settings.put("mapmarkers", !settings.getBool("mapmarkers", true)), null);
+        tile(grid, col, Icon.waves, bundle.get("client.morj.btn.winfo"), "@client.fdpanel.waveinfo",
+            () -> settings.getBool("waveinfo", true), () -> settings.put("waveinfo", !settings.getBool("waveinfo", true)), null);
+        tile(grid, col, Icon.info, bundle.get("client.morj.btn.minfo"), "@client.fdpanel.mapinfo",
+            () -> settings.getBool("mapinfofrag", true), () -> settings.put("mapinfofrag", !settings.getBool("mapinfofrag", true)), null);
+        tile(grid, col, new TextureRegionDrawable(Blocks.forceProjector.uiIcon), bundle.get("client.morj.btn.proj"), "@client.fdpanel.projectors",
+            () -> settings.getBool("projectors", false), () -> settings.put("projectors", !settings.getBool("projectors", false)), null);
+        tile(grid, col, Icon.map, bundle.get("client.morj.btn.mi2map"), "@client.fdpanel.mi2map",
+            () -> settings.getBool("mi2map", false), () -> settings.put("mi2map", !settings.getBool("mi2map", false)), null);
         tile(grid, col, Icon.eyeOff, bundle.get("client.morj.btn.fade"), "@client.fdpanel.smarttransparency",
             () -> settings.getBool("smarttransparency", false), () -> settings.put("smarttransparency", !settings.getBool("smarttransparency", false)), null);
         tile(grid, col, Icon.eyeOff, bundle.get("client.morj.btn.light"), "@client.fdpanel.light",
@@ -442,9 +623,42 @@ public class PanelFragment extends Table{
         tile(grid, col, Icon.waves, bundle.get("client.morj.btn.wave"), "@client.fdpanel.eye.wave", null, this::checkNextWave, null);
         tile(grid, col, Icon.chat, bundle.get("client.morj.btn.uchat"), "@client.fdpanel.unitatchat",
             () -> settings.getBool("unitatchat"), () -> settings.put("unitatchat", !settings.getBool("unitatchat")), null);
+        tile(grid, col, Icon.box, bundle.get("client.morj.btn.items"), "@client.fdpanel.hiddenitems",
+            () -> settings.getInt("hiddenitemopacity", 70) > 0,
+            () -> settings.put("hiddenitemopacity", settings.getInt("hiddenitemopacity", 70) > 0 ? 0 : 70), null);
+        tile(grid, col, Icon.add, bundle.get("client.morj.btn.dmg"), "@client.fdpanel.damagepopups",
+            () -> settings.getBool("damagepopups", true), () -> settings.put("damagepopups", !settings.getBool("damagepopups", true)), null);
+        tile(grid, col, Icon.line, bundle.get("client.morj.btn.driver"), "@client.fdpanel.massdriverline",
+            () -> settings.getBool("massdriverline", true), () -> settings.put("massdriverline", !settings.getBool("massdriverline", true)), null);
+        tile(grid, col, Icon.zoom, bundle.get("client.morj.btn.scan"), "@client.fdpanel.transportscan",
+            () -> settings.getBool("transportscan", false), () -> settings.put("transportscan", !settings.getBool("transportscan", false)), null);
+        tile(grid, col, Icon.hammer, bundle.get("client.morj.btn.ore"), "@client.fdpanel.oreadsorb",
+            () -> settings.getBool("oreadsorb", true), () -> settings.put("oreadsorb", !settings.getBool("oreadsorb", true)), null);
+        tile(grid, col, Icon.logic, bundle.get("client.morj.btn.logic"), "@client.fdpanel.logicassist",
+            () -> settings.getBool("logicassist", true), () -> settings.put("logicassist", !settings.getBool("logicassist", true)), null);
+        tile(grid, col, Icon.units, bundle.get("client.morj.btn.rts"), "@client.fdpanel.rtsgroups",
+            () -> settings.getBool("rtsgroups", true), () -> settings.put("rtsgroups", !settings.getBool("rtsgroups", true)), null);
+        tile(grid, col, Icon.power, bundle.get("client.morj.btn.grid"), "@client.fdpanel.powergrid",
+            () -> settings.getBool("powergrid", true), () -> settings.put("powergrid", !settings.getBool("powergrid", true)), null);
+        tile(grid, col, new TextureRegionDrawable(Blocks.overdriveProjector.uiIcon), bundle.get("client.morj.btn.boost"), "@client.fdpanel.overdrivepreview",
+            () -> settings.getBool("overdrivepreview", true), () -> settings.put("overdrivepreview", !settings.getBool("overdrivepreview", true)), null);
+        tile(grid, col, new TextureRegionDrawable(Blocks.conduit.uiIcon), bundle.get("client.morj.btn.pipe"), "@client.fdpanel.ductcolor",
+            () -> settings.getBool("ductcolor", false), () -> settings.put("ductcolor", !settings.getBool("ductcolor", false)), null);
+        tile(grid, col, Icon.link, bundle.get("client.morj.btn.refs"), "@client.fdpanel.procref",
+            () -> settings.getBool("procref", true), () -> settings.put("procref", !settings.getBool("procref", true)), null);
+        tile(grid, col, Icon.logic, bundle.get("client.morj.btn.proc"), "@client.fdpanel.procstatus",
+            () -> settings.getBool("procstatus", true), () -> settings.put("procstatus", !settings.getBool("procstatus", true)), null);
+        tile(grid, col, Icon.chartBar, bundle.get("client.morj.btn.chart"), "@client.fdpanel.corechart",
+            () -> settings.getBool("corechart", true), () -> settings.put("corechart", !settings.getBool("corechart", true)), null);
+        tile(grid, col, Icon.waves, bundle.get("client.morj.btn.wpath"), "@client.fdpanel.wavepath",
+            () -> settings.getBool("wavepath", true), () -> settings.put("wavepath", !settings.getBool("wavepath", true)), null);
+        tile(grid, col, Icon.warning, bundle.get("client.morj.btn.whp"), "@client.fdpanel.wavehp",
+            () -> settings.getBool("wavehp", true), () -> settings.put("wavehp", !settings.getBool("wavehp", true)), null);
+        flush(grid, 2);
     }
 
     private void pageFight(Table page){
+        regTab = 3;
         Table grid = grid(page);
         int[] col = {0};
         tile(grid, col, Icon.star, bundle.get("client.morj.btn.aim"), "@client.fdpanel.smarttargeting",
@@ -457,9 +671,11 @@ public class PanelFragment extends Table{
             () -> FDAutoShoot.viewUnitAim, () -> FDAutoShoot.viewUnitAim = !FDAutoShoot.viewUnitAim, null);
         tile(grid, col, new TextureRegionDrawable(UnitTypes.mega.uiIcon), bundle.get("client.morj.btn.ucmega"), "@client.fdpanel.mega",
             null, () -> ClientVars.clientCommandHandler.handleMessage("!uc " + UnitTypes.mega.localizedName, player), null);
+        flush(grid, 3);
     }
 
     private void pageServer(Table page){
+        regTab = 4;
         Table grid = grid(page);
         int[] col = {0};
         tile(grid, col, Icon.refresh, bundle.get("client.morj.btn.sync"), "@client.fdpanel.sync",
@@ -475,11 +691,12 @@ public class PanelFragment extends Table{
         tile(grid, col, Icon.rotate, bundle.get("client.morj.btn.elite"), "@client.fdpanel.elite",
             null, () -> Call.sendChatMessage("/elite"), null);
         tile(grid, col, Icon.crafting, bundle.get("client.morj.btn.transfer"), "@client.fdpanel.autotransfer",
-            () -> settings.getBool("autotransfer"), () -> {
-                AutoTransfer.enabled ^= true;
-                new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(AutoTransfer.enabled ? "mod.enabled" : "mod.disabled"));
-                settings.put("autotransfer", !settings.getBool("autotransfer"));
-            }, null);
+            () -> AutoTransfer.enabled, () -> {
+                boolean next = !AutoTransfer.enabled;
+                AutoTransfer.enabled = next;
+                settings.put("autotransfer", next);
+                new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(next ? "mod.enabled" : "mod.disabled"));
+            }, AutoFillPriorityDialog::open);
         tile(grid, col, Icon.power, bundle.get("client.morj.btn.power"), "@client.fdpanel.fixpower",
             () -> autoFixPower, () -> ClientVars.clientCommandHandler.handleMessage("!fixpower c", player), () -> {
                 autoFixPower = !autoFixPower;
@@ -488,9 +705,11 @@ public class PanelFragment extends Table{
             });
         tile(grid, col, Icon.logic, bundle.get("client.morj.btn.fixcode"), "@client.fdpanel.fixcode",
             null, () -> ClientVars.clientCommandHandler.handleMessage("!fixcode r", player), null);
+        flush(grid, 4);
     }
 
-    private static Table grid(Table page){
+    private Table grid(Table page){
+        tileQueue.clear();
         Table grid = new Table();
         grid.left().top();
         page.add(grid).left().growX();
@@ -510,12 +729,31 @@ public class PanelFragment extends Table{
         }, null);
     }
 
-    /** Icon with a short caption. Left click runs the action, right click the optional extra. A null state means a one-shot button. */
+    /** Queues an icon. Left click runs the action, right click the optional extra. A null state means a one-shot button. */
     private void tile(Table grid, int[] col, Drawable drawable, String label, String tip, Boolp state, Runnable left, Runnable right){
-        if(col[0] == panelCols){
-            grid.row();
-            col[0] = 0;
-        }
+        String id = tip != null && tip.startsWith("@") ? tip.substring(1) : String.valueOf(label);
+        int reg = tileReg++;
+        String listLabel = tip != null && tip.startsWith("@") ? bundle.get(tip.substring(1)) : label;
+        if(iconIds.add(id)) icons.add(new PanelIcon(id, listLabel, label, reg, regTab));
+        QueuedTile queued = new QueuedTile();
+        queued.id = id;
+        queued.label = label;
+        queued.tip = tip;
+        queued.drawable = drawable;
+        queued.state = state;
+        queued.left = left;
+        queued.right = right;
+        queued.reg = reg;
+        tileQueue.add(queued);
+    }
+
+    private void flush(Table grid, int tab){
+        Seq<QueuedTile> rows = new Seq<>(tileQueue);
+        tileQueue.clear();
+        rows.sort(Structs.comparingInt(q -> {
+            int index = PanelLayout.index(q.id);
+            return index >= PanelLayout.unordered ? PanelLayout.unordered + q.reg : index;
+        }));
         if(panelBtnStyle == null){
             panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.32f);
             panelBtnStyle = new Button.ButtonStyle();
@@ -524,42 +762,71 @@ public class PanelFragment extends Table{
             panelBtnStyle.down = Styles.flatOver;
             panelBtnStyle.checked = panelOnBg;
         }
-        float iconSize = Math.max(18f, settings.getInt("buttonsizefdpamel", 30) * 0.7f);
-        Button button = new Button(panelBtnStyle);
-        button.top().margin(1f, 2f, 2f, 2f);
-        Image image = new Image(drawable);
-        image.setScaling(Scaling.fit);
-        button.add(image).size(iconSize).padTop(1f).row();
-        Label caption = button.add(label).growX().padTop(1f).get();
-        caption.setFontScale(0.62f);
-        caption.setEllipsis(true);
-        caption.setAlignment(arc.util.Align.center);
-        String baseTip = tip != null && tip.startsWith("@") ? bundle.get(tip.substring(1)) : tip;
-        final String shown = right == null ? baseTip : baseTip + "\n[lightgray]" + bundle.get("client.morj.right");
-        button.addListener(new Tooltip(t -> {
-            t.background(Styles.black6).margin(4f);
-            t.add(shown).wrap().width(280f);
-        }));
-        button.update(() -> {
-            boolean on = state != null && state.get();
-            button.setChecked(on);
-            image.setColor(state == null || on ? Color.white : panelDim);
-        });
-        button.addListener(new InputListener(){
-            @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
-                if(key == KeyCode.mouseRight && right != null){
-                    right.run();
-                    return true;
+        Seq<String> ids = new Seq<>();
+        ObjectMap<String, QueuedTile> byId = new ObjectMap<>();
+        for(QueuedTile queued : rows){
+            if(PanelLayout.hidden(queued.id)) continue;
+            ids.add(queued.id);
+            byId.put(queued.id, queued);
+        }
+        Seq<PanelLayout.Slot> slots = PanelLayout.resolve(ids, PanelLayout.cols(tab));
+        if(slots.isEmpty()) return;
+        int maxC = 0, maxR = 0;
+        for(PanelLayout.Slot slot : slots){
+            maxC = Math.max(maxC, slot.col);
+            maxR = Math.max(maxR, slot.row);
+        }
+        QueuedTile[][] placed = new QueuedTile[maxR + 1][maxC + 1];
+        for(PanelLayout.Slot slot : slots) placed[slot.row][slot.col] = byId.get(slot.id);
+        float holeIcon = Math.max(14f, settings.getInt("buttonsizefdpamel", 30) * 0.7f);
+        for(int r = 0; r <= maxR; r++){
+            if(r > 0) grid.row();
+            for(int c = 0; c <= maxC; c++){
+                QueuedTile queued = placed[r][c];
+                if(queued == null){
+                    grid.add().size(holeIcon + 30f, holeIcon + 24f).pad(1f);
+                    continue;
                 }
-                if(key == KeyCode.mouseLeft && left != null){
-                    left.run();
-                    return true;
-                }
-                return false;
+                float iconSize = Math.max(14f, settings.getInt("buttonsizefdpamel", 30) * 0.7f * PanelLayout.scale(queued.id));
+                Button button = new Button(panelBtnStyle);
+                button.top().margin(1f, 2f, 2f, 2f);
+                Image image = new Image(queued.drawable);
+                image.setScaling(Scaling.fit);
+                button.add(image).size(iconSize).padTop(1f).row();
+                Label caption = button.add(queued.label).growX().padTop(1f).get();
+                caption.setFontScale(0.62f);
+                caption.setEllipsis(true);
+                caption.setAlignment(arc.util.Align.center);
+                String baseTip = queued.tip != null && queued.tip.startsWith("@") ? bundle.get(queued.tip.substring(1)) : queued.tip;
+                final String shown = queued.right == null ? baseTip : baseTip + "\n[lightgray]" + bundle.get("client.morj.right");
+                button.addListener(new Tooltip(t -> {
+                    t.background(Styles.black6).margin(4f);
+                    t.add(shown).wrap().width(280f);
+                }));
+                Boolp state = queued.state;
+                Runnable left = queued.left;
+                Runnable right = queued.right;
+                button.update(() -> {
+                    boolean on = state != null && state.get();
+                    button.setChecked(on);
+                    image.setColor(state == null || on ? Color.white : panelDim);
+                });
+                button.addListener(new InputListener(){
+                    @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
+                        if(key == KeyCode.mouseRight && right != null){
+                            right.run();
+                            return true;
+                        }
+                        if(key == KeyCode.mouseLeft && left != null){
+                            left.run();
+                            return true;
+                        }
+                        return false;
+                    }
+                });
+                grid.add(button).size(iconSize + 30f, iconSize + 24f).pad(1f);
             }
-        });
-        grid.add(button).size(iconSize + 30f, iconSize + 24f).pad(1f);
-        col[0]++;
+        }
     }
 
     /** Delegates to {@link MinersFDAI} (kept for any external call sites). */

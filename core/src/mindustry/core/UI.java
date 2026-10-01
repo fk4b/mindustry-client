@@ -306,6 +306,7 @@ public class UI implements ApplicationListener, Loadable{
         consolefrag.build(hudGroup);
         loadfrag.build(group);
         panelfragment.build(hudGroup);
+        mindustry.client.morj.Mi2Map.build(hudGroup);
         listblockfrag.build(hudGroup);
         historyFrag.build(hudGroup);
         waveInfoFrag.build(hudGroup);

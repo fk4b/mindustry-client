@@ -956,15 +956,16 @@ public class DesktopInput extends InputHandler{
         table.button(Icon.map, Styles.clearNonei, () -> {
             if (state.isCampaign() && !Vars.net.client()) ui.planet.show();
             else MarkerDialog.INSTANCE.show();
-        }).tooltip(t -> t.background(Styles.black6).margin(4f).label(() -> state.isCampaign() ? "@planetmap" : "Map Markers"));
+        }).tooltip(t -> t.background(Styles.black6).margin(4f).label(() -> state.isCampaign() ? "@planetmap" : "Map Markers"))
+            .visible(() -> Core.settings.getBool("mapmarkers", true) || (state.isCampaign() && !net.client()));
 
         table.button(Icon.info, Styles.clearNonei, () -> {
             ui.mapInfoFrag.toggle();
-        }).tooltip("@mapInfoFrag");
+        }).tooltip("@mapInfoFrag").visible(() -> Core.settings.getBool("mapinfofrag", true));
 
         table.button(Icon.waves, Styles.clearNonei, () -> {
             ui.waveInfoFrag.toggle();
-        }).tooltip("@waveInfoFrag");
+        }).tooltip("@waveInfoFrag").visible(() -> Core.settings.getBool("waveinfo", true));
 
         table.button(Icon.units, Styles.clearNonei, () -> {
             ui.trashbase.show();

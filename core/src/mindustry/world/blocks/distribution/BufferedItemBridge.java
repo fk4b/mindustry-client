@@ -1,10 +1,16 @@
 package mindustry.world.blocks.distribution;
 
+import arc.graphics.g2d.*;
+import arc.math.*;
+import arc.util.*;
 import arc.util.io.*;
 import mindustry.gen.*;
+import mindustry.graphics.*;
 import mindustry.type.*;
 import mindustry.world.*;
 import mindustry.world.meta.*;
+
+import static mindustry.Vars.*;
 
 public class BufferedItemBridge extends ItemBridge{
     public final int timerAccept = timers++;
@@ -49,6 +55,27 @@ public class BufferedItemBridge extends ItemBridge{
         @Override
         public void doDump(){
             dump();
+        }
+
+        @Override
+        protected void drawTransportItems(Tile other){
+            super.drawTransportItems(other);
+            float a = mindustry.client.morj.HiddenItems.alpha;
+            if(a < 0.01f || buffer.size() <= 0) return;
+            float speed = Math.max(0.01f, ((BufferedItemBridge)block).speed / timeScale);
+            Draw.z(Layer.power + 0.1f);
+            for(int i = 0; i < buffer.size(); i++){
+                Item item = buffer.itemAt(i);
+                if(item == null) continue;
+                float dt = Time.time - buffer.timeAt(i);
+                float progress = dt < 0f ? 1f : Mathf.clamp(dt / speed);
+                Draw.color();
+                Draw.alpha(a);
+                Draw.rect(item.fullIcon,
+                    Mathf.lerp(x, other.worldx(), progress),
+                    Mathf.lerp(y, other.worldy(), progress),
+                    4f, 4f);
+            }
         }
 
 

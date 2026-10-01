@@ -20,6 +20,19 @@ public class ItemBuffer{
         return index < buffer.length;
     }
 
+    public int size(){
+        return index;
+    }
+
+    public Item itemAt(int i){
+        if(i < 0 || i >= index) return null;
+        return content.item(TimeItem.item(buffer[i]));
+    }
+
+    public float timeAt(int i){
+        return TimeItem.time(buffer[i]);
+    }
+
     public void accept(Item item, short data){
         //if(!accepts()) return;
         buffer[index++] = TimeItem.get(data, item.id, Time.time);

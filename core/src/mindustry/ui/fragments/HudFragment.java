@@ -355,7 +355,7 @@ public class HudFragment{
             //tile hud
             t.add(new TileInfoFragment()).name("tilehud").top();
             //minimap
-            t.add(new Minimap()).name("minimap").top();
+            t.add(new Minimap()).name("minimap").top().visible(() -> !Core.settings.getBool("mi2map", false));
             t.row();
             //position
             t.label(() -> player.tileX() + ", " + player.tileY() + "\n" + "[coral]" + World.toTile(Core.input.mouseWorldX()) + ", " + World.toTile(Core.input.mouseWorldY()))
@@ -522,7 +522,7 @@ public class HudFragment{
                         logic.skipWave();
                     }
                 }).growY().fillX().right().width(40f).name("skip").get().toBack();
-            }).width(dsize * 5 + 4f).name("statustable");
+            }).width(dsize * 5 + 4f).name("statustable").visible(() -> Core.settings.getBool("waveinfo", true));
 
             if(Core.settings.getBool("activemodesdisplay")){
                 //Active modes display
@@ -1292,6 +1292,10 @@ public class HudFragment{
                     builder.append(enemiesf.get(state.enemies));
                 }
                 builder.append("\n");
+            }
+
+            if(mindustry.client.morj.WaveHealth.active()){
+                builder.append(mindustry.client.morj.WaveHealth.line()).append("\n");
             }
 
             if(state.rules.waveTimer){

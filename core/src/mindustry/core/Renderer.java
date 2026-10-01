@@ -353,20 +353,22 @@ public class Renderer implements ApplicationListener{
 
         //draw objective markers
         float scaleFactor = 4f / renderer.getDisplayScale();
-        state.rules.objectives.eachRunning(obj -> {
-            for(var marker : obj.markers){
-                if(marker.world != -1){
-                    marker.draw(marker.autoscale ? scaleFactor : 1);
+        if(settings.getBool("mapmarkers", true)){
+            state.rules.objectives.eachRunning(obj -> {
+                for(var marker : obj.markers){
+                    if(marker.world != -1){
+                        marker.draw(marker.autoscale ? scaleFactor : 1);
+                    }
                 }
-            }
-        });
+            });
 
-        for(var marker : state.markers.worldMarkers){
-            marker.draw(marker.autoscale ? scaleFactor : 1);
+            for(var marker : state.markers.worldMarkers){
+                marker.draw(marker.autoscale ? scaleFactor : 1);
+            }
         }
         Draw.reset();
 
-        lights.add(() -> {
+        if(settings.getBool("mapmarkers", true)) lights.add(() -> {
             state.rules.objectives.eachRunning(obj -> {
                 for(var marker : obj.markers){
                     if(marker.light != -1){

@@ -10,6 +10,7 @@ import arc.scene.ui.layout.Table;
 import arc.struct.Bits;
 import arc.util.*;
 import arc.util.io.*;
+import mindustry.client.morj.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.type.*;
@@ -208,8 +209,11 @@ public class Junction extends Block{
         @Override
         public void draw(){
             super.draw();
-            if(!drawItems) return;
+            float alpha = HiddenItems.alpha;
+            if(!drawItems && alpha <= 0.01f) return;
             Draw.z(Layer.blockOver);
+            // junctionview offset keeps full opacity until the hidden-item slider is on
+            float drawAlpha = alpha > 0.01f ? alpha : 1f;
             float now = Time.time;
             float realSpeed = speed / timeScale, baseX = baseOffsetX, baseY = baseOffsetY, itemX = tilesize, itemY = 0;
             float temp;
@@ -218,8 +222,11 @@ public class Junction extends Block{
                 for(int j = buffer.indexes[i]; j > 0;){
                     var l = buffer.buffers[i][--j];
                     var progress = Mathf.clamp((now - BufferItem.time(l)) / realSpeed, 0, (capacity - j) / (float)capacity);
-
-                    Draw.rect(content.item(BufferItem.item(l)).fullIcon,
+                    Item item = content.item(BufferItem.item(l));
+                    if(item == null) continue;
+                    Draw.color();
+                    Draw.alpha(drawAlpha);
+                    Draw.rect(item.fullIcon,
                         bx + itemX * progress,
                         by + itemY * progress,
                         itemSizeScaled, itemSizeScaled
@@ -232,6 +239,7 @@ public class Junction extends Block{
                 baseX = -baseY;
                 baseY = temp;
             }
+            Draw.reset();
         }
     }
 }

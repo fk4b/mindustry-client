@@ -453,7 +453,35 @@ public class ItemBridge extends Block{
                 }
             }
 
+            drawTransportItems(other);
             Draw.reset();
+        }
+
+        /** Icons for items currently crossing the link. Buffered bridges override this. */
+        protected void drawTransportItems(Tile other){
+            float a = mindustry.client.morj.HiddenItems.alpha;
+            if(a < 0.01f || items == null || !items.any()) return;
+            Draw.z(Layer.power + 0.1f);
+            int total = items.total();
+            if(total <= 0) return;
+            float travel = transportTime <= 0.01f ? 0f : Mathf.clamp(transportCounter / transportTime);
+            int drawn = 0;
+            for(int id = 0; id < items.length(); id++){
+                int count = items.get(id);
+                if(count <= 0) continue;
+                Item item = content.item(id);
+                if(item == null) continue;
+                for(int n = 0; n < count; n++){
+                    float f = Mathf.lerp(0.15f, 0.85f, Mathf.clamp((drawn + travel) / total));
+                    Draw.color();
+                    Draw.alpha(a);
+                    Draw.rect(item.fullIcon,
+                        Mathf.lerp(x, other.worldx(), f),
+                        Mathf.lerp(y, other.worldy(), f),
+                        4f, 4f);
+                    drawn++;
+                }
+            }
         }
 
         @Override

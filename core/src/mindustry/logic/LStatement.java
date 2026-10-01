@@ -10,6 +10,7 @@ import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import mindustry.client.morj.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.logic.LCanvas.*;
@@ -184,8 +185,10 @@ public abstract class LStatement{
     }
 
     protected Cell<TextField> field(Table table, String value, Cons<String> setter){
-        return table.field(value, Styles.nodeField, s -> setter.get(sanitize(s)))
+        Cell<TextField> cell = table.field(value, Styles.nodeField, s -> setter.get(sanitize(s)))
             .size(180f, 40f).pad(2f).color(table.color);
+        LogicEditor.watch(cell.get());
+        return cell;
     }
 
     protected Cell<TextField> fields(Table table, String desc, String value, Cons<String> setter){
