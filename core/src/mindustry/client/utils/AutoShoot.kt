@@ -37,6 +37,8 @@ private val blockMul = ObjectFloatMap<Block>().putAll(
 
 fun autoShoot() {
     if (!Core.settings.getBool("autotarget") || Vars.state.isMenu || Vars.state.isEditor) return
+    // The aim button handles targeting while it is on, so the two do not shoot at once.
+    if (Core.settings.getBool("smarttargeting")) return
     val unit = Vars.player.unit()
     if (((unit as? BlockUnitUnit)?.tile() as? ControlBlock)?.shouldAutoTarget() == false) return
     if (unit.activelyBuilding()) return

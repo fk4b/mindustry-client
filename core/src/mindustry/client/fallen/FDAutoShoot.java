@@ -7,6 +7,7 @@ import arc.input.*;
 import arc.math.*;
 import arc.math.geom.*;
 import arc.struct.*;
+import arc.scene.ui.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
@@ -15,6 +16,8 @@ import mindustry.entities.units.WeaponMount;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.input.Binding;
+import mindustry.ui.Styles;
+import mindustry.ui.dialogs.BaseDialog;
 import mindustry.world.Block;
 import mindustry.world.blocks.defense.turrets.Turret;
 import mindustry.world.blocks.power.*;
@@ -30,14 +33,71 @@ public class FDAutoShoot {
     private static boolean isHealingMode = false;
     public static boolean viewUnitAim = false;
 
-
-    public static void update() {
-        if(player.unit() == null || player.unit().mining() || player.unit().isBuilding()) return;
-        if (!Core.settings.getBool("smarttargeting", false)) {
+    /** Star button and the auto-target key are one switch. */
+    public static void setEnabled(boolean on){
+        Core.settings.put("autotarget", on);
+        Core.settings.put("smarttargeting", on);
+        if(!on){
             manualTarget = null;
             lastTargetPos = null;
+            if(player != null && !Core.input.keyDown(Binding.select)){
+                player.shooting = false;
+                Unit unit = player.unit();
+                if(unit != null) unit.controlWeapons(true, false);
+            }
+        }
+    }
+
+    public static boolean enabled(){
+        return Core.settings.getBool("autotarget", false);
+    }
+
+    /** Right click on the aim button. */
+    public static void openMenu(){
+        BaseDialog dialog = new BaseDialog("@client.aim.title");
+        ButtonGroup<TextButton> group = new ButtonGroup<>();
+        group.setMinCheckCount(1);
+        group.setMaxCheckCount(1);
+
+        TextButton nearest = new TextButton("@client.aim.nearest", Styles.togglet);
+        TextButton low = new TextButton("@client.aim.lowhp", Styles.togglet);
+        nearest.changed(() -> {
+            if(nearest.isChecked()) Core.settings.put("aimmode", 0);
+        });
+        low.changed(() -> {
+            if(low.isChecked()) Core.settings.put("aimmode", 1);
+        });
+        group.add(nearest);
+        group.add(low);
+        nearest.setChecked(Core.settings.getInt("aimmode", 0) != 1);
+        low.setChecked(Core.settings.getInt("aimmode", 0) == 1);
+
+        dialog.cont.defaults().growX().pad(3f);
+        dialog.cont.add(nearest).row();
+        dialog.cont.add(low).row();
+        dialog.cont.add("@client.aim.pick").color(Color.lightGray).wrap().width(380f).left().padBottom(8f).row();
+        dialog.cont.check("@client.aim.constant", Core.settings.getBool("constantfire", false), on -> Core.settings.put("constantfire", on)).left().padTop(4f).row();
+        dialog.cont.add("@client.aim.constant.note").color(Color.lightGray).wrap().width(380f).left().row();
+        dialog.addCloseButton();
+        dialog.show();
+    }
+
+    public static void update() {
+        boolean auto = Core.settings.getBool("autotarget", false);
+        if(Core.settings.getBool("smarttargeting", false) != auto){
+            Core.settings.put("smarttargeting", auto);
+        }
+        if(!auto){
+            manualTarget = null;
+            lastTargetPos = null;
+            if(player != null && !Core.input.keyDown(Binding.select)){
+                player.shooting = false;
+                Unit unit = player.unit();
+                if(unit != null) unit.controlWeapons(true, false);
+            }
             return;
         }
+        if(player.unit() == null || player.unit().mining() || player.unit().isBuilding()) return;
 
         Unit playerUnit = player.unit();
         if (playerUnit == null || playerUnit.mounts.length == 0) {
@@ -70,6 +130,8 @@ public class FDAutoShoot {
         float multiplier = Math.max(0.1f, 1f + overrange / 100f);
 
         float range = playerUnit.range() * multiplier;
+        boolean constant = Core.settings.getBool("constantfire", false);
+        float unitSearch = constant ? Math.max(range * 6f, 520f) : range;
         isHealingMode = false;
 
         // --- ВЫБОР ЦЕЛИ ПО ПРИОРИТЕТАМ ---
@@ -80,9 +142,9 @@ public class FDAutoShoot {
             finalTarget = (Position) manualTarget;
         }
 
-        // Приоритет №2: Вражеские юниты
+        // Приоритет №2: Вражеские юниты. Постоянный огонь ищет дальше радиуса оружия.
         if (finalTarget == null && !Core.settings.getBool("ignoreunit", false)) {
-            finalTarget = Units.closestEnemy(player.team(), playerUnit.x, playerUnit.y, range, u -> u.targetable(player.team()));
+            finalTarget = pickEnemy(playerUnit, unitSearch);
         }
 
         // Приоритет №3: Хил союзных зданий
@@ -122,6 +184,34 @@ public class FDAutoShoot {
         } else {
             player.shooting = false;
         }
+    }
+
+    /** Nearest enemy, or the one with the least health. Constant fire uses a wider search. */
+    private static Unit pickEnemy(Unit self, float search){
+        boolean lowest = Core.settings.getInt("aimmode", 0) == 1;
+        if(!lowest){
+            return Units.closestEnemy(self.team, self.x, self.y, search, u -> enemyUnit(self, u));
+        }
+        float search2 = search * search;
+        final Unit[] best = {null};
+        final float[] bestHp = {Float.POSITIVE_INFINITY};
+        final float[] bestDst = {Float.POSITIVE_INFINITY};
+        Groups.unit.each(u -> {
+            if(!enemyUnit(self, u)) return;
+            float dst2 = self.dst2(u);
+            if(dst2 > search2) return;
+            float hp = u.health;
+            if(hp < bestHp[0] || (hp == bestHp[0] && dst2 < bestDst[0])){
+                best[0] = u;
+                bestHp[0] = hp;
+                bestDst[0] = dst2;
+            }
+        });
+        return best[0];
+    }
+
+    private static boolean enemyUnit(Unit self, Unit other){
+        return other != self && other.targetable(self.team) && other.checkTarget(self.type.targetAir, self.type.targetGround);
     }
 
     private static void handleManualTargetSelection() {
@@ -176,7 +266,7 @@ public class FDAutoShoot {
     }
 
     public static void drawTarget() {
-        if (!Core.settings.getBool("smarttargeting", false) || lastTargetPos == null) return;
+        if (!enabled() || lastTargetPos == null) return;
 
         Draw.z(Layer.overlayUI);
         float x = lastTargetPos.getX(), y = lastTargetPos.getY();

@@ -435,7 +435,7 @@ public class DesktopInput extends InputHandler{
                     new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(AutoTransfer.enabled ? "mod.enabled" : "mod.disabled"));
                 } else if(input.keyTap(Binding.toggleAutoTarget) && (selectPlans.isEmpty() || !input.keyTap(Binding.schematicFlipY))){
                     player.shooting = false;
-                    settings.put("autotarget", !settings.getBool("autotarget"));
+                    mindustry.client.fallen.FDAutoShoot.setEnabled(!settings.getBool("autotarget"));
                     new Toast(1).add(bundle.get("setting.autotarget.name") + ": " + bundle.get((settings.getBool("autotarget") ? "mod.enabled" : "mod.disabled")));
                 }
 
@@ -1497,7 +1497,8 @@ public class DesktopInput extends InputHandler{
                 }
             }
 
-            if ((!Core.input.keyDown(Binding.select) || block != null) && shouldShoot) AutoShootKt.autoShoot();
+            if(Core.settings.getBool("autotarget", false)) mindustry.client.fallen.FDAutoShoot.update();
+            else if ((!Core.input.keyDown(Binding.select) || block != null) && shouldShoot) AutoShootKt.autoShoot();
         }
         unit.controlWeapons(true, player.shooting && !boosted);
 

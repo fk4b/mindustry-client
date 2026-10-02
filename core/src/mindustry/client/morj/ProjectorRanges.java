@@ -1,17 +1,21 @@
 package mindustry.client.morj;
 
 import arc.*;
+import arc.graphics.*;
 import arc.graphics.g2d.*;
+import arc.math.*;
 import arc.math.geom.*;
 import arc.util.*;
 import mindustry.game.*;
 import mindustry.gen.*;
-import mindustry.graphics.*;
 import mindustry.world.blocks.defense.*;
 
 import static mindustry.Vars.*;
 
-/** Circles for the player's overdrive, mend, regen and force projectors. */
+/**
+ * Filled ranges for the player's overdrive, mend, regen and force projectors.
+ * Same shapes as MI2: a tinted disk, a pulsing mend polygon, a regen square, a shield polygon.
+ */
 public final class ProjectorRanges{
     private ProjectorRanges(){}
 
@@ -26,35 +30,83 @@ public final class ProjectorRanges{
         Groups.build.each(build -> {
             if(build == null || !build.isValid() || build.team != team) return;
             if(state.rules.fog && !build.isDiscovered(team)) return;
-            float range = rangeOf(build);
-            if(range <= 1f || range > 500f) return;
-            if(!cam.overlaps(build.x - range, build.y - range, range * 2f, range * 2f)) return;
-
-            boolean live = build.efficiency > 0.01f;
-            if(build instanceof ForceProjector.ForceBuild force){
-                ForceProjector block = (ForceProjector)force.block;
-                Draw.color(force.broken ? Pal.remove : team.color, live ? 0.9f : 0.35f);
-                Lines.stroke(live ? 1.25f : 0.7f);
-                Lines.poly(force.x, force.y, block.sides, range, block.shieldRotation);
-            }else if(build.block instanceof RegenProjector regen){
-                Drawf.dashSquare(Tmp.c1.set(regen.baseColor).a(live ? 0.9f : 0.35f), build.x, build.y, range);
-            }else if(build instanceof MendProjector.MendBuild){
-                Drawf.dashCircle(build.x, build.y, range, Tmp.c1.set(Pal.heal).a(live ? 0.95f : 0.35f));
-            }else{
-                Drawf.dashCircle(build.x, build.y, range, Tmp.c1.set(Pal.accent).a(live ? 0.9f : 0.35f));
+            if(build instanceof OverdriveProjector.OverdriveBuild over){
+                drawOverdrive(over, cam);
+            }else if(build instanceof MendProjector.MendBuild mend){
+                drawMend(mend, cam);
+            }else if(build instanceof RegenProjector.RegenProjectorBuild regen){
+                drawRegen(regen, cam);
+            }else if(build instanceof ForceProjector.ForceBuild force){
+                drawForce(force, cam);
             }
         });
         Draw.reset();
     }
 
-    private static float rangeOf(Building build){
-        if(build instanceof OverdriveProjector.OverdriveBuild over) return over.realRange();
-        if(build instanceof MendProjector.MendBuild mend){
-            MendProjector block = (MendProjector)mend.block;
-            return block.range + mend.phaseHeat * block.phaseRangeBoost;
-        }
-        if(build instanceof ForceProjector.ForceBuild force) return force.realRadius();
-        if(build.block instanceof RegenProjector regen) return regen.range * tilesize;
-        return 0f;
+    private static void drawOverdrive(OverdriveProjector.OverdriveBuild build, Rect cam){
+        OverdriveProjector block = (OverdriveProjector)build.block;
+        float range = block.range + build.phaseHeat * block.phaseRangeBoost;
+        if(range <= 1f || !seen(cam, build.x, build.y, range)) return;
+        int sides = Math.max(8, (int)range / 4);
+
+        Draw.color(block.baseColor, block.phaseColor, build.phaseHeat);
+        Draw.mixcol(Color.black, 1f - Mathf.clamp(build.efficiency));
+        Draw.alpha(0.12f);
+        Fill.poly(build.x, build.y, sides, range);
+        Lines.stroke(2f);
+        Draw.alpha(build.efficiency > 0.01f ? 0.95f : 0.4f);
+        Lines.circle(build.x, build.y, range);
+        Draw.reset();
+    }
+
+    private static void drawMend(MendProjector.MendBuild build, Rect cam){
+        if(build.efficiency <= 0f) return;
+        MendProjector block = (MendProjector)build.block;
+        float range = block.range + build.phaseHeat * block.phaseRangeBoost;
+        if(range <= 1f || !seen(cam, build.x, build.y, range)) return;
+        float pulse = Mathf.pow(1f - Mathf.clamp(build.charge / block.reload), 5f);
+
+        Draw.color(block.baseColor);
+        Draw.alpha(0.05f * Math.max(pulse, 0.35f));
+        Fill.poly(build.x, build.y, 18, range);
+        Lines.stroke(1.6f);
+        Draw.color(block.baseColor);
+        Draw.alpha(pulse > 0.1f ? 0.35f + pulse * 0.65f : 0.3f);
+        Lines.poly(build.x, build.y, 18, range);
+        Draw.reset();
+    }
+
+    private static void drawRegen(RegenProjector.RegenProjectorBuild build, Rect cam){
+        RegenProjector block = (RegenProjector)build.block;
+        float size = block.range * tilesize;
+        if(size <= 1f || !seen(cam, build.x, build.y, size / 2f)) return;
+        boolean live = build.efficiency > 0.01f;
+
+        Draw.color(block.baseColor);
+        Draw.alpha(live ? 0.12f : 0.05f);
+        Fill.rect(build.x, build.y, size, size);
+        Lines.stroke(2f);
+        Draw.alpha(live ? 0.95f : 0.4f);
+        Lines.rect(build.x - size / 2f, build.y - size / 2f, size, size);
+        Draw.reset();
+    }
+
+    private static void drawForce(ForceProjector.ForceBuild build, Rect cam){
+        ForceProjector block = (ForceProjector)build.block;
+        float range = build.realRadius();
+        if(range <= 1f || !seen(cam, build.x, build.y, range)) return;
+        boolean live = build.efficiency > 0.01f && !build.broken;
+
+        Draw.color(build.team.color);
+        Draw.alpha(live ? 0.1f : 0.04f);
+        Fill.poly(build.x, build.y, block.sides, range, block.shieldRotation);
+        Lines.stroke(live ? 2f : 1f);
+        Draw.alpha(live ? 0.9f : 0.35f);
+        Lines.poly(build.x, build.y, block.sides, range, block.shieldRotation);
+        Draw.reset();
+    }
+
+    private static boolean seen(Rect cam, float x, float y, float range){
+        return cam.overlaps(x - range, y - range, range * 2f, range * 2f);
     }
 }

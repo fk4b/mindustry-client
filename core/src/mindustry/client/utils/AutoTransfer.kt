@@ -227,7 +227,7 @@ class AutoTransfer {
     val dpsCounts = FloatArray(content.items().size)
     var core: Building? = null
     var justTransferred = false
-    /** 0 idle, 1 dumping a wrong stack, 2 waiting for ammo, 3 waiting until a deposit changes the stack. */
+    /** 0 idle, 1 dumping a wrong stack, 2 waiting until a pickup grows the stack, 3 waiting until a deposit changes the stack. */
     private var rushPhase = 0
     private var rushPhaseUntil = 0f
     private var rushPhaseItem: Item? = null
@@ -253,13 +253,13 @@ class AutoTransfer {
             defenseRushUntil = 0f
             rushPhase = 0
         } else if (rushPhase != 0) {
-            val heldNow = player.unit().item()
             val amountNow = player.unit().stack.amount
             val timedOut = Time.time > rushPhaseUntil
+            // item() stays set after the stack hits 0, so an empty unit is amount == 0.
             val done = when (rushPhase) {
-                1 -> heldNow == null || timedOut
-                2 -> (heldNow == rushPhaseItem && amountNow > 0) || timedOut
-                else -> amountNow < rushStackAmount || heldNow == null || timedOut
+                1 -> amountNow <= 0 || timedOut
+                2 -> amountNow > rushStackAmount || timedOut
+                else -> amountNow < rushStackAmount || amountNow <= 0 || timedOut
             }
             if (!done) return
             rushPhase = 0
@@ -295,6 +295,8 @@ class AutoTransfer {
 
     /**
      * One Extended UI action per pause: deposit the held stack, put a wrong stack back, or take one item.
+     * A remainder below 5 of the item buildings still want is topped up from the source. Hands must be
+     * empty before a different item can be taken, because a unit holds only one stack.
      * Category order picks the building. The item list picks the resource inside that building.
      * Returns true when a packet was sent.
      */
@@ -351,8 +353,12 @@ class AutoTransfer {
         }
 
         if (held > 0 && heldItem != null) {
+            val needBuild = wantBuild
+            val sameWant = needBuild != null && wantItem == heldItem
+            val accepted = if (sameWant) needBuild.acceptStack(heldItem, held, unit) else 0
+            // A full enough stack goes into the building. A unit that cannot hold 5 still delivers what it has.
             val dest = when {
-                wantItem == heldItem && wantBuild != null && wantBuild.acceptStack(heldItem, held, unit) >= 5 -> wantBuild
+                sameWant && (accepted >= 5 || (accepted > 0 && unit.maxAccepted(heldItem) <= 0)) -> needBuild
                 wantItem == null -> leftoverTarget(unit, heldItem, held)
                 else -> null
             }
@@ -367,6 +373,14 @@ class AutoTransfer {
                 if (net.server() && (player.unit()?.stack?.amount ?: 0) > 0) Call.dropItem(0f)
                 justTransferred = true
                 if (rush) armRush(1, wantItem, held)
+                return true
+            }
+            // Fewer than 5 of the wanted item cannot be deposited, and that leftover blocked a new pickup.
+            if (sameWant && held < 5 && unit.maxAccepted(heldItem) > 0 && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
+                Call.requestItem(player, source, heldItem, 999)
+                item = null
+                justTransferred = true
+                if (rush) armRush(2, heldItem, held)
                 return true
             }
             if (rush && wantItem == null) {

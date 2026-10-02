@@ -273,10 +273,14 @@ public class PanelFragment extends Table{
         }
     }
 
+    private static final String[] tabKeys = {
+        "client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"
+    };
     private int panelTab = Mathf.clamp(Core.settings.getInt("morj-panel-tab", 0), 0, 4);
     private Table panelPage;
     private Table panelShell;
     private TextButton panelTray;
+    private Label panelTabLabel;
     private boolean placedPanel;
     private boolean pagesRegistered;
     private final Seq<QueuedTile> tileQueue = new Seq<>();
@@ -287,11 +291,16 @@ public class PanelFragment extends Table{
 
     public static final class PanelIcon{
         public final String id, label, caption;
+        public final Drawable icon;
+        /** Right click does something besides the main action. */
+        public final boolean extra;
         public final int reg, tab;
-        public PanelIcon(String id, String label, String caption, int reg, int tab){
+        public PanelIcon(String id, String label, String caption, Drawable icon, boolean extra, int reg, int tab){
             this.id = id;
             this.label = label;
             this.caption = caption;
+            this.icon = icon;
+            this.extra = extra;
             this.reg = reg;
             this.tab = tab;
         }
@@ -335,11 +344,53 @@ public class PanelFragment extends Table{
         tileQueue.clear();
     }
     private static final Color panelDim = new Color(1f, 1f, 1f, 0.38f);
-    private static Drawable panelOnBg;
-    private static Button.ButtonStyle panelBtnStyle;
+    private static Drawable panelOnBg, panelOffBg, panelOverBg, panelActionBg;
+    private static Button.ButtonStyle panelBtnStyle, panelActionStyle;
+    private static ImageButton.ImageButtonStyle panelTabStyle;
+
+    private void ensureStyles(){
+        if(panelBtnStyle != null) return;
+        panelOffBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.06f);
+        panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.46f);
+        panelOverBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.16f);
+        panelActionBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.12f);
+        panelBtnStyle = new Button.ButtonStyle();
+        panelBtnStyle.up = panelOffBg;
+        panelBtnStyle.over = panelOverBg;
+        panelBtnStyle.down = panelOnBg;
+        panelBtnStyle.checked = panelOnBg;
+        panelActionStyle = new Button.ButtonStyle();
+        panelActionStyle.up = panelActionBg;
+        panelActionStyle.over = panelOverBg;
+        panelActionStyle.down = panelOverBg;
+        panelActionStyle.checked = panelActionBg;
+        panelTabStyle = new ImageButton.ImageButtonStyle(Styles.clearTogglei);
+        panelTabStyle.up = panelOffBg;
+        panelTabStyle.over = panelOverBg;
+        panelTabStyle.down = panelOnBg;
+        panelTabStyle.checked = panelOnBg;
+        panelTabStyle.imageUpColor = Color.lightGray;
+        panelTabStyle.imageOverColor = Color.white;
+        panelTabStyle.imageDownColor = Color.white;
+        panelTabStyle.imageCheckedColor = Color.white;
+    }
+
+    private float tileIcon(float scale){
+        return Math.max(16f, settings.getInt("buttonsizefdpamel", 30) * 0.72f * scale);
+    }
+
+    private float tileWidth(float iconSize){
+        return iconSize + 36f;
+    }
+
+    private float tileHeight(float iconSize){
+        return iconSize + 28f;
+    }
+
     public void build(Group parent){
         if(Items.copper != null) loadMiningPrefs();
         registerPages();
+        ensureStyles();
         placedPanel = false;
         parent.fill(full -> {
             fdpanel = full;
@@ -347,39 +398,33 @@ public class PanelFragment extends Table{
             full.visible(() -> ui.hudfrag.shown);
 
             panelShell = new Table(Tex.pane);
-            panelShell.margin(6f).top();
+            panelShell.top();
+            panelShell.margin(4f, 6f, 6f, 6f);
             panelShell.defaults().growX();
             panelShell.touchable = Touchable.enabled;
 
+            panelShell.image(Tex.whiteui).color(Pal.accent).height(3f).growX().padBottom(4f).row();
+
             panelShell.table(head -> {
-                ImageButton drag = head.button(Icon.move, Styles.cleari, () -> {}).size(28f).tooltip("@client.morj.drag").get();
-                float[] last = new float[2];
-                drag.addListener(new InputListener(){
-                    @Override public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
-                        last[0] = x;
-                        last[1] = y;
-                        return true;
-                    }
-                    @Override public void touchDragged(InputEvent event, float x, float y, int pointer){
-                        panelShell.moveBy(x - last[0], y - last[1]);
-                        clampPanel();
-                    }
-                    @Override public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button){
-                        savePanel();
-                    }
-                });
-                head.add("morj").growX().left().get().setFontScale(0.85f);
-                head.button(Icon.list, Styles.cleari, PanelConfigDialog::open).size(28f).tooltip("@client.morj.panelcfg");
-                head.button(Icon.left, Styles.cleari, this::toggleTray).size(28f).tooltip("@client.morj.tray");
-            }).growX().padBottom(2f).row();
+                head.touchable = Touchable.enabled;
+                Image grip = new Image(Icon.moveSmall);
+                grip.setColor(Pal.accent);
+                head.add(grip).size(16f).padRight(5f);
+                Label title = head.add("morj").growX().left().get();
+                title.setFontScale(0.95f);
+                title.setColor(Pal.accent);
+                dragPanel(head);
+                head.button(Icon.settingsSmall, Styles.cleari, PanelConfigDialog::open).size(26f).tooltip("@client.morj.panelcfg");
+                head.button(Icon.leftOpenSmall, Styles.cleari, this::toggleTray).size(26f).tooltip("@client.morj.tray");
+            }).growX().padBottom(3f).row();
 
             panelShell.table(bars -> {
-                bars.defaults().height(16f).growX().pad(1f);
+                bars.defaults().height(18f).growX().pad(1f);
                 bars.add(new Bar(
                     () -> {
                         Unit u = player == null ? null : player.unit();
-                        if(u == null) return "HP";
-                        return "HP " + Mathf.round(u.health) + "/" + Mathf.round(u.maxHealth);
+                        if(u == null) return bundle.get("client.morj.hp.empty");
+                        return bundle.format("client.morj.hp", Mathf.round(u.health), Mathf.round(u.maxHealth));
                     },
                     () -> Pal.health,
                     () -> player == null || player.unit() == null ? 0f : Mathf.clamp(player.unit().healthf())
@@ -387,9 +432,10 @@ public class PanelFragment extends Table{
                 bars.add(new Bar(
                     () -> {
                         Unit u = player == null ? null : player.unit();
-                        return "Щит " + (u == null ? 0 : Mathf.round(u.shield));
+                        int shield = u == null ? 0 : Mathf.round(u.shield);
+                        return bundle.format("client.morj.shield", shield);
                     },
-                    () -> Pal.accent,
+                    () -> Pal.lancerLaser,
                     () -> {
                         Unit u = player == null ? null : player.unit();
                         return u == null ? 0f : Mathf.clamp(u.shield / Math.max(u.maxHealth, 1f));
@@ -398,23 +444,34 @@ public class PanelFragment extends Table{
             }).padBottom(4f).row();
 
             panelShell.table(tabs -> {
-                tabs.defaults().height(26f).growX().pad(1f);
-                String[] keys = {"client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"};
-                for(int i = 0; i < keys.length; i++){
+                tabs.left();
+                tabs.defaults().size(32f).pad(1f);
+                Drawable[] icons = {Icon.production, Icon.hammer, Icon.eye, Icon.units, Icon.host};
+                for(int i = 0; i < tabKeys.length; i++){
                     int tab = i;
-                    tabs.button(Core.bundle.get(keys[i]), Styles.flatt, () -> showPanelTab(tab))
+                    tabs.button(icons[i], panelTabStyle, 18f, () -> showPanelTab(tab))
                         .checked(b -> panelTab == tab)
-                        .update(b -> b.getLabel().setFontScale(0.72f));
+                        .tooltip(Core.bundle.get(tabKeys[i]));
                 }
-            }).padBottom(4f).row();
+            }).left().padBottom(1f).row();
+
+            panelTabLabel = panelShell.add("").left().padBottom(3f).get();
+            panelTabLabel.setFontScale(0.8f);
+            panelTabLabel.setColor(Pal.accent);
+            panelShell.row();
 
             panelPage = new Table();
             panelShell.add(panelPage).growX().left();
             full.addChild(panelShell);
 
-            panelTray = new TextButton(Core.bundle.get("client.morj.traybtn"), Styles.flatt);
+            TextButton.TextButtonStyle trayStyle = new TextButton.TextButtonStyle(Styles.flatt);
+            trayStyle.up = panelOnBg;
+            trayStyle.over = panelOverBg;
+            trayStyle.down = panelOnBg;
+            panelTray = new TextButton(Core.bundle.get("client.morj.traybtn"), trayStyle);
             panelTray.clicked(this::toggleTray);
-            panelTray.setSize(88f, 36f);
+            panelTray.setSize(78f, 34f);
+            panelTray.addListener(new Tooltip(t -> t.background(Styles.black6).margin(4f).add("@client.morj.tray.show")));
             full.addChild(panelTray);
 
             full.update(() -> {
@@ -441,6 +498,25 @@ public class PanelFragment extends Table{
         });
     }
 
+    private void dragPanel(Element handle){
+        float[] last = new float[2];
+        handle.addListener(new InputListener(){
+            @Override public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
+                if(button != KeyCode.mouseLeft || event.targetActor instanceof Button) return false;
+                last[0] = x;
+                last[1] = y;
+                return true;
+            }
+            @Override public void touchDragged(InputEvent event, float x, float y, int pointer){
+                panelShell.moveBy(x - last[0], y - last[1]);
+                clampPanel();
+            }
+            @Override public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button){
+                savePanel();
+            }
+        });
+    }
+
     private void toggleTray(){
         Core.settings.put("morj-panel-tray", !Core.settings.getBool("morj-panel-tray", false));
     }
@@ -455,6 +531,7 @@ public class PanelFragment extends Table{
     private void showPanelTab(int tab){
         panelTab = Mathf.clamp(tab, 0, 4);
         settings.put("morj-panel-tab", panelTab);
+        if(panelTabLabel != null) panelTabLabel.setText(Core.bundle.get(tabKeys[panelTab]));
         if(panelPage == null) return;
         // A taller page keeps the top edge and extends downward.
         boolean anchor = placedPanel && panelShell != null && panelShell.getHeight() > 1f;
@@ -662,7 +739,7 @@ public class PanelFragment extends Table{
         Table grid = grid(page);
         int[] col = {0};
         tile(grid, col, Icon.star, bundle.get("client.morj.btn.aim"), "@client.fdpanel.smarttargeting",
-            () -> settings.getBool("smarttargeting"), () -> settings.put("smarttargeting", !settings.getBool("smarttargeting")), null);
+            FDAutoShoot::enabled, () -> FDAutoShoot.setEnabled(!FDAutoShoot.enabled()), FDAutoShoot::openMenu);
         tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.ignunit"), "@client.fdpanel.ignoreunit",
             () -> settings.getBool("ignoreunit"), () -> settings.put("ignoreunit", !settings.getBool("ignoreunit")), null);
         tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.ignheal"), "@client.fdpanel.ignoreheal",
@@ -734,7 +811,7 @@ public class PanelFragment extends Table{
         String id = tip != null && tip.startsWith("@") ? tip.substring(1) : String.valueOf(label);
         int reg = tileReg++;
         String listLabel = tip != null && tip.startsWith("@") ? bundle.get(tip.substring(1)) : label;
-        if(iconIds.add(id)) icons.add(new PanelIcon(id, listLabel, label, reg, regTab));
+        if(iconIds.add(id)) icons.add(new PanelIcon(id, listLabel, label, drawable, right != null, reg, regTab));
         QueuedTile queued = new QueuedTile();
         queued.id = id;
         queued.label = label;
@@ -754,14 +831,7 @@ public class PanelFragment extends Table{
             int index = PanelLayout.index(q.id);
             return index >= PanelLayout.unordered ? PanelLayout.unordered + q.reg : index;
         }));
-        if(panelBtnStyle == null){
-            panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.32f);
-            panelBtnStyle = new Button.ButtonStyle();
-            panelBtnStyle.up = Styles.none;
-            panelBtnStyle.over = Styles.flatOver;
-            panelBtnStyle.down = Styles.flatOver;
-            panelBtnStyle.checked = panelOnBg;
-        }
+        ensureStyles();
         Seq<String> ids = new Seq<>();
         ObjectMap<String, QueuedTile> byId = new ObjectMap<>();
         for(QueuedTile queued : rows){
@@ -778,29 +848,45 @@ public class PanelFragment extends Table{
         }
         QueuedTile[][] placed = new QueuedTile[maxR + 1][maxC + 1];
         for(PanelLayout.Slot slot : slots) placed[slot.row][slot.col] = byId.get(slot.id);
-        float holeIcon = Math.max(14f, settings.getInt("buttonsizefdpamel", 30) * 0.7f);
+        float hole = tileIcon(1f);
         for(int r = 0; r <= maxR; r++){
             if(r > 0) grid.row();
             for(int c = 0; c <= maxC; c++){
                 QueuedTile queued = placed[r][c];
                 if(queued == null){
-                    grid.add().size(holeIcon + 30f, holeIcon + 24f).pad(1f);
+                    grid.add().size(tileWidth(hole), tileHeight(hole)).pad(1f);
                     continue;
                 }
-                float iconSize = Math.max(14f, settings.getInt("buttonsizefdpamel", 30) * 0.7f * PanelLayout.scale(queued.id));
-                Button button = new Button(panelBtnStyle);
-                button.top().margin(1f, 2f, 2f, 2f);
+                float iconSize = tileIcon(PanelLayout.scale(queued.id));
+                boolean action = queued.state == null;
+                Button button = new Button(action ? panelActionStyle : panelBtnStyle);
+                button.top().margin(0f);
                 Image image = new Image(queued.drawable);
                 image.setScaling(Scaling.fit);
-                button.add(image).size(iconSize).padTop(1f).row();
-                Label caption = button.add(queued.label).growX().padTop(1f).get();
-                caption.setFontScale(0.62f);
+                Stack iconStack = new Stack();
+                Table iconWrap = new Table();
+                iconWrap.add(image).size(iconSize).grow();
+                iconStack.add(iconWrap);
+                if(queued.right != null){
+                    Table mark = new Table();
+                    mark.top().right();
+                    Image dot = new Image(Tex.whiteui);
+                    dot.setColor(Pal.accent);
+                    mark.add(dot).size(5f).pad(1f);
+                    iconStack.add(mark);
+                }
+                button.add(iconStack).size(iconSize).padTop(3f).row();
+                Label caption = button.add(queued.label).growX().pad(1f, 3f, 0f, 3f).get();
+                caption.setFontScale(0.7f);
                 caption.setEllipsis(true);
-                caption.setAlignment(arc.util.Align.center);
+                caption.setAlignment(Align.center);
+                button.add().growY().row();
+                Image stripe = new Image(Tex.whiteui);
+                button.add(stripe).height(3f).growX();
                 String baseTip = queued.tip != null && queued.tip.startsWith("@") ? bundle.get(queued.tip.substring(1)) : queued.tip;
                 final String shown = queued.right == null ? baseTip : baseTip + "\n[lightgray]" + bundle.get("client.morj.right");
                 button.addListener(new Tooltip(t -> {
-                    t.background(Styles.black6).margin(4f);
+                    t.background(Styles.black6).margin(6f);
                     t.add(shown).wrap().width(280f);
                 }));
                 Boolp state = queued.state;
@@ -810,6 +896,16 @@ public class PanelFragment extends Table{
                     boolean on = state != null && state.get();
                     button.setChecked(on);
                     image.setColor(state == null || on ? Color.white : panelDim);
+                    if(state == null){
+                        caption.setColor(Color.white);
+                        stripe.setColor(Color.lightGray);
+                    }else if(on){
+                        caption.setColor(Color.white);
+                        stripe.setColor(Pal.accent);
+                    }else{
+                        caption.setColor(Color.gray);
+                        stripe.setColor(Color.darkGray);
+                    }
                 });
                 button.addListener(new InputListener(){
                     @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
@@ -824,7 +920,7 @@ public class PanelFragment extends Table{
                         return false;
                     }
                 });
-                grid.add(button).size(iconSize + 30f, iconSize + 24f).pad(1f);
+                grid.add(button).size(tileWidth(iconSize), tileHeight(iconSize)).pad(1f);
             }
         }
     }

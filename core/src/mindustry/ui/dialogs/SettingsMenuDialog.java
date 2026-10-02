@@ -642,7 +642,7 @@ public class SettingsMenuDialog extends BaseDialog{
         // End Client Settings
 
         game.sliderPref("saveinterval", 60, 10, 5 * 120, 10, i -> Core.bundle.format("setting.seconds", i));
-        game.checkPref("autotarget", false);
+        game.checkPref("autotarget", false, val -> mindustry.client.fallen.FDAutoShoot.setEnabled(val));
         if(mobile){
             game.checkPref("keyboard", false, val -> {
                 control.setInput(val ? new DesktopInput() : new MobileInput());

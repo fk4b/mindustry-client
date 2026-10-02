@@ -544,7 +544,7 @@ public class HudFragment{
                     st.row();
                     modeIcon(st, () -> !Vars.control.input.isBuilding, () -> Vars.control.input.isBuilding ^= true, Icon.pause.tint(1, 0.33f, 0.33f, a), "Paused Building", Binding.pauseBuilding);
                     modeIcon(st, () -> control.input.isFreezeQueueing, () -> control.input.isFreezeQueueing ^= true, Icon.pause.tint(0.33f, 0.33f, 1, a), "Freeze Queuing", Binding.pauseBuilding, "Shift");
-                    modeIcon(st, () -> Core.settings.getBool("autotarget"), () -> Core.settings.put("autotarget", !Core.settings.getBool("autotarget")), Icon.modeAttack.tint(1f, 0.33f, 0.33f, a), "Auto Target", Binding.toggleAutoTarget);
+                    modeIcon(st, mindustry.client.fallen.FDAutoShoot::enabled, () -> mindustry.client.fallen.FDAutoShoot.setEnabled(!mindustry.client.fallen.FDAutoShoot.enabled()), Icon.modeAttack.tint(1f, 0.33f, 0.33f, a), "Auto Target", Binding.toggleAutoTarget);
                     modeIcon(st, () -> AutoTransfer.enabled, () -> AutoTransfer.enabled ^= true, Icon.resize.tint(1, 0.33f, 1, a), "Auto Transfer", Binding.toggleAutoTarget, "Shift");
                     modeIcon(st, () -> dispatchingBuildPlans, () -> dispatchingBuildPlans ^= true, Icon.tree.tint(1, 1, 1, a), "Sending Build Plans", Binding.sendBuildQueue);
                     modeIcon(st, () -> Navigation.currentlyFollowing != null, Navigation::stopFollowing, Icon.android.tint(Color.cyan.cpy().a(a)), "Navigating", Binding.stopFollowingPath);
