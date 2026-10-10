@@ -568,6 +568,11 @@ public class DesktopInput extends InputHandler{
 
         //validate commanding units
         selectedUnits.removeAll(u -> /*!u.allowCommand() || */ u.isPlayer() || !u.isValid() || u.team != player.team());
+        int shown = selectedUnits.size;
+        selectedUnits.removeAll(InputHandler::commandHides);
+        if(commandMode && selectedUnits.size != shown){
+            Events.fire(Trigger.unitCommandChange);
+        }
 
         if(commandMode && !scene.hasField() && !scene.hasDialog()){
             if(!(input.keyDown(Binding.selectUnitTypeModifier) && selectedUnits.any())){
@@ -579,7 +584,7 @@ public class DesktopInput extends InputHandler{
                         selectedUnits.set(selectedCommandUnits(Tmp.r1.x, Tmp.r1.y, Tmp.r1.width, Tmp.r1.height).retainAll(u -> u.type.controlSelectGlobal || input.keyTap(Binding.selectReallyAllUnits)));
                     }else{
                         for(var unit : player.team().data().units){
-                            if(unit.isCommandable() && (unit.type.controlSelectGlobal || input.keyTap(Binding.selectReallyAllUnits))){
+                            if(unit.isCommandable() && !commandHides(unit) && (unit.type.controlSelectGlobal || input.keyTap(Binding.selectReallyAllUnits))){
                                 selectedUnits.add(unit);
                             }
                         }
@@ -594,7 +599,7 @@ public class DesktopInput extends InputHandler{
                         selectedUnits.set(selectedCommandUnits(Tmp.r1.x, Tmp.r1.y, Tmp.r1.width, Tmp.r1.height, u -> u instanceof Payloadc));
                     }else{
                         for(var unit : player.team().data().units){
-                            if(unit.isCommandable() && unit instanceof Payloadc){
+                            if(unit.isCommandable() && !commandHides(unit) && unit instanceof Payloadc){
                                 selectedUnits.add(unit);
                             }
                         }
@@ -682,70 +687,8 @@ public class DesktopInput extends InputHandler{
         if(!scene.hasMouse() && !locked){
             // FINISHME: Move this into its own method, its huge
             Unit sl;
-            if(Core.input.keyDown(Binding.tileActionsMenuModifier) && Core.input.keyTap(Binding.select) && selectPlans.isEmpty() && !selectedBlock() && cursor != null && ((sl = selectedUnit(true)) == null || sl instanceof BlockUnitUnit)){ // Tile actions / alt click menu
-                int itemHeight = 30;
-                Table table = new Table(Tex.buttonTrans);
-                table.setWidth(400);
-                table.margin(10);
-                table.fill();
-                table.touchable = Touchable.enabled; // This is needed
-                table.defaults().height(itemHeight).padTop(5).fillX();
-                try {
-                    table.add(cursor.block().localizedName + ": (" + cursor.x + ", " + cursor.y + ")").height(itemHeight).left().growX().fillY().padTop(-5);
-                } catch (Exception e) { ui.chatfrag.addMessage(e.getMessage(), null, Color.scarlet, "", e.getMessage()); }
-
-                table.row().fill();
-                table.button("@client.log", () -> { // Tile Logs
-                    TileRecords.INSTANCE.show(cursor);
-                    table.remove();
-                });
-
-                table.row().fill();
-                table.button("@client.autotransfer", () -> { // Auto transfer
-                    AutoTransfer.enabled ^= true;
-                    settings.put("autotransfer", AutoTransfer.enabled);
-                    new Toast(1).add(bundle.get("client.autotransfer") + ": " + bundle.get(AutoTransfer.enabled ? "mod.enabled" : "mod.disabled"));
-                    table.remove();
-                }).disabled(b -> state.rules.pvp && Server.io.b());
-
-                table.row().fill();
-                table.button("@client.unitpicker.title", () -> { // Unit Picker / Sniper
-                    ui.unitPicker.show();
-                    table.remove();
-                });
-
-                table.row().fill();
-                table.button("@client.teleport", () -> {
-                    NetClient.setPosition(World.unconv(cursor.x), World.unconv(cursor.y));
-                    table.remove();
-                });
-
-                table.row().fill();
-                table.button("@client.path.waypoints", () -> {
-                    BaseDialog dialog = new BaseDialog("@client.path.waypoints");
-                    dialog.addCloseButton();
-                    dialog.cont.setWidth(200f);
-                    dialog.cont.add(new TextButton("@client.path.record")).growX().get().clicked(() -> {
-                        Navigation.startRecording(); dialog.hide();});
-                    dialog.cont.row();
-                    dialog.cont.add(new TextButton("@client.path.stoprecording")).growX().get().clicked(() -> {Navigation.stopRecording(); dialog.hide();});
-                    dialog.cont.row();
-                    dialog.cont.add(new TextButton("@client.path.follow")).growX().get().clicked(() -> {if (Navigation.recordedPath != null) {Navigation.recordedPath.reset(); Navigation.follow(Navigation.recordedPath); Navigation.recordedPath.setShow(true);} dialog.hide();});
-                    dialog.cont.row();
-                    dialog.cont.add(new TextButton("@client.path.followrepeat")).growX().get().clicked(() -> {if (Navigation.recordedPath != null) {Navigation.recordedPath.reset(); Navigation.follow(Navigation.recordedPath, true); Navigation.recordedPath.setShow(true);} dialog.hide();});
-                    dialog.cont.row();
-                    dialog.cont.add(new TextButton("@client.path.stopfollowing")).growX().get().clicked(() -> {Navigation.stopFollowing(); dialog.hide();});
-                    dialog.show();
-                });
-
-                table.setHeight((itemHeight + 10) * (table.getRows() + 1));
-                table.setPosition(input.mouseX() - 1, input.mouseY() + 1, Align.topLeft); // Offset by 1 pixel so the code below doesn't trigger instantly
-                table.update(() -> {
-                    if(input.keyTap(Binding.select) && !table.hasMouse()){
-                        table.remove();
-                    }
-                });
-                scene.add(table);
+            if(Core.input.keyDown(Binding.tileActionsMenuModifier) && Core.input.keyTap(Binding.select) && selectPlans.isEmpty() && !selectedBlock() && cursor != null && ((sl = selectedUnit(true)) == null || sl instanceof BlockUnitUnit)){
+                TileMenu.show(cursor);
             }
 
             if((input.keyDown(Binding.control) || input.shift()) && input.keyTap(Binding.select)){

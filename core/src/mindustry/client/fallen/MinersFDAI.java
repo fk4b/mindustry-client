@@ -108,15 +108,16 @@ public class MinersFDAI {
     private static final IntSet routingToCore = new IntSet();
     private static final ObjectSet<Item> notifiedUnsafeOres = new ObjectSet<>();
 
-    /** Packed tile flags: enemy turret + armed unit range + 5 tiles. Turrets every {@link #RED_SCAN_MS}, units every {@link #UNIT_SCAN_MS}. */
-    private static boolean[] red;
-    /** Turret-only layer; unit ranges are painted on top of a copy. */
+    /** Turret tiles, refreshed every {@link #RED_SCAN_MS}. Unit ranges live in {@link #unitRed} and are not copied over this. */
     private static boolean[] turretRed;
+    /** Armed enemy units. Cleared and repainted every {@link #UNIT_SCAN_MS} without walking the whole map for ores. */
+    private static boolean[] unitRed;
     private static int redW, redH;
     private static long redScanAt = 0;
     private static long unitScanAt = 0;
     private static boolean anyRed = false;
     private static boolean turretAnyRed = false;
+    private static boolean unitAnyRed = false;
     private static final long UNIT_SCAN_MS = 1000L;
     /** Team cores ranked by clearance from the red zone (rebuilt with the scan). */
     private static final Seq<Building> rankedCores = new Seq<>();
@@ -875,7 +876,7 @@ public class MinersFDAI {
 
         if (safeMining) {
             ensureRedScan(false);
-            if (red != null) {
+            if (turretRed != null) {
                 Seq<Item> unsafe = new Seq<>();
                 for (Item it : use) {
                     if (findAnySafeOre(it) == null) unsafe.add(it);
@@ -1534,13 +1535,14 @@ public class MinersFDAI {
         routingOre.clear();
         routingToCore.clear();
         safeOres.clear();
-        red = null;
         turretRed = null;
+        unitRed = null;
         redW = redH = 0;
         redScanAt = 0;
         unitScanAt = 0;
         anyRed = false;
         turretAnyRed = false;
+        unitAnyRed = false;
         rankedCores.clear();
         rankedCoresAt = 0;
         pendingMoveIds.clear();
@@ -1571,17 +1573,19 @@ public class MinersFDAI {
     }
 
     private static boolean inRedBounds(int x, int y) {
-        return red != null && x >= 0 && y >= 0 && x < redW && y < redH;
+        return turretRed != null && x >= 0 && y >= 0 && x < redW && y < redH;
     }
 
     private static boolean isRed(int x, int y) {
-        return inRedBounds(x, y) && red[pack(x, y)];
+        if (!inRedBounds(x, y)) return false;
+        int i = pack(x, y);
+        return (turretRed != null && turretRed[i]) || (unitRed != null && unitRed[i]);
     }
 
     /** True if (x,y) is inside an enemy turret or armed unit range + 5 tiles. */
     public static boolean isPosDangerous(float x, float y) {
         ensureRedScan(false);
-        if (red == null || world == null) return false;
+        if (turretRed == null || world == null) return false;
         return isRed(world.toTile(x), world.toTile(y));
     }
 
@@ -1591,10 +1595,11 @@ public class MinersFDAI {
         return isRed(tile.x, tile.y);
     }
 
-    /** Full-map red zone + safe-ore index. Turrets at most once per 20s; units every 1s. */
+    /** Turret layer and the ore index at most once per 20s. Moving units repaint their own layer once a second. */
     private static void ensureRedScan(boolean force) {
         if (world == null) return;
-        boolean sizeOk = red != null && redW == world.width() && redH == world.height();
+        int n = world.width() * world.height();
+        boolean sizeOk = turretRed != null && redW == world.width() && redH == world.height() && turretRed.length == n;
         if (force || !sizeOk || Time.timeSinceMillis(redScanAt) >= RED_SCAN_MS) {
             scanRedZones();
             return;
@@ -1609,9 +1614,10 @@ public class MinersFDAI {
         redW = world.width();
         redH = world.height();
         int n = redW * redH;
-        if (red == null || red.length != n) red = new boolean[n];
-        else Arrays.fill(red, false);
-        anyRed = false;
+        if (n <= 0) return;
+        if (turretRed == null || turretRed.length != n) turretRed = new boolean[n];
+        else Arrays.fill(turretRed, false);
+        turretAnyRed = false;
 
         Team self = player != null ? player.team() : null;
         float extra = safeMarginPx();
@@ -1621,16 +1627,10 @@ public class MinersFDAI {
             if (self != null && (b.team == self || b.team == Team.derelict)) continue;
             if (!(b instanceof BaseTurret.BaseTurretBuild tb)) continue;
             float range = Math.max(tb.range(), ((BaseTurret) tb.block).range) + extra;
-            paintRedCircle(b.x, b.y, range);
+            if (paintCircle(turretRed, b.x, b.y, range)) turretAnyRed = true;
         }
 
-        if (turretRed == null || turretRed.length != n) turretRed = new boolean[n];
-        System.arraycopy(red, 0, turretRed, 0, n);
-        turretAnyRed = anyRed;
-
-        paintEnemyUnitZones();
-
-        if (n > 0 && (astarCame == null || astarCame.length != n)) {
+        if (astarCame == null || astarCame.length != n) {
             astarCame = new int[n];
             astarG = new float[n];
             astarMark = new int[n];
@@ -1638,25 +1638,28 @@ public class MinersFDAI {
 
         rebuildSafeOres();
         rankSafeCores();
+        paintEnemyUnits();
         redScanAt = Time.millis();
         unitScanAt = Time.millis();
     }
 
-    /** Re-paint moving enemy units on top of the cached turret layer. */
+    /** Repaint enemy units only. Ore tiles do not move, so the ore index stays until the turret scan. */
     private static void rescanEnemyUnits() {
-        if (turretRed == null || red == null || turretRed.length != red.length) {
+        if (turretRed == null || turretRed.length != redW * redH) {
             scanRedZones();
             return;
         }
-        System.arraycopy(turretRed, 0, red, 0, red.length);
-        anyRed = turretAnyRed;
-        paintEnemyUnitZones();
-        rebuildSafeOres();
-        rankSafeCores();
+        paintEnemyUnits();
         unitScanAt = Time.millis();
     }
 
-    private static void paintEnemyUnitZones() {
+    private static void paintEnemyUnits() {
+        int n = redW * redH;
+        if (n <= 0) return;
+        if (unitRed == null || unitRed.length != n) unitRed = new boolean[n];
+        else Arrays.fill(unitRed, false);
+        unitAnyRed = false;
+
         Team self = player != null ? player.team() : null;
         float extra = safeMarginPx();
         for (Unit u : Groups.unit) {
@@ -1665,30 +1668,33 @@ public class MinersFDAI {
             if (u.type == null || !u.type.hasWeapons()) continue;
             float range = Math.max(u.range(), u.type.maxRange);
             if (range <= 0f) range = u.hitSize;
-            paintRedCircle(u.x, u.y, range + extra);
+            if (paintCircle(unitRed, u.x, u.y, range + extra)) unitAnyRed = true;
         }
+        anyRed = turretAnyRed || unitAnyRed;
     }
 
-    private static void paintRedCircle(float px, float py, float range) {
-        if (range <= 0f) return;
+    /** Fills a whole row span instead of testing every tile in the square. */
+    private static boolean paintCircle(boolean[] layer, float px, float py, float range) {
+        if (layer == null || range <= 0f || redW <= 0) return false;
         float r2 = range * range;
-        int rTiles = Mathf.ceil(range / tilesize) + 1;
-        int cx = world.toTile(px);
         int cy = world.toTile(py);
-        for (int dy = -rTiles; dy <= rTiles; dy++) {
-            int ty = cy + dy;
-            if (ty < 0 || ty >= redH) continue;
-            for (int dx = -rTiles; dx <= rTiles; dx++) {
-                int tx = cx + dx;
-                if (tx < 0 || tx >= redW) continue;
-                float twx = tx * tilesize + tilesize / 2f;
-                float twy = ty * tilesize + tilesize / 2f;
-                if ((twx - px) * (twx - px) + (twy - py) * (twy - py) <= r2) {
-                    red[pack(tx, ty)] = true;
-                    anyRed = true;
-                }
+        int y0 = Math.max(0, cy - Mathf.ceil(range / tilesize));
+        int y1 = Math.min(redH - 1, cy + Mathf.ceil(range / tilesize));
+        boolean hit = false;
+        for (int ty = y0; ty <= y1; ty++) {
+            float dy = (ty * tilesize + tilesize / 2f) - py;
+            float dy2 = dy * dy;
+            if (dy2 > r2) continue;
+            float dxMax = Mathf.sqrt(r2 - dy2);
+            int x0 = Math.max(0, world.toTile(px - dxMax));
+            int x1 = Math.min(redW - 1, world.toTile(px + dxMax));
+            int row = ty * redW;
+            for (int tx = x0; tx <= x1; tx++) {
+                layer[row + tx] = true;
+                hit = true;
             }
         }
+        return hit;
     }
 
     private static void rebuildSafeOres() {
@@ -1696,7 +1702,7 @@ public class MinersFDAI {
         if (world == null) return;
         for (int y = 0; y < redH; y++) {
             for (int x = 0; x < redW; x++) {
-                if (isRed(x, y)) continue;
+                if (turretRed != null && turretRed[pack(x, y)]) continue;
                 Tile t = world.tile(x, y);
                 if (t == null) continue;
                 Item drop = t.block() == Blocks.air ? t.drop() : t.wallDrop();
@@ -1719,7 +1725,7 @@ public class MinersFDAI {
 
     private static boolean segmentHitsRed(float x1, float y1, float x2, float y2) {
         ensureRedScan(false);
-        if (red == null || !anyRed) return false;
+        if (turretRed == null || !anyRed) return false;
         float dist = Mathf.dst(x1, y1, x2, y2);
         int steps = Math.max(1, Mathf.ceil(dist / tilesize));
         for (int i = 0; i <= steps; i++) {
@@ -1809,7 +1815,7 @@ public class MinersFDAI {
         if (u == null) {
             return player != null && player.team() != null ? player.team().core() : null;
         }
-        if (!safeMining || red == null || !anyRed) return u.closestCore();
+        if (!safeMining || turretRed == null || !anyRed) return u.closestCore();
         ensureRedScan(false);
         ensureRankedCores();
 
@@ -2386,7 +2392,7 @@ public class MinersFDAI {
     }
 
     private static Seq<Vec2> astarAvoidRed(float x1, float y1, float x2, float y2) {
-        if (red == null || world == null || astarCame == null) return null;
+        if (turretRed == null || world == null || astarCame == null) return null;
         int sx = Mathf.clamp(world.toTile(x1), 0, redW - 1);
         int sy = Mathf.clamp(world.toTile(y1), 0, redH - 1);
         int gx = Mathf.clamp(world.toTile(x2), 0, redW - 1);

@@ -1209,7 +1209,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
 
     public void selectUnitsType(UnitType type){
         selectedUnits.clear();
-        Groups.unit.each(u -> u.team == player.team() && u.isCommandable() && u.isValid() && u.type == type, selectedUnits::add);
+        Groups.unit.each(u -> u.team == player.team() && u.isCommandable() && u.isValid() && u.type == type && !commandHides(u), selectedUnits::add);
         Events.fire(Trigger.unitCommandChange);
     }
 
@@ -2739,7 +2739,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         tmpUnits.clear();
         float rad = 4f;
         tree.intersect(x - rad/2f, y - rad/2f, rad, rad, tmpUnits);
-        return tmpUnits.min(u -> u.isCommandable(), u -> u.dst(x, y) - u.hitSize/2f);
+        return tmpUnits.min(u -> u.isCommandable() && !commandHides(u), u -> u.dst(x, y) - u.hitSize/2f);
     }
 
     public @Nullable Unit selectedEnemyUnit(float x, float y){
@@ -2774,12 +2774,19 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         tmpUnits.clear();
         float rad = 4f;
         tree.intersect(Tmp.r1.set(x - rad/2f, y - rad/2f, rad*2f + w, rad*2f + h).normalize(), tmpUnits);
-        tmpUnits.removeAll(u -> !u.isCommandable() || !predicate.get(u));
+        tmpUnits.removeAll(u -> !u.isCommandable() || commandHides(u) || !predicate.get(u));
         return tmpUnits;
     }
 
     public Seq<Unit> selectedCommandUnits(float x, float y, float w, float h){
         return selectedCommandUnits(x, y, w, h, u -> true);
+    }
+
+    /** Hidden units stay out of command selection. Air-only hide skips flying units. */
+    public static boolean commandHides(Unit unit){
+        if(unit == null) return true;
+        if(ClientVars.hidingUnits) return true;
+        return ClientVars.hidingAirUnits && unit.isFlying();
     }
 
     public void remove(){

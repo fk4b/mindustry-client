@@ -70,7 +70,7 @@ public class ActivityLogger {
                 String msg;
 
                 if(core.team == player.team()){
-                    msg = "[#fa]Our core at " + cx + ", " + cy + " death...";
+                    msg = Core.bundle.format("client.coredeath.ours", cx, cy);
 
                     if(Core.settings.getBool("unitatchat") && !state.rules.coreCapture){
                         if(state.rules.pvp) {
@@ -82,7 +82,7 @@ public class ActivityLogger {
                         addLocalMessage(msg);
                     }
                 } else {
-                    msg = "[#" + core.team.color + "]" + core.team.name + " core at []" + cx + ", " + cy + " death.";
+                    msg = Core.bundle.format("client.coredeath.team", core.team.color, core.team.name, cx, cy);
                     addLocalMessage(msg);
                 }
             }
@@ -292,7 +292,7 @@ public class ActivityLogger {
             if (isSuspicious) {
                 ActionsHistory.warnedGriefers.add(name);
 
-                String alert = "[scarlet]⚠ ALERT: Подозрение на гриферство! ⚠[]\n" +
+                String alert = "[scarlet]Тревога: похоже на гриферство[]\n" +
                         "[accent]Игрок:[] " + name + "\n" +
                         "[lightgray]Сломано:[] " + breaks + " | [lightgray]Построено:[] " + builds;
 

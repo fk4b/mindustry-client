@@ -78,6 +78,8 @@ public class FDAutoShoot {
         dialog.cont.add("@client.aim.pick").color(Color.lightGray).wrap().width(380f).left().padBottom(8f).row();
         dialog.cont.check("@client.aim.constant", Core.settings.getBool("constantfire", false), on -> Core.settings.put("constantfire", on)).left().padTop(4f).row();
         dialog.cont.add("@client.aim.constant.note").color(Color.lightGray).wrap().width(380f).left().row();
+        dialog.cont.check("@client.aim.buildings", Core.settings.getBool("smartshoot-buildings", false), on -> Core.settings.put("smartshoot-buildings", on)).left().padTop(8f).row();
+        dialog.cont.add("@client.aim.buildings.note").color(Color.lightGray).wrap().width(380f).left().row();
         dialog.addCloseButton();
         dialog.show();
     }
@@ -137,13 +139,16 @@ public class FDAutoShoot {
         // --- ВЫБОР ЦЕЛИ ПО ПРИОРИТЕТАМ ---
         Position finalTarget = null;
 
-        // Приоритет №1: Ручная цель
-        if (manualTarget != null) {
+        // "Только постройки": юниты не берутся в цель, лечение своих построек идёт раньше вражеских зданий.
+        boolean buildingsOnly = Core.settings.getBool("smartshoot-buildings", false);
+
+        // Приоритет №1: Ручная цель. Юнит в этом режиме пропускается.
+        if (manualTarget != null && !(buildingsOnly && manualTarget instanceof Unit)) {
             finalTarget = (Position) manualTarget;
         }
 
         // Приоритет №2: Вражеские юниты. Постоянный огонь ищет дальше радиуса оружия.
-        if (finalTarget == null && !Core.settings.getBool("ignoreunit", false)) {
+        if (finalTarget == null && !buildingsOnly && !Core.settings.getBool("ignoreunit", false)) {
             finalTarget = pickEnemy(playerUnit, unitSearch);
         }
 

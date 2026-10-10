@@ -603,22 +603,23 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("globalchat-inchat", true);
         client.updateUuid();
         client.checkPref("forcechat", false);
-        client.sliderPref("uchatmode", 0, 0, 4, i -> {
-            if(i == 0) return "Выкл";
-            if(i == 1) return "Обычный";
-            if(i == 2) return "Градиент";
-            if(i == 3) return "Радуга";
-            return "Красный";
-        });
+        client.choicePref("uchatmode", 0, 5);
+        client.choicePref("uchatgradientrnd", 0, 5);
         client.colorPref("uchatcolor", "ffd37f");
         client.colorPref("uchatgrad1", "ffd37f");
         client.colorPref("uchatgrad2", "ffffff");
+        client.checkPref("nickshift", false);
+        client.textPref("mynickshifter", "");
+        client.sliderPref("nickshiftcmd", 0, 0, 1, i -> i == 0 ? "/name" : "/name set");
+        client.choicePref("nickshiftmode", 0, 8);
+        client.colorPref("nickgrad1", "ffd37f");
+        client.colorPref("nickgrad2", "ffffff");
+        client.colorPref("nickcolor", "ffd37f");
         client.checkPref("ihateattems", true);
         client.checkPref("assistfixfd", false);
         client.checkPref("alarmgriefblocks", false);
         client.sliderPref("alarmgriefblocksbuild", 10, 0, 500, 1, String::valueOf);
         client.sliderPref("alarmgriefblocksbreake", 100, 0, 500, 1, String::valueOf);
-        client.textPref("mynickshifter", "");
 
         if (settings.getBool("client-experimentals") || OS.hasProp("policone")) {
             client.category("experimental");
@@ -1038,6 +1039,35 @@ public class SettingsMenuDialog extends BaseDialog{
                         }).size(32).padLeft(8).tooltip("Random UUID");
                     }).left().expandX();
                     table.row();
+                }
+            });
+        }
+
+        /** A row of buttons instead of a 0..n slider. Labels are client.choice.name.0 ... */
+        public void choicePref(String name, int def, int count){
+            settings.defaults(name, def);
+            String[] labels = new String[count];
+            for(int i = 0; i < count; i++) labels[i] = bundle.get("client.choice." + name + "." + i);
+            pref(new Setting(name){
+                @Override
+                public void add(SettingsTable table){
+                    table.add(title).left().growX().wrap().width(480f).padTop(8f).row();
+                    ButtonGroup<TextButton> group = new ButtonGroup<>();
+                    group.setMinCheckCount(1);
+                    group.setMaxCheckCount(1);
+                    int saved = Mathf.clamp(settings.getInt(name, def), 0, count - 1);
+                    table.table(row -> {
+                        row.left().defaults().height(36f).pad(2f);
+                        for(int i = 0; i < labels.length; i++){
+                            int value = i;
+                            TextButton button = row.button(labels[i], Styles.togglet, () -> settings.put(name, value)).minWidth(108f).get();
+                            group.add(button);
+                            button.setChecked(saved == value);
+                            if((i + 1) % 4 == 0) row.row();
+                        }
+                    }).left().growX().padBottom(4f);
+                    table.row();
+                    addDesc(table.getChildren().peek());
                 }
             });
         }

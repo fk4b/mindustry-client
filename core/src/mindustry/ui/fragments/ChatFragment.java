@@ -14,7 +14,10 @@ import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
+import arc.input.*;
 import mindustry.client.*;
+import mindustry.client.fallen.ChatTranslator;
+import mindustry.client.morj.NickShift;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
 import mindustry.core.*;
@@ -196,6 +199,15 @@ public class ChatFragment extends Table{
 
         bottom().left().marginBottom(offsety).marginLeft(offsetx * 2);
         button(Icon.uploadSmall, uploadStyle, UploadDialog.INSTANCE::show).padRight(5f).tooltip("@client.uploadimages").visible(() -> shown).checked(h -> UploadDialog.INSTANCE.hasImage());
+        for(boolean in : new boolean[]{true, false}){
+            TextButton tb = button("", Styles.nonet, () -> ChatTranslator.showPicker(in)).padRight(5f).height(28f).padBottom(offsety)
+                .tooltip(in ? "@client.chattrans.in" : "@client.chattrans.out").visible(() -> shown).get();
+            tb.getLabel().setText(() -> ChatTranslator.label(in));
+            tb.clicked(KeyCode.mouseRight, () -> {
+                if(in) ChatTranslator.toggleIn();
+                else ChatTranslator.toggleOut();
+            });
+        }
         add(fieldlabel).padBottom(6f);
         chatfield.typed(this::handleType);
 
@@ -477,18 +489,52 @@ public class ChatFragment extends Table{
         }
         message = messageBuild.toString();
 
+        if(ChatTranslator.outEnabled() && !UploadDialog.INSTANCE.hasImage()){
+            String modePrefix = "";
+            for(ChatMode m : ChatMode.all){
+                if(!m.prefix.isEmpty() && message.startsWith(m.prefix + " ")){
+                    modePrefix = m.prefix + " ";
+                    break;
+                }
+            }
+            String body = message.substring(modePrefix.length());
+            String clean = body.startsWith("/") || body.startsWith("!") ? null : ChatTranslator.cleanForTranslation(body);
+            if(clean != null && !ChatTranslator.alreadyInTarget(clean, ChatTranslator.outLang())){
+                String prefix = modePrefix;
+                ChatTranslator.translateOutgoing(Strings.stripColors(body), translated -> finishSend(prefix + translated));
+                return;
+            }
+        }
+
+        finishSend(message);
+    }
+
+    private void finishSend(String message){
         checkPing(message);
 
+        boolean command = isServerCommand(message);
         int chatMode = Core.settings.getInt("uchatmode", 0);
-        boolean isCommand = message.startsWith("/") || message.startsWith("!");
-        if(chatMode > 0 && mode == ChatMode.normal && !isCommand){
+        if(chatMode > 0 && mode == ChatMode.normal && !command){
             message = applyChatStyle(message, chatMode);
         }
-        if(message.length() > chatPacketLimit() || (chatMode > 0 && !isCommand)){
+        NickShift.beforeMessage(command);
+        if(message.length() > chatPacketLimit() || (chatMode > 0 && !command)){
             sendSmartMessage(message);
         }else{
             handleClientCommand(message);
         }
+    }
+
+    /** Team and admin prefixes are still chat. A real command starts with / or ! after that prefix. */
+    private static boolean isServerCommand(String message){
+        String body = message;
+        for(ChatMode m : ChatMode.all){
+            if(!m.prefix.isEmpty() && (body.equals(m.prefix) || body.startsWith(m.prefix + " "))){
+                body = body.substring(m.prefix.length()).trim();
+                break;
+            }
+        }
+        return body.startsWith("/") || body.startsWith("!");
     }
 
     /** Leave room for Foo's invisible message-id from {@code Main.sign}. */
@@ -537,8 +583,13 @@ public class ChatFragment extends Table{
 
         Color start = Tmp.c2, end = Tmp.c3;
         if(mode == 2){
-            colorFromSetting("uchatgrad1", "ffd37f", start);
-            colorFromSetting("uchatgrad2", "ffffff", end);
+            int rnd = Core.settings.getInt("uchatgradientrnd", 0);
+            if(rnd == 0){
+                colorFromSetting("uchatgrad1", "ffd37f", start);
+                colorFromSetting("uchatgrad2", "ffffff", end);
+            }else{
+                pickGradient(rnd, start, end);
+            }
         }
 
         for(int i = 0; i < totalLen; i++){
@@ -564,6 +615,26 @@ public class ChatFragment extends Table{
             res.append(ch);
         }
         return res.toString();
+    }
+
+    /** New pair for this message only. Saved gradient colors stay as the player set them. */
+    private static void pickGradient(int rnd, Color start, Color end){
+        if(rnd == 1){
+            start.set(Mathf.random(), Mathf.random(), Mathf.random(), 1f);
+            end.set(Mathf.random(), Mathf.random(), Mathf.random(), 1f);
+        }else if(rnd == 2){
+            start.fromHsv(Mathf.random(360f), Mathf.random(0.75f, 1f), Mathf.random(0.85f, 1f)).a(1f);
+            end.fromHsv(Mathf.random(360f), Mathf.random(0.75f, 1f), Mathf.random(0.85f, 1f)).a(1f);
+        }else if(rnd == 3){
+            start.fromHsv(Mathf.random(360f), Mathf.random(0.15f, 0.4f), Mathf.random(0.45f, 0.7f)).a(1f);
+            end.fromHsv(Mathf.random(360f), Mathf.random(0.15f, 0.4f), Mathf.random(0.45f, 0.7f)).a(1f);
+        }else{
+            float base = Mathf.random(360f);
+            float shift = Mathf.randomBoolean() ? Mathf.random(50f, 85f) : Mathf.random(105f, 135f);
+            if(Mathf.randomBoolean()) shift = -shift;
+            start.fromHsv(base, Mathf.random(0.8f, 1f), Mathf.random(0.9f, 1f)).a(1f);
+            end.fromHsv((base + shift + 360f) % 360f, Mathf.random(0.75f, 0.95f), Mathf.random(0.9f, 1f)).a(1f);
+        }
     }
 
     private void sendSmartMessage(String styled){

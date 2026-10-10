@@ -575,7 +575,7 @@ public class PlacementFragment{
                             int[] logicedCounts = countBox[1];
 
                             u.clearChildren();
-                            if(RtsGroups.enabled()) RtsGroups.buttons(u);
+                            RtsGroups.toolbar(u);
                             var units = control.input.selectedUnits;
                             if(units.size > 0){
                                 usedCommands.clear();
@@ -734,7 +734,11 @@ public class PlacementFragment{
                                 usedStances.clear();
                                 commands.clear();
                                 stances.clear();
-                                u.add(Core.bundle.get("commandmode.nounits")).color(Color.lightGray).growX().center().labelAlign(Align.center).pad(6);
+                                if(control.input.commandBuildings.any()){
+                                    RtsGroups.fillBuildings(u);
+                                }else{
+                                    u.add(Core.bundle.get("commandmode.nounits")).color(Color.lightGray).growX().center().labelAlign(Align.center).pad(6);
+                                }
                             }
                         };
 
