@@ -631,5 +631,7 @@ public class Vars implements Loadable{
         if(!headless){
             app.post(Fonts::loadExtraFonts);
         }
+
+        mindustry.client.morj.SafeBundle.install();
     }
 }

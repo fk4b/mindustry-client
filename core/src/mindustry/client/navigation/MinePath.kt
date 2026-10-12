@@ -92,7 +92,6 @@ class MinePath @JvmOverloads constructor(
 
     override fun follow() {
         if (player.unit() == null) return
-        if (AutoTransfer.enabled) AutoTransfer.enabled = false // AutoTransfer doesn't play well with MinePath
 
         val core = player.closestCore() ?: return
         val maxCap = if (cap <= 0) core.storageCapacity else core.storageCapacity.coerceAtMost(cap)

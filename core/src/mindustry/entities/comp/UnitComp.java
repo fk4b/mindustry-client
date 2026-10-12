@@ -975,8 +975,9 @@ abstract class UnitComp implements Healthc, Physicsc, Hitboxc, Statusc, Teamc, I
 
     @Override
     public void draw(){
+        boolean commanded = control.input != null && control.input.selectedUnits.contains(self(), true);
         UnitType.currentAlpha =
-            ClientVars.hidingUnits || ClientVars.hidingAirUnits && isFlying() ? 0 :
+            !commanded && (ClientVars.hidingUnits || ClientVars.hidingAirUnits && isFlying()) ? 0 :
             (controller() instanceof Player p && !type.isModded() && (
                 (p.assisting && !p.isLocal()) ||
                 (p.isLocal() && CursorHide.smartTransparency())

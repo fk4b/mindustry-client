@@ -6,7 +6,6 @@ import arc.struct.*
 import arc.util.*
 import mindustry.Vars.*
 import mindustry.client.ClientVars.*
-import mindustry.client.navigation.*
 import mindustry.content.*
 import mindustry.entities.bullet.*
 import mindustry.game.*
@@ -302,9 +301,6 @@ class AutoTransfer {
      */
     private fun transfer(rush: Boolean): Boolean {
         core = if (fromCores) player.closestCore() else null
-        if (Navigation.currentlyFollowing is MinePath) { // Only allow autotransfer + minepath when within mineTransferRange
-            if (core != null && (Navigation.currentlyFollowing as MinePath).tile?.within(core, mineTransferRange - tilesize * 10) != true) return false
-        } // Ngl this looks spaghetti
 
         val buildTree = player.team().data().buildingTree ?: return false
         val unit = player.unit() ?: return false

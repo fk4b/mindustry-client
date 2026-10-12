@@ -244,6 +244,15 @@ public class PanelFragment extends Table{
         ClientVars.clientCommandHandler.handleMessage(fixPowerRuns % 5 == 0 ? "!fixpower c qc" : "!fixpower c q", player);
     }
 
+    /** {0}/{1} replacement without MessageFormat. The shared formatter crashes on Java 25. */
+    private static String fill(String pattern, int a){
+        return pattern.replace("{0}", Integer.toString(a));
+    }
+
+    private static String fill(String pattern, int a, int b){
+        return fill(pattern, a).replace("{1}", Integer.toString(b));
+    }
+
     public static void startInit() {
         mindustry.client.fallen.ActivityLogger.init();
         mindustry.client.fallen.FdLogicQol.init();
@@ -449,7 +458,7 @@ public class PanelFragment extends Table{
                     () -> {
                         Unit u = player == null ? null : player.unit();
                         if(u == null) return bundle.get("client.morj.hp.empty");
-                        return bundle.format("client.morj.hp", Mathf.round(u.health), Mathf.round(u.maxHealth));
+                        return fill(bundle.get("client.morj.hp"), Mathf.round(u.health), Mathf.round(u.maxHealth));
                     },
                     () -> Pal.health,
                     () -> player == null || player.unit() == null ? 0f : Mathf.clamp(player.unit().healthf())
@@ -458,7 +467,7 @@ public class PanelFragment extends Table{
                     () -> {
                         Unit u = player == null ? null : player.unit();
                         int shield = u == null ? 0 : Mathf.round(u.shield);
-                        return bundle.format("client.morj.shield", shield);
+                        return fill(bundle.get("client.morj.shield"), shield);
                     },
                     () -> Pal.lancerLaser,
                     () -> {

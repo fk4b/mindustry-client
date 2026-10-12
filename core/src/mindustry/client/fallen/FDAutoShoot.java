@@ -99,7 +99,7 @@ public class FDAutoShoot {
             }
             return;
         }
-        if(player.unit() == null || player.unit().mining() || player.unit().isBuilding()) return;
+        if(player.unit() == null || player.unit().isBuilding()) return;
 
         Unit playerUnit = player.unit();
         if (playerUnit == null || playerUnit.mounts.length == 0) {

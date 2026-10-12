@@ -42,7 +42,6 @@ fun autoShoot() {
     val unit = Vars.player.unit()
     if (((unit as? BlockUnitUnit)?.tile() as? ControlBlock)?.shouldAutoTarget() == false) return
     if (unit.activelyBuilding()) return
-    if (unit.mining()) return
     val type = unit.type ?: return
     val targetBuild = target as? Building
     val validHealTarget = Vars.player.unit().type.canHeal && targetBuild?.isValid == true && target?.team() == unit.team && targetBuild.damaged() && target?.within(unit, unit.range()) == true

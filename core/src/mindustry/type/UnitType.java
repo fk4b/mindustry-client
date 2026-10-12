@@ -841,7 +841,7 @@ public class UnitType extends UnlockableContent implements Senseable{
                 b.itemDrop != null &&
                 (b instanceof Floor f && (((f.wallOre && mineWalls) || (!f.wallOre && mineFloor))) ||
                 (!(b instanceof Floor) && mineWalls)) &&
-                b.itemDrop.hardness <= mineTier && (!b.playerUnmineable || Core.settings.getBool("doubletapmine"))));
+                b.itemDrop.hardness <= mineTier));
         }
         if(buildSpeed > 0){
             stats.addPercent(Stat.buildSpeed, buildSpeed);

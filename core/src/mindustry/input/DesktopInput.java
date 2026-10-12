@@ -566,13 +566,8 @@ public class DesktopInput extends InputHandler{
             commandMode = false;
         }
 
-        //validate commanding units
+        //validate commanding units; already selected units stay when unit visibility is hidden
         selectedUnits.removeAll(u -> /*!u.allowCommand() || */ u.isPlayer() || !u.isValid() || u.team != player.team());
-        int shown = selectedUnits.size;
-        selectedUnits.removeAll(InputHandler::commandHides);
-        if(commandMode && selectedUnits.size != shown){
-            Events.fire(Trigger.unitCommandChange);
-        }
 
         if(commandMode && !scene.hasField() && !scene.hasDialog()){
             if(!(input.keyDown(Binding.selectUnitTypeModifier) && selectedUnits.any())){
@@ -1097,8 +1092,8 @@ public class DesktopInput extends InputHandler{
                 commandRectY = input.mouseWorldY();
             }else if(!checkConfigTap() && selected != null && !tryRepairDerelict(selected)){
                 //only begin shooting if there's no cursor event
-                // sand: always one click; other ores respect doubletapmine
-                boolean mineNow = isSand(selected) || !settings.getBool("doubletapmine")
+                // doubletapmine applies to every ore, including sand
+                boolean mineNow = !settings.getBool("doubletapmine")
                     || (selected == prevSelected && Time.timeSinceMillis(selectMillis) < 500);
                 if(!tryTapPlayer(Core.input.mouseWorld().x, Core.input.mouseWorld().y) && !tileTapped(selected.build) && !player.unit().activelyBuilding() && !droppingItem
                     && !(tryStopMine(selected) || (mineNow && tryBeginMine(selected))) && !Core.scene.hasKeyboard()){

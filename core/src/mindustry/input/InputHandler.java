@@ -2611,19 +2611,6 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         return amount == 0 || (stack.item == item && amount < type.itemCapacity);
     }
 
-    boolean isSand(Tile tile){
-        if(tile == null) return false;
-        Unit unit = player.unit();
-        if(!unit.isValid()) return false;
-        UnitType type = unit.type;
-        Block block = tile.block();
-        Item blockDrop = block.itemDrop;
-        Floor overlay = tile.overlay();
-        Item item = block == Blocks.air && type.mineFloor ? (overlay == Blocks.air ? tile.floor().itemDrop : overlay.itemDrop) : !type.mineWalls ? null : blockDrop != null ? blockDrop : overlay.wallOre ? overlay.itemDrop : null;
-
-        return item != null && item.lowPriority;
-    }
-
     /** Returns the tile at the specified MOUSE coordinates. */
     Tile tileAt(float x, float y){
         return world.tile(tileX(x), tileY(y));
@@ -2782,7 +2769,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         return selectedCommandUnits(x, y, w, h, u -> true);
     }
 
-    /** Hidden units stay out of command selection. Air-only hide skips flying units. */
+    /** Hidden units are skipped by a new command selection. Units already selected stay. Air-only hide skips flying units. */
     public static boolean commandHides(Unit unit){
         if(unit == null) return true;
         if(ClientVars.hidingUnits) return true;
