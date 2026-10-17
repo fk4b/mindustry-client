@@ -14,6 +14,11 @@ public final class PanelLayout{
     /** "col:row" for a button the player placed by hand. */
     private static final ObjectMap<String, String> pos = new ObjectMap<>();
     private static final int[] cols = {4, 4, 4, 4, 4};
+    /** Visual order of the five logical tabs. */
+    private static final int[] tabOrder = {0, 1, 2, 3, 4};
+    private static float titleScale = 1f;
+    private static final ObjectMap<String, String> keys = new ObjectMap<>();
+    private static final Seq<String> extras = new Seq<>();
     private static boolean loaded;
     private static int batch;
 
@@ -42,6 +47,10 @@ public final class PanelLayout{
         hidden.clear();
         scale.clear();
         pos.clear();
+        keys.clear();
+        extras.clear();
+        titleScale = 1f;
+        for(int t = 0; t < tabOrder.length; t++) tabOrder[t] = t;
         int i = 0;
         for(String id : split(Core.settings.getString("morj-panel-order", ""))){
             order.put(id, i++);
@@ -68,6 +77,41 @@ public final class PanelLayout{
             String[] parts = rawCols.split(",");
             for(int t = 0; t < Math.min(cols.length, parts.length); t++){
                 cols[t] = Mathf.clamp(Strings.parseInt(parts[t].trim(), 4), 1, 12);
+            }
+        }
+        String rawOrder = Core.settings.getString("morj-panel-taborder", "");
+        if(rawOrder != null && !rawOrder.isEmpty()){
+            String[] parts = rawOrder.split(",");
+            boolean[] seen = new boolean[tabOrder.length];
+            int[] next = new int[tabOrder.length];
+            boolean ok = parts.length == tabOrder.length;
+            for(int t = 0; ok && t < parts.length; t++){
+                int value = Strings.parseInt(parts[t].trim(), -1);
+                if(value < 0 || value >= tabOrder.length || seen[value]) ok = false;
+                else{
+                    seen[value] = true;
+                    next[t] = value;
+                }
+            }
+            if(ok) System.arraycopy(next, 0, tabOrder, 0, tabOrder.length);
+        }
+        float storedScale = Core.settings.getFloat("morj-panel-titlescale", 1f);
+        if(!Float.isNaN(storedScale)) titleScale = Mathf.clamp(storedScale, 0.7f, 1.6f);
+        for(String pair : split(Core.settings.getString("morj-panel-keys", ""))){
+            int eq = pair.indexOf('=');
+            if(eq <= 0) continue;
+            String id = pair.substring(0, eq);
+            String key = pair.substring(eq + 1).trim();
+            if(!id.isEmpty() && !key.isEmpty()) keys.put(id, key);
+        }
+        String rawExtras = Core.settings.getString("morj-panel-extra", "");
+        if(rawExtras != null && !rawExtras.isEmpty()){
+            for(String rec : rawExtras.split(";")){
+                String item = rec.trim();
+                int sep = item.lastIndexOf('\t');
+                if(sep <= 0) continue;
+                int tab = Strings.parseInt(item.substring(sep + 1), -1);
+                if(tab >= 0 && tab < tabOrder.length) extras.add(item.substring(0, sep) + "\t" + tab);
             }
         }
     }
@@ -212,6 +256,88 @@ public final class PanelLayout{
         changed();
     }
 
+    public static int[] tabOrder(){
+        load();
+        return new int[]{tabOrder[0], tabOrder[1], tabOrder[2], tabOrder[3], tabOrder[4]};
+    }
+
+    /** Swaps a tab with the neighbour `dir` steps away in the visual bar. */
+    public static void shiftTab(int visual, int dir){
+        load();
+        int to = visual + dir;
+        if(visual < 0 || to < 0 || visual >= tabOrder.length || to >= tabOrder.length) return;
+        int tmp = tabOrder[visual];
+        tabOrder[visual] = tabOrder[to];
+        tabOrder[to] = tmp;
+        changed();
+    }
+
+    public static float titleScale(){
+        load();
+        return titleScale;
+    }
+
+    public static void setTitleScale(float value){
+        load();
+        titleScale = Mathf.clamp(Mathf.round(value * 20f) / 20f, 0.7f, 1.6f);
+        changed();
+    }
+
+    public static String keyOf(String id){
+        load();
+        return keys.get(id);
+    }
+
+    public static ObjectMap<String, String> keyMap(){
+        load();
+        return keys;
+    }
+
+    /** One key runs one button. Passing null or "unset" clears it. */
+    public static void setKey(String id, String keyName){
+        load();
+        if(id == null || id.isEmpty()) return;
+        if(keyName == null || keyName.isEmpty() || "unset".equals(keyName)){
+            keys.remove(id);
+        }else{
+            Seq<String> drop = new Seq<>();
+            for(ObjectMap.Entry<String, String> entry : keys.entries()){
+                if(keyName.equals(entry.value) && !entry.key.equals(id)) drop.add(entry.key);
+            }
+            for(String old : drop) keys.remove(old);
+            keys.put(id, keyName);
+        }
+        changed();
+    }
+
+    public static Seq<String> extras(){
+        load();
+        return extras;
+    }
+
+    public static void addExtra(String setting, int tab){
+        load();
+        if(setting == null || setting.isEmpty()) return;
+        tab = Mathf.clamp(tab, 0, tabOrder.length - 1);
+        String prefix = setting + "\t";
+        for(String rec : extras) if(rec.startsWith(prefix)) return;
+        extras.add(prefix + tab);
+        changed();
+    }
+
+    public static void removeExtra(String setting){
+        load();
+        if(setting == null) return;
+        boolean any = false;
+        for(int i = extras.size - 1; i >= 0; i--){
+            if(extras.get(i).startsWith(setting + "\t")){
+                extras.remove(i);
+                any = true;
+            }
+        }
+        if(any) changed();
+    }
+
     public static void setOrder(Seq<String> ids){
         load();
         order.clear();
@@ -263,11 +389,30 @@ public final class PanelLayout{
             if(t > 0) widths.append(',');
             widths.append(cols[t]);
         }
+        StringBuilder keyBuf = new StringBuilder();
+        for(ObjectMap.Entry<String, String> entry : keys.entries()){
+            if(keyBuf.length() > 0) keyBuf.append(',');
+            keyBuf.append(entry.key).append('=').append(entry.value);
+        }
+        StringBuilder extraBuf = new StringBuilder();
+        for(String rec : extras){
+            if(extraBuf.length() > 0) extraBuf.append(';');
+            extraBuf.append(rec);
+        }
+        StringBuilder orderBuf = new StringBuilder();
+        for(int t = 0; t < tabOrder.length; t++){
+            if(t > 0) orderBuf.append(',');
+            orderBuf.append(tabOrder[t]);
+        }
         Core.settings.put("morj-panel-hide", hide.toString());
         Core.settings.put("morj-panel-order", ord.toString());
         Core.settings.put("morj-panel-size", sizes.toString());
         Core.settings.put("morj-panel-pos", cells.toString());
         Core.settings.put("morj-panel-cols", widths.toString());
+        Core.settings.put("morj-panel-taborder", orderBuf.toString());
+        Core.settings.put("morj-panel-titlescale", titleScale);
+        Core.settings.put("morj-panel-keys", keyBuf.toString());
+        Core.settings.put("morj-panel-extra", extraBuf.toString());
     }
 
     private static int[] parseCell(String raw){

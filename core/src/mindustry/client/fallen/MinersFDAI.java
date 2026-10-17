@@ -1516,15 +1516,14 @@ public class MinersFDAI {
     }
 
     /**
-     * Player is building: placing, has plans, or actively constructing.
-     * Slightly looser than before so assist engages as soon as build mode / plans appear.
+     * Nearby miners switch to assist only while the player actually has plans.
+     * Holding a block in the build menu is not a plan.
      */
     private static boolean isPlayerBuilding() {
         Unit u = player.unit();
         if (u == null) return false;
         if (u.activelyBuilding()) return true;
-        if (u.plans != null && u.plans.size > 0) return true;
-        return control != null && control.input != null && control.input.isBuilding;
+        return u.plans != null && u.plans.size > 0;
     }
 
     // ================== Safe mining (avoid enemy turrets + armed units) ==================

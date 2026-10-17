@@ -59,6 +59,8 @@ public class ClientVars {
     public static boolean syncing; // Whether we are in the process of reloading the world
     public static double lastServerStartTime; // FINISHME: Redundant
     public static String lastServerName; // FINISHME: Redundant
+    /** address:port of the server whose build logs are loaded. "local" is singleplayer. */
+    public static String lastLogServer = "";
     public static Seq<Pair<Player, Integer>> mutedPlayers = new Seq<>();
 
     // Networking

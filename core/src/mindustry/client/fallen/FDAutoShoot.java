@@ -80,6 +80,8 @@ public class FDAutoShoot {
         dialog.cont.add("@client.aim.constant.note").color(Color.lightGray).wrap().width(380f).left().row();
         dialog.cont.check("@client.aim.buildings", Core.settings.getBool("smartshoot-buildings", false), on -> Core.settings.put("smartshoot-buildings", on)).left().padTop(8f).row();
         dialog.cont.add("@client.aim.buildings.note").color(Color.lightGray).wrap().width(380f).left().row();
+        dialog.cont.check("@client.aim.ignorebuildings", Core.settings.getBool("smartshoot-ignorebuildings", false), on -> Core.settings.put("smartshoot-ignorebuildings", on)).left().padTop(8f).row();
+        dialog.cont.add("@client.aim.ignorebuildings.note").color(Color.lightGray).wrap().width(380f).left().row();
         dialog.addCloseButton();
         dialog.show();
     }
@@ -141,6 +143,9 @@ public class FDAutoShoot {
 
         // "Только постройки": юниты не берутся в цель, лечение своих построек идёт раньше вражеских зданий.
         boolean buildingsOnly = Core.settings.getBool("smartshoot-buildings", false);
+        // "Не стрелять по чужим": вражеские здания не берутся ни автоприцелом, ни ручным выбором.
+        boolean ignoreBuildings = Core.settings.getBool("smartshoot-ignorebuildings", false);
+        if(ignoreBuildings && manualTarget instanceof Building) manualTarget = null;
 
         // Приоритет №1: Ручная цель. Юнит в этом режиме пропускается.
         if (manualTarget != null && !(buildingsOnly && manualTarget instanceof Unit)) {
@@ -162,7 +167,7 @@ public class FDAutoShoot {
         }
 
         // Приоритет №4: Вражеские здания (по списку весов)
-        if (finalTarget == null) {
+        if (finalTarget == null && !ignoreBuildings) {
             targetBuilds.clear();
             Units.nearbyBuildings(playerUnit.x, playerUnit.y, range, b -> {
                 if (b.team != player.team() && b.isValid() && getPriority(b) > 0f) {
@@ -227,7 +232,7 @@ public class FDAutoShoot {
                 lastTargetPos = mouseUnit;
             } else {
                 Building mouseBuild = world.buildWorld(player.mouseX, player.mouseY);
-                if (mouseBuild != null && mouseBuild.team != player.team()) {
+                if (mouseBuild != null && mouseBuild.team != player.team() && !Core.settings.getBool("smartshoot-ignorebuildings", false)) {
                     manualTarget = mouseBuild;
                     lastTargetPos = mouseBuild;
                 } else {

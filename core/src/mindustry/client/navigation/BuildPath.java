@@ -41,6 +41,8 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
         Blocks.mechanicalDrill, Blocks.pneumaticDrill
     );
     private boolean valid;
+    /** True when this path only walks the player's own queue. */
+    private boolean selfPlans;
     private final Pool<BuildPlan> pool = Pools.get(BuildPlan.class, BuildPlan::new, 15_000); // This is cursed but
     private final Seq<BuildPlan> priority = new Seq<>(301);
     private CompletableFuture<Void> job = null;
@@ -83,14 +85,26 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
         return new BuildPath("self");
     }
 
+    /** A plan the player can pay for, or a break / rotate that does not need items. */
+    public static boolean anyAffordable(){
+        if(player == null || player.unit() == null || player.unit().plans == null || player.unit().plans.size == 0) return false;
+        var unit = player.unit();
+        var core = player.core();
+        for(int i = 0; i < unit.plans.size; i++){
+            var plan = unit.plans.get(i);
+            if(plan != null && !unit.shouldSkip(plan, core)) return true;
+        }
+        return false;
+    }
+
     private void init(String args) {
         queues.clear(); // Clear old selections (defaults)
+        selfPlans = false;
 
-        var self = false;
         for (String arg : args.split("\\s")) {
             switch (arg.toLowerCase()) {
                 case "all", "*" -> queues.addAll(broken, assist, unfinished, networkAssist, drills, belts);
-                case "self", "me" -> self = true;
+                case "self", "me" -> selfPlans = true;
                 case "broken", "destroyed", "dead", "killed", "rebuild", "b", "br" -> queues.add(broken);
                 case "boulders", "rocks" -> queues.add(boulders);
                 case "assist", "help" -> queues.add(assist);
@@ -109,7 +123,7 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
             }
         }
 
-        if (queues.isEmpty() && !self) {
+        if (queues.isEmpty() && !selfPlans) {
             var defaults = Core.settings.getString("defaultbuildpathargs").toLowerCase();
             if (!args.equals(defaults)) {
                 player.sendMessage(Core.bundle.format("client.path.builder.allinvalid", defaults, "All, self, broken, boulders, assist, unfinished, cleanup, networkassist, drills, conveyors, upgrade (drills + conveyors)"));
@@ -182,7 +196,14 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
             clearQueues();
             if (player.unit().plans.size > 0) {
                 var arr = player.unit().plans.toArray(BuildPlan.class); // FINISHME: Add an overload that takes an array param to avoid making a new one every time, make it use arraycopy twice instead of running get() in a loop
-                Sort.instance().sort(arr, Structs.comparingFloat(p -> p.dst2(player)));
+                if(selfPlans){
+                    Sort.instance().sort(arr, Structs.comps(
+                        Structs.comparingBool(p -> player.unit().shouldSkip(p, core)),
+                        Structs.comparingFloat(p -> p.dst2(player))
+                    ));
+                }else{
+                    Sort.instance().sort(arr, Structs.comparingFloat(p -> p.dst2(player)));
+                }
                 player.unit().plans.clear();
                 Structs.each(player.unit().plans::add, arr);
             }
@@ -287,15 +308,25 @@ public class BuildPath extends Path { // FINISHME: Dear god, this file does not 
         }
 
         if (player.unit().isBuilding()) { // Approach request if building
+            if(selfPlans){
+                var unit = player.unit();
+                var affordCore = player.core();
+                int left = unit.plans.size;
+                while(left > 0 && unit.buildPlan() != null && unit.shouldSkip(unit.buildPlan(), affordCore)){
+                    unit.plans.addLast(unit.plans.removeFirst());
+                    left--;
+                }
+            }
             var req = player.unit().buildPlan();
+            boolean unaffordable = selfPlans && player.unit().shouldSkip(req, player.core());
 
-            valid = validPlan(req);
+            valid = validPlan(req) && !unaffordable;
             if(valid){
                 //move toward the request
                 float range = player.unit().type.buildRange - player.unit().hitSize() / 2f - 32; // Range - 4 tiles
                 goTo(req.tile(), range); // Cannot go directly to req as it is pooled so the build & tile change.
-            }else{
-                //discard invalid request
+            }else if(!unaffordable){
+                //discard invalid request; keep a plan the core cannot pay for yet
                 player.unit().plans.removeFirst();
             }
         } else if (blockedPlayer.get(player.tileX(), player.tileY())) { // Leave enemy turret range while not building

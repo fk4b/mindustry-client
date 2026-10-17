@@ -55,6 +55,12 @@ public class DataPatcher{
     private Seq<Content> addedContent = new Seq<>();
     private @Nullable PatchAsset currentlyApplyingPatch;
     private @Nullable ContentAsset currentlyApplyingContent;
+
+    /**
+     * v158 list. MindurkaCompat reads {@code name} and {@code patch} and calls {@link #apply(Seq)}.
+     * {@link DataManager} copies the loaded patch assets into this list.
+     */
+    public Seq<PatchSet> patches = new Seq<>();
     private Seq<LVar> addedVars = new Seq<>();
 
     static{
@@ -268,6 +274,52 @@ public class DataPatcher{
         }
 
         afterCallbacks.each(Runnable::run);
+    }
+
+    /**
+     * v158 entry point: replace the active patches with these raw patch strings.
+     * MindurkaCompat calls this while editing a gamemode map.
+     */
+    public void apply(Seq<String> patchArray) throws Exception{
+        Seq<PatchAsset> assets = new Seq<>();
+        if(patchArray != null){
+            for(String raw : patchArray){
+                if(raw != null) assets.add(new PatchAsset(raw));
+            }
+        }
+        if(Vars.state != null && Vars.state.data != null){
+            Vars.state.data.reloadPatches(assets);
+        }else{
+            mirrorLoadedPatches(null);
+        }
+    }
+
+    /** Copy the manager's patch assets into {@link #patches}. A null list clears the mirror. */
+    public void mirrorLoadedPatches(@Nullable Seq<DataAsset> loaded){
+        patches.clear();
+        if(loaded == null) return;
+        for(DataAsset asset : loaded){
+            if(!(asset instanceof PatchAsset patch)) continue;
+            PatchSet set = new PatchSet(patch.patch, patch.json);
+            set.name = patch.name == null ? "" : patch.name;
+            set.error = patch.error;
+            set.warnings.addAll(patch.warnings);
+            patches.add(set);
+        }
+    }
+
+    /** v158 patch record. Mods only read {@link #name} and {@link #patch}. */
+    public static class PatchSet{
+        public String patch = "";
+        public JsonValue json;
+        public String name = "";
+        public boolean error;
+        public Seq<String> warnings = new Seq<>();
+
+        public PatchSet(String patch, JsonValue json){
+            this.patch = patch == null ? "" : patch;
+            this.json = json == null ? new JsonValue("error") : json;
+        }
     }
 
     public void unapply(){

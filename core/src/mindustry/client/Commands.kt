@@ -413,28 +413,6 @@ fun setupCommands() {
         Log.debug("Ran fixpower in @ms", Time.millisSinceNanos(start))
     }
 
-    register("g [message...]", Core.bundle.get("client.command.g.description")) { args, player ->
-        if (args.isEmpty()) player.sendMessage(GlobalChat.status())
-        else GlobalChat.send(args[0])
-    }
-
-    register("ghelp", Core.bundle.get("client.command.ghelp.description")) { _, player ->
-        player.sendMessage("[accent]" + Core.bundle.get("client.globalchat.help.title") + "[]\n" + Core.bundle.get("client.globalchat.help"))
-    }
-
-    register("gs [message...]", Core.bundle.get("client.command.gs.description")) { args, player ->
-        val chat = GlobalChat.channel()
-        if (args.isEmpty()) player.sendMessage(GlobalChat.icons(if (chat.isEmpty()) Core.bundle.get("client.globalchat.sys.noserver")
-            else Core.bundle.format("client.globalchat.serverstatus", chat, GlobalChat.serverOnline())))
-        else GlobalChat.send(args[0], true)
-    }
-
-    register("gm [action] [target...]", Core.bundle.get("client.command.gm.description")) { args, player ->
-        val actions = listOf("mute", "unmute", "ban", "ban30", "banforever", "sban", "sbanforever", "unban", "addmod", "delmod", "addcur", "delcur", "list")
-        if (args.isEmpty() || args[0] !in actions) player.sendMessage(GlobalChat.icons(Core.bundle.get("client.globalchat.gmhelp")))
-        else GlobalChat.moderate(args[0], if (args.size > 1) args[1] else "")
-    }
-
     register("fixcode [c/r/l]", Core.bundle.get("client.command.fixcode.description")) { args, _ ->
         ProcessorPatcher.fixCode(args.firstOrNull())
     }

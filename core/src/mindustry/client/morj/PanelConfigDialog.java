@@ -35,6 +35,9 @@ public class PanelConfigDialog extends BaseDialog{
     private int editTab;
     private Table ghost;
     private Drawable cardBg, cardDimBg, cellBg, emptyBg, onBg, offBg, overBg;
+    private Slider titleSlider;
+    private Label titleValue;
+    private boolean titleLock;
 
     public static void open(){
         if(ui == null || ui.panelfragment == null) return;
@@ -60,6 +63,21 @@ public class PanelConfigDialog extends BaseDialog{
         cont.row();
         cont.add(legend()).growX().left().padBottom(6f).row();
         cont.add(tabs).growX().padBottom(4f).row();
+        titleSlider = new Slider(0.7f, 1.6f, 0.05f, false);
+        Table scaleRow = new Table();
+        scaleRow.left();
+        scaleRow.add("@client.morj.panel.titlesize").padRight(8f);
+        titleValue = new Label("100%");
+        titleValue.setAlignment(Align.center);
+        scaleRow.add(titleValue).width(52f);
+        scaleRow.add(titleSlider).growX().padLeft(6f);
+        titleSlider.changed(() -> {
+            if(titleLock) return;
+            PanelLayout.setTitleScale(titleSlider.getValue());
+            titleValue.setText(Mathf.round(PanelLayout.titleScale() * 100f) + "%");
+            if(ui != null && ui.panelfragment != null) ui.panelfragment.rebuild();
+        });
+        cont.add(scaleRow).growX().padBottom(4f).row();
 
         Table split = new Table();
         Table left = new Table();
@@ -92,6 +110,7 @@ public class PanelConfigDialog extends BaseDialog{
         bodyCell = cont.add(split).grow();
 
         buttons.button("@client.morj.panel.showall", Icon.eyeSmall, this::showAll);
+        buttons.button("@client.morj.panel.add", Icon.add, this::addSetting);
         buttons.button("@client.morj.panel.reset", Icon.refreshSmall, () -> ui.showConfirm("@client.morj.panel.reset", "@client.morj.panel.reset.confirm", this::resetLayout));
         hidden(this::clearGhost);
         shown(() -> {
@@ -144,6 +163,7 @@ public class PanelConfigDialog extends BaseDialog{
 
     private void rebuild(){
         ensureBg();
+        syncTitle();
         float listY = listPane == null ? 0f : listPane.getScrollPercentY();
         float boardY = boardPane == null ? 0f : boardPane.getScrollPercentY();
         fillTabs();
@@ -163,14 +183,35 @@ public class PanelConfigDialog extends BaseDialog{
         style.over = overBg;
         style.down = onBg;
         style.checked = onBg;
-        for(int i = 0; i < 5; i++){
-            int tab = i;
-            TextButton button = tabs.button(Core.bundle.get(tabKeys()[i]), style, () -> {
+        tabs.button(Icon.leftOpen, Styles.cleari, () -> moveEditTab(-1)).size(32f).tooltip("@client.morj.panel.tableft");
+        int[] order = PanelLayout.tabOrder();
+        for(int slot = 0; slot < order.length; slot++){
+            int tab = order[slot];
+            TextButton button = tabs.button(Core.bundle.get(tabKeys()[tab]), style, () -> {
                 editTab = tab;
                 Core.app.post(this::rebuild);
             }).checked(b -> editTab == tab).height(34f).growX().pad(1f).get();
             button.getLabel().setFontScale(0.85f);
         }
+        tabs.button(Icon.rightOpen, Styles.cleari, () -> moveEditTab(1)).size(32f).tooltip("@client.morj.panel.tabright");
+    }
+
+    private void moveEditTab(int dir){
+        int[] order = PanelLayout.tabOrder();
+        int visual = -1;
+        for(int i = 0; i < order.length; i++) if(order[i] == editTab) visual = i;
+        if(visual < 0 || visual + dir < 0 || visual + dir >= order.length) return;
+        PanelLayout.shiftTab(visual, dir);
+        if(ui != null && ui.panelfragment != null) ui.panelfragment.rebuild();
+        Core.app.post(this::rebuild);
+    }
+
+    private void syncTitle(){
+        if(titleSlider == null) return;
+        titleLock = true;
+        titleSlider.setValue(PanelLayout.titleScale());
+        titleLock = false;
+        if(titleValue != null) titleValue.setText(Mathf.round(PanelLayout.titleScale() * 100f) + "%");
     }
 
     private static String[] tabKeys(){
@@ -278,7 +319,23 @@ public class PanelConfigDialog extends BaseDialog{
             Label desc = row.add(icon.label).growX().left().wrap().padTop(2f).get();
             desc.setFontScale(0.75f);
             desc.setColor(Color.lightGray);
+            row.row();
         }
+        String bound = PanelLayout.keyOf(icon.id);
+        String keyLabel = Core.bundle.get("client.morj.panel.nokey");
+        if(bound != null){
+            try{
+                keyLabel = KeyCode.valueOf(bound).getName();
+            }catch(IllegalArgumentException ignored){
+                keyLabel = bound;
+            }
+        }
+        Table keyLine = new Table();
+        keyLine.left();
+        keyLine.add("@client.morj.panel.key").padRight(6f);
+        String shownKey = keyLabel;
+        keyLine.button(shownKey, Styles.cleart, () -> captureKey(icon.id)).height(28f);
+        row.add(keyLine).left().padTop(2f);
         return row;
     }
 
@@ -374,9 +431,86 @@ public class PanelConfigDialog extends BaseDialog{
         Core.settings.remove("morj-panel-size");
         Core.settings.remove("morj-panel-pos");
         Core.settings.remove("morj-panel-cols");
+        Core.settings.remove("morj-panel-taborder");
+        Core.settings.remove("morj-panel-titlescale");
+        Core.settings.remove("morj-panel-keys");
+        Core.settings.remove("morj-panel-extra");
         PanelLayout.reload();
+        ui.panelfragment.reregister();
         ui.panelfragment.rebuild();
         Core.app.post(this::rebuild);
+    }
+
+    private void captureKey(String id){
+        BaseDialog dialog = new BaseDialog("@client.morj.panel.keytitle");
+        dialog.cont.add("@client.morj.panel.keywait").growX().wrap().width(360f).pad(8f);
+        dialog.addListener(new InputListener(){
+            @Override
+            public boolean keyDown(InputEvent event, KeyCode code){
+                if(code == KeyCode.escape || code == KeyCode.back){
+                    PanelLayout.setKey(id, null);
+                    dialog.hide();
+                    Core.app.post(PanelConfigDialog.this::rebuild);
+                    return true;
+                }
+                if(code == null || code == KeyCode.unset || code == KeyCode.anyKey) return false;
+                String name = code.name();
+                if(name.startsWith("mouse") || name.startsWith("scroll") || name.startsWith("controller")) return false;
+                PanelLayout.setKey(id, name);
+                dialog.hide();
+                Core.app.post(PanelConfigDialog.this::rebuild);
+                return true;
+            }
+        });
+        dialog.addCloseButton();
+        dialog.shown(() -> Core.scene.setKeyboardFocus(dialog));
+        dialog.show();
+    }
+
+    private void addSetting(){
+        if(ui == null || ui.settings == null || ui.panelfragment == null) return;
+        BaseDialog dialog = new BaseDialog("@client.morj.panel.add");
+        TextField field = new TextField();
+        field.setMessageText(Core.bundle.get("client.morj.panel.search"));
+        Table list = new Table();
+        list.top().left();
+        Runnable fill = () -> {
+            list.clear();
+            String query = field.getText() == null ? "" : field.getText().trim().toLowerCase();
+            int shown = 0;
+            for(SettingsMenuDialog.SettingsTable.Setting setting : ui.settings.allSettings()){
+                if(setting.title == null || setting.name == null || hasExtra(setting.name)) continue;
+                if(!query.isEmpty() && !setting.title.toLowerCase().contains(query) && !setting.name.toLowerCase().contains(query)) continue;
+                if(shown++ >= 80) break;
+                String name = setting.name;
+                TextButton button = list.button(setting.title, Styles.cleart, () -> {
+                    PanelLayout.addExtra(name, editTab);
+                    ui.panelfragment.reregister();
+                    ui.panelfragment.rebuild();
+                    dialog.hide();
+                    Core.app.post(this::rebuild);
+                }).growX().left().padBottom(1f).minHeight(32f).get();
+                button.getLabel().setWrap(true);
+                button.getLabel().setAlignment(Align.left);
+                list.row();
+            }
+            if(shown == 0){
+                Label empty = list.add("@client.morj.panel.nomatch").pad(8f).get();
+                empty.setColor(Color.lightGray);
+            }
+        };
+        field.changed(fill);
+        dialog.cont.add(field).growX().height(36f).padBottom(4f).row();
+        dialog.cont.pane(list).grow().size(520f, 420f);
+        dialog.shown(fill);
+        dialog.addCloseButton();
+        dialog.show();
+    }
+
+    private static boolean hasExtra(String name){
+        String prefix = name + "\t";
+        for(String rec : PanelLayout.extras()) if(rec.startsWith(prefix)) return true;
+        return false;
     }
 
     private void changeCols(int dir){

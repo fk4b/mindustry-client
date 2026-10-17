@@ -361,6 +361,37 @@ public class SettingsMenuDialog extends BaseDialog{
         return categories;
     }
 
+    /** Every real preference, skipping section headers. */
+    public Seq<SettingsTable.Setting> allSettings(){
+        Seq<SettingsTable.Setting> out = new Seq<>();
+        collectSettings(out, game);
+        collectSettings(out, graphics);
+        collectSettings(out, sound);
+        collectSettings(out, client);
+        collectSettings(out, moderation);
+        collectSettings(out, dev);
+        for(SettingsCategory category : getCategories()){
+            if(category != null) collectSettings(out, category.table);
+        }
+        return out;
+    }
+
+    public SettingsTable.Setting findSetting(String name){
+        if(name == null) return null;
+        for(SettingsTable.Setting setting : allSettings()){
+            if(name.equals(setting.name)) return setting;
+        }
+        return null;
+    }
+
+    private static void collectSettings(Seq<SettingsTable.Setting> out, SettingsTable table){
+        if(table == null) return;
+        for(SettingsTable.Setting setting : table.getSettings()){
+            if(setting == null || setting.name == null || setting instanceof SettingsTable.Category) continue;
+            out.add(setting);
+        }
+    }
+
     void rebuildMenu(){
         menu.clearChildren();
 
@@ -598,9 +629,6 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("itemslog", true);
         client.checkPref("unitlog", true);
         client.checkPref("fd-logic-qol", false);
-        client.checkPref("globalchat", false, on -> mindustry.client.utils.GlobalChat.setGlobal(on));
-        client.checkPref("globalchat-server", true, on -> mindustry.client.utils.GlobalChat.setServerOn(on));
-        client.checkPref("globalchat-inchat", true);
         client.updateUuid();
         client.checkPref("forcechat", false);
         client.choicePref("uchatmode", 0, 5);
@@ -1312,6 +1340,15 @@ public class SettingsMenuDialog extends BaseDialog{
                 this.changed = changed;
             }
 
+            public boolean panelCheck(){
+                return settings.getBool(name, def);
+            }
+
+            public void putBool(boolean value){
+                settings.put(name, value);
+                if(changed != null) changed.get(value);
+            }
+
             @Override
             public void add(SettingsTable table){
                 Table box = Elems.check(title, () -> settings.getBool(name), value -> {
@@ -1339,6 +1376,23 @@ public class SettingsMenuDialog extends BaseDialog{
                 this.step = step;
                 this.sp = s;
                 this.changed = changed;
+            }
+
+            public int panelMin(){ return min; }
+            public int panelMax(){ return max; }
+            public int panelStep(){ return step; }
+
+            public int panelValue(){
+                return settings.getInt(name, def);
+            }
+
+            public String panelText(int value){
+                return sp == null ? Integer.toString(value) : sp.get(value);
+            }
+
+            public void putInt(int value){
+                settings.put(name, value);
+                if(changed != null) changed.get(value);
             }
 
             @Override
@@ -1410,7 +1464,7 @@ public class SettingsMenuDialog extends BaseDialog{
         }
 
         private void updatePref(){
-            settings.defaults("updateurl", "mindustry-antigrief/mindustry-client-v8-builds");
+            settings.defaults("updateurl", "fk4b/mindustry-client");
             if (!Version.updateUrl.isEmpty()) settings.put("updateurl", Version.updateUrl); // overwrites updateurl on every boot, shouldn't be a real issue
             pref(new Setting("updateurl") {
                 boolean urlChanged;
@@ -1438,7 +1492,7 @@ public class SettingsMenuDialog extends BaseDialog{
                             urlChanged = true;
                             settings.put(name, text);
                             if(text.isEmpty()) settings.remove(name);
-                        }).width(450).get().setMessageText("mindustry-antigrief/mindustry-client-v8-builds");
+                        }).width(450).get().setMessageText("fk4b/mindustry-client");
                     }).left().expandX().padTop(3).height(32).padBottom(3);
                     table.row();
                 }
@@ -1453,6 +1507,16 @@ public class SettingsMenuDialog extends BaseDialog{
                 super(name);
                 this.def = def;
                 this.changed = changed;
+            }
+
+            public String panelText(){
+                return settings.getString(name, def == null ? "" : def);
+            }
+
+            public void putText(String value){
+                String next = value == null ? "" : value;
+                settings.put(name, next);
+                if(changed != null) changed.get(next);
             }
 
             @Override

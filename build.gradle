@@ -42,7 +42,7 @@ allprojects{
 
     ext{
         versionNumber = '8'
-        if(!project.hasProperty("updateUrl")) updateUrl = ''
+        if(!project.hasProperty("updateUrl")) updateUrl = 'fk4b/mindustry-client'
         if(!project.hasProperty("assetUrl")) assetUrl = 'mindustry-antigrief/mindustry-client'
         if(!project.hasProperty("assetRef")) assetRef = 'v8'
         if(!project.hasProperty("versionModifier")) versionModifier = 'release'
@@ -436,6 +436,9 @@ project(":core"){
         compileOnly files("../bouncycastle/bctls-jdk15on.jar")
         compileOnly files("../bouncycastle/bcutil-jdk15on.jar")
         compileOnly arcModule("backends:backend-sdl")
+        compileOnly 'org.projectlombok:lombok:1.18.36'
+        annotationProcessor 'org.projectlombok:lombok:1.18.36'
+        kapt 'org.projectlombok:lombok:1.18.36'
         implementation 'commons-net:commons-net:3.8.0'
 
         implementation 'org.jline:jline:4.0.0'

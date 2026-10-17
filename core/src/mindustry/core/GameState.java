@@ -45,6 +45,11 @@ public class GameState{
     public Teams teams = new Teams();
     /** Handles JSON edits of game content. */
     public DataManager data = new DataManager();
+    /**
+     * v158 field kept for mods such as MindurkaCompat.
+     * Live patches still go through {@link #data}. This object only mirrors them.
+     */
+    public DataPatcher patcher = new DataPatcher();
     /** Number of enemies in the game; only used clientside in servers. */
     public int enemies;
     /** Map being playtested (not edited!) */

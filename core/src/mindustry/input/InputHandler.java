@@ -740,7 +740,9 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
         build.noSleep();
         Fx.rotateBlock.at(build.x, build.y, build.block.size);
         if(!headless) Sounds.blockRotate.at(build, 1f + Mathf.range(0.1f), 1f);
+        mindustry.client.antigrief.RotateAttribution.arm(player == null ? null : player.coloredName(), -1);
         Events.fire(new BuildRotateEvent(build, player == null ? null : player.unit(), previous));
+        mindustry.client.antigrief.RotateAttribution.disarm();
     }
 
     @Remote(targets = Loc.both, called = Loc.both, forward = true, ratelimited = true)

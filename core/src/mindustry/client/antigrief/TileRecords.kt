@@ -6,6 +6,7 @@ import arc.util.*
 import mindustry.*
 import mindustry.ai.types.*
 import mindustry.client.*
+import mindustry.client.fallen.ActionsHistory
 import mindustry.client.utils.*
 import mindustry.content.*
 import mindustry.game.*
@@ -25,22 +26,36 @@ object TileRecords {
     fun init() {
         NetworkTileLogs.init()
 
+        Events.run(EventType.Trigger.update) {
+            if (Vars.state.isMenu) return@run
+            Groups.player.each { p ->
+                val unit = p.unit()
+                if (unit != null) RotateAttribution.remember(unit.id, p.coloredName())
+            }
+        }
+
         Events.on(EventType.WorldLoadEvent::class.java) {
             val startTime = Time.globalTime / 60.0 - Vars.state.tick / 60.0
             var sameMap = abs(ClientVars.lastServerStartTime - startTime) < 10 // if start time of map is within 10s of the previous start time
             sameMap = sameMap && records.isNotEmpty() && Vars.state.map.name() == ClientVars.lastServerName &&
                     Vars.world.width() == records.size && Vars.world.height() == records[0].size
 
+            val host = Vars.ui?.join?.lastHost
+            val addr = if (!Vars.net.client() || host == null) "local" else host.address + ":" + host.port
+            val serverChanged = ClientVars.lastLogServer.isNotEmpty() && ClientVars.lastLogServer != addr
+
             ClientVars.lastServerStartTime = startTime
             ClientVars.lastServerName = Vars.state.map.name()
-            if (!ClientVars.syncing) {
-                if (!sameMap) {
-                    records = Array(Vars.world.width()) { x -> Array(Vars.world.height()) { y -> TileRecord(x, y) } }
-                    joinTime = Instant.now()
-                    history.clear()
-                }
-                NetworkTileLogs.onWorldLoad(sameMap)
+            ClientVars.lastLogServer = addr
+            // /sync keeps the log. A new map or a different server drops build logs and tile logs.
+            if (!ClientVars.syncing && (!sameMap || serverChanged)) {
+                records = Array(Vars.world.width()) { x -> Array(Vars.world.height()) { y -> TileRecord(x, y) } }
+                joinTime = Instant.now()
+                history.clear()
+                ActionsHistory.clearactionhistory()
+                sameMap = false
             }
+            if (!ClientVars.syncing) NetworkTileLogs.onWorldLoad(sameMap)
         }
 
         Events.on(EventType.BlockBuildBeginEventBefore::class.java) {
@@ -127,11 +142,20 @@ object TileRecords {
         }
 
         Events.on(EventType.BuildRotateEvent::class.java) {
-            val player = it.unit?.player ?: return@on
-            val direction = rotationDirection(it.previous, it.build.rotation)
-            addLogH(RotateTileLog(player.toInteractor(), it.build.block, it.build.rotation, direction))
-            it.build.tile.getLinkedTiles { tile ->
-                addLog(tile, RotateTileLog(player.toInteractor(), it.build.block, it.build.rotation, direction))?.apply {
+            val build = it.build ?: return@on
+            val root = build.tile ?: return@on
+            if (it.previous == build.rotation) return@on
+            // The unit is often null: the player rotated belts outside their build range, so their unit is not in view.
+            val interactor = if (it.unit != null) {
+                it.unit.toInteractor()
+            } else {
+                val name = RotateAttribution.armedName() ?: RotateAttribution.nameOf(RotateAttribution.armedId())
+                if (name.isNullOrEmpty()) NetworkInteractor("?", "?", -1) else NetworkInteractor(name, name, -1)
+            }
+            val direction = rotationDirection(it.previous, build.rotation)
+            addLogH(RotateTileLog(interactor, build.block, build.rotation, direction))
+            root.getLinkedTiles { tile ->
+                addLog(tile, RotateTileLog(interactor, build.block, build.rotation, direction))?.apply {
                     rotation = it.previous
                 }
             }

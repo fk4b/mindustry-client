@@ -2,6 +2,7 @@ package mindustry.core;
 
 import arc.*;
 import arc.files.*;
+import arc.func.*;
 import arc.math.*;
 import arc.struct.*;
 import arc.util.serialization.*;
@@ -9,6 +10,7 @@ import mindustry.mod.*;
 import mindustry.net.*;
 import mindustry.net.Net.*;
 import mindustry.type.*;
+import mindustry.ui.*;
 import mindustry.ui.FileChooser.*;
 import rhino.*;
 
@@ -122,6 +124,21 @@ public interface Platform{
     /** Do not call directly; use the builder pattern in {@link mindustry.ui.FileChooser}. */
     default void showFileChooser(FileChooserParams params){
         throw new IllegalArgumentException("Not implemented on this platform!");
+    }
+
+    /** v158 file export. MindurkaCompat calls this from the map editor. */
+    default void export(String name, String extension, FileWriter writer){
+        FileChooser.export(name, extension, writer);
+    }
+
+    /** v158 chooser. {@code extension} is the file suffix, without a dot. */
+    default void showFileChooser(boolean open, String extension, Cons<Fi> cons){
+        (open ? FileChooser.open(extension) : FileChooser.save(extension)).submit(cons);
+    }
+
+    /** v158 chooser for several suffixes. */
+    default void showMultiFileChooser(Cons<Fi> cons, String... extensions){
+        FileChooser.open(extensions).submit(cons);
     }
 
     /** Hide the app. Android only. */

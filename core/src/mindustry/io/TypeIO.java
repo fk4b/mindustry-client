@@ -519,7 +519,10 @@ public class TypeIO{
         //nothing
         if(type == 0) return null;
         if(type == 2){ //standard unit
-            return Groups.unit.getByID(id);
+            Unit unit = Groups.unit.getByID(id);
+            // A far builder is often outside this client's entity view, so the id does not resolve.
+            mindustry.client.antigrief.RotateAttribution.noteMissing(unit == null ? id : 0);
+            return unit;
         }else if(type == 1){ //block
             Building tile = world.build(id);
             return tile instanceof ControlBlock cont ? cont.unit() : null;

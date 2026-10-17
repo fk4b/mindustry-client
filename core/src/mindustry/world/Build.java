@@ -92,7 +92,12 @@ public class Build{
             tile.build.updateProximity();
             tile.build.noSleep();
             Fx.rotateBlock.at(tile.build.x, tile.build.y, tile.build.block.size);
+            String who = unit == null ? null : unit.getControllerName();
+            int missing = unit == null ? mindustry.client.antigrief.RotateAttribution.consumeMissing() : 0;
+            if((who == null || who.isEmpty()) && missing != 0) who = mindustry.client.antigrief.RotateAttribution.nameOf(missing);
+            mindustry.client.antigrief.RotateAttribution.arm(who, missing);
             Events.fire(new BuildRotateEvent(tile.build, unit, previous));
+            mindustry.client.antigrief.RotateAttribution.disarm();
             if(!headless) Sounds.blockRotate.at(tile.build, 1f + Mathf.range(0.1f), 1f);
             return;
         }

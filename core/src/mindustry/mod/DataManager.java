@@ -173,6 +173,7 @@ public class DataManager{
         patcher.apply(patches, getContent());
 
         rebuildOrderedAssets();
+        syncCompatPatches();
     }
 
     public void reloadImages(){
@@ -226,6 +227,7 @@ public class DataManager{
         patcher.apply(getPatches(), getContent());
 
         rebuildOrderedAssets();
+        syncCompatPatches();
     }
 
     public void unload(){
@@ -239,6 +241,14 @@ public class DataManager{
         assets.clear();
         orderedAssets.clear();
         orderedExternalAssets.clear();
+        syncCompatPatches();
+    }
+
+    /** Keep {@code state.patcher.patches} in step with the patches this manager just loaded. */
+    private void syncCompatPatches(){
+        if(Vars.state != null && Vars.state.patcher != null){
+            Vars.state.patcher.mirrorLoadedPatches(assets.get(DataAssetType.patch));
+        }
     }
 
     private void rebuildOrderedAssets(){

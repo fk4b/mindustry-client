@@ -273,6 +273,7 @@ public abstract class ClientLauncher extends ApplicationCore implements Platform
                 finished = true;
                 Time.mark();
                 Events.fire(new ClientLoadEvent());
+                Core.app.post(mindustry.client.morj.MindurkaEditor::install);
                 Log.debug("Total time to load including ClientLoadEvent: @ms | ClientLoadEvent: @ms", Time.timeSinceMillis(beginTime), Time.elapsed());
                 Core.app.post(() -> Log.debug("Total time to load including ClientLoadEvent and 1 extra frame: @ms", Time.timeSinceMillis(beginTime)));
 

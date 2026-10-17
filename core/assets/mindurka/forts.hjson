@@ -1,0 +1,104 @@
+block.scrap-wall.alwaysReplace: true
+block.copper-wall.alwaysReplace: true
+unit.poly.health: 90
+unit.flare.health: 150
+block.cyclone.ammoTypes: {
+    metaglass.splashDamage: 65
+    blast-compound.splashDamage: 100
+    plastanium.splashDamage: 95
+    surge-alloy.splashDamage: 125
+}
+block.titan.ammoTypes.thorium: {
+    buildingDamageMultiplier: 0.01
+    damage: 200
+    splashDamage: 800
+    splashDamagePierce: true
+    splashDamageRadius: 80
+}
+block.oxidation-chamber.canOverdrive: true
+block.thorium-reactor.health: 10
+block.neoplasia-reactor.health: 10
+block.naval-factory: {
+    requirements: [lead/250, silicon/500, metaglass/460]
+    payloadSpeed: 0.3
+    plans: {
+        0.time: 5400
+        1.time: 4500
+    }
+}
+block.overdrive-projector: {
+    consumes: {
+        remove: all
+        liquids: {
+            liquids: [{
+                liquid: gallium
+                amount: 0.2
+                booster: true
+                optional: true
+            }]
+        }
+    }
+    phaseRangeBoost: 0
+    speedBoostPhase: 0
+    speedBoost: 2
+    liquidCapacity: 10
+    requirements: [lead/150, titanium/300, thorium/600, silicon/400, plastanium/300, fissile-matter/100]
+    buildTime: 1800
+    range: 140
+}
+block.malign: {
+    maxHeatEfficiency: 6
+    heatRequirement: 24
+    reload: 25
+}
+block.phase-synthesizer.outputItem.amount: 2
+block.surge-crucible.outputItem.amount: 3
+block.silicon-arc-furnace.consumes: {
+    remove: items
+    items: [
+        graphite/4
+    ]
+}
+block.multi-press.consumes: {
+    remove: items
+    items: [
+        silicon/4
+        coal/4
+    ]
+}
+block.phase-heater.consumes: {
+    remove: items
+}
+block.scrap-wall-huge.health: 4100
+block.scrap-wall-gigantic.health: 6700
+block.slag-heater: {
+    heatOutput: 28
+    requirements: [
+        tungsten/50,
+        oxide/40,
+        carbide/5,
+    ]
+}
+block.electric-heater.requirements: [
+    beryllium/30,
+    tungsten/30,
+]
+unitcommand.loadBlocks: {
+    snapToBuilding: true
+    exactArrival: false
+}
+unit.quell.payloadCapacity: 1024.0
+unit.disrupt: {
+    payloadCapacity: 256.0
+    abilities.0.range: 80
+}
+unit.disrupt-missile.weapons.0.bullet.suppressionRange: 112
+unit.retusa.weapons: {
+    0.repairSpeed: 0.4
+    1.bullet.damage: 4
+    2.bullet.damage: 4
+    3.bullet: {
+        splashDamage: 8
+        splashDamageRadius: 16
+    }
+}

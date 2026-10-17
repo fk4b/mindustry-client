@@ -72,6 +72,34 @@ public class BeControl{
         checkUpdate(done, Core.settings.getString("updateurl"));
     }
 
+    /** Release names on fk4b/mindustry-client are client versions such as 1.7.16. A lower number is not an update. */
+    private static boolean isNewerRelease(String remote, String local){
+        int[] next = parseVersion(remote);
+        int[] current = parseVersion(local);
+        if(next == null || current == null) return !remote.trim().equals(local == null ? "" : local.trim());
+        int length = Math.max(next.length, current.length);
+        for(int i = 0; i < length; i++){
+            int rv = i < next.length ? next[i] : 0;
+            int lv = i < current.length ? current[i] : 0;
+            if(rv != lv) return rv > lv;
+        }
+        return false;
+    }
+
+    private static int[] parseVersion(String raw){
+        if(raw == null) return null;
+        String text = raw.trim();
+        if(text.startsWith("v") || text.startsWith("V")) text = text.substring(1);
+        if(text.isEmpty()) return null;
+        String[] parts = text.split("\\.");
+        int[] out = new int[parts.length];
+        for(int i = 0; i < parts.length; i++){
+            if(!Strings.canParseInt(parts[i])) return null;
+            out[i] = Integer.parseInt(parts[i]);
+        }
+        return out;
+    }
+
     /** asynchronously checks for updates. */
     public void checkUpdate(Boolc done, String repo){
         Http.get("https://api.github.com/repos/" + repo + "/releases/latest")
@@ -82,7 +110,7 @@ public class BeControl{
             .submit(res -> {
                 Jval val = Jval.read(res.getResultAsString());
                 String newBuild = val.getString("name");
-                if(!newBuild.trim().isEmpty() && !Version.clientVersion.equals(newBuild)){
+                if(!newBuild.trim().isEmpty() && isNewerRelease(newBuild, Version.clientVersion)){
                     Jval asset = val.get("assets").asArray().find(v -> v.getString("name", "").toLowerCase().contains("desktop"));
                     if (asset == null) asset = val.get("assets").asArray().find(v -> v.getString("name", "").toLowerCase().contains("mindustry"));
                     if (asset == null) {
