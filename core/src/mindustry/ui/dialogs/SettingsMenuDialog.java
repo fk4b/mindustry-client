@@ -20,6 +20,7 @@ import arc.util.io.*;
 import mindustry.*;
 import mindustry.client.*;
 import mindustry.client.antigrief.*;
+import mindustry.client.fallen.HeapPref;
 import mindustry.client.ui.*;
 import mindustry.client.utils.*;
 import mindustry.content.*;
@@ -574,6 +575,15 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("client-experimentals", false);
 
         client.category("fallen");
+        client.sliderPref("javamemmb", 0, 0, 8192, 1024, s -> s == 0
+            ? Core.bundle.get("client.setting.javamemmb.default")
+            : Core.bundle.format("client.setting.javamemmb.value", s), v -> {
+            int prev = HeapPref.read();
+            HeapPref.save(v);
+            if(prev != v && ui != null && ui.hudfrag != null){
+                ui.hudfrag.showToast(Core.bundle.get("client.setting.javamemmb.restart"));
+            }
+        });
         client.checkPref("mapmarkers", true);
         client.checkPref("waveinfo", true);
         client.checkPref("mapinfofrag", true);

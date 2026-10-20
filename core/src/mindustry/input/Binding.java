@@ -184,7 +184,9 @@ public class Binding{
     toggleFdListFrag = KeyBind.add("toogle_fdlsit_frag", KeyCode.p, "client"),
     toolSchematicBrowser = KeyBind.add("tool_schematic_browser", KeyCode.unset),
     toolGlobalChat = KeyBind.add("tool_global_chat", KeyCode.unset),
-    runJS = KeyBind.add("run_js", KeyCode.u)
+    runJS = KeyBind.add("run_js", KeyCode.u),
+    /** Vein drill placer. F10, because H already selects every unit factory. */
+    auto_drill = KeyBind.add("auto_drill", KeyCode.f10)
     ;
 
     //dummy static class initializer

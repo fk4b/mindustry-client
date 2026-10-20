@@ -145,6 +145,9 @@ public class MinersFDAI {
     private static final ObjectMap<Long, Vec2> pendingMovePos = new ObjectMap<>();
     /** Pulsar/quasar boost while we are steering them (they cannot fly without it). */
     private static final IntSet routingBoosted = new IntSet();
+    /** Units ordered to a safe core. Circle check only, no path grid. */
+    private static final IntSet retreating = new IntSet();
+    private static final IntMap<Building> retreatCore = new IntMap<>();
     private static final IntSeq pendingBoost = new IntSeq();
     /** Finished a safe route to ore; waiting for mine command to stick. Not a player override. */
     private static final IntSet pendingMineHandoff = new IntSet();
@@ -501,7 +504,7 @@ public class MinersFDAI {
 
     /** Drop stale ids so reused unit ids do not inherit manual/AI state. */
     private static void pruneDeadUnitIds() {
-        if (manualUnits.isEmpty() && assistingUnits.isEmpty() && lastAiCommand.isEmpty() && routingUnits.isEmpty() && pendingMineHandoff.isEmpty()) return;
+        if (manualUnits.isEmpty() && assistingUnits.isEmpty() && lastAiCommand.isEmpty() && routingUnits.isEmpty() && pendingMineHandoff.isEmpty() && retreating.isEmpty()) return;
 
         IntSet alive = new IntSet();
         for (Unit u : Groups.unit) {
@@ -512,6 +515,7 @@ public class MinersFDAI {
         pruneSet(assistingUnits, alive);
         pruneSet(healingUnits, alive);
         pruneSet(routingUnits, alive);
+        pruneSet(retreating, alive);
         pruneSet(routingToCore, alive);
         pruneSet(routingBoosted, alive);
         pruneSet(pendingMineHandoff, alive);
@@ -527,7 +531,13 @@ public class MinersFDAI {
             lastAiCommand.remove(id);
             lastAiItem.remove(id);
             lastExclusiveSentAt.remove(id);
+            retreatCore.remove(id);
         }
+        IntSeq deadRetreat = new IntSeq();
+        for (var e : retreatCore.entries()) {
+            if (!alive.contains(e.key)) deadRetreat.add(e.key);
+        }
+        for (int i = 0; i < deadRetreat.size; i++) retreatCore.remove(deadRetreat.get(i));
     }
 
     // ================== Unit self-heal at base repair pads ==================
@@ -875,26 +885,24 @@ public class MinersFDAI {
         Seq<Item> use = present.isEmpty() ? flagged : present;
 
         if (safeMining) {
-            ensureRedScan(false);
-            if (turretRed != null) {
-                Seq<Item> unsafe = new Seq<>();
-                for (Item it : use) {
-                    if (findAnySafeOre(it) == null) unsafe.add(it);
+            OreSafety.ensureFresh();
+            Seq<Item> unsafe = new Seq<>();
+            for (Item it : use) {
+                if (!OreSafety.itemAvailable(it, true)) unsafe.add(it);
+            }
+            // Only drop an ore when some other deposit is still safe.
+            // An empty cluster list right after join must not disable everything.
+            boolean anySafe = false;
+            for (Item it : use) {
+                if (!unsafe.contains(it)) {
+                    anySafe = true;
+                    break;
                 }
-                // Only drop an ore when the scan actually found some other safe deposit —
-                // an empty index right after join must not disable everything.
-                boolean anySafe = false;
-                for (Item it : use) {
-                    if (!unsafe.contains(it)) {
-                        anySafe = true;
-                        break;
-                    }
-                }
-                if (anySafe) {
-                    for (Item it : unsafe) {
-                        disableMineResource(it, Core.bundle.get("client.fd.safemine.reason.turrets"));
-                        use.remove(it);
-                    }
+            }
+            if (anySafe) {
+                for (Item it : unsafe) {
+                    disableMineResource(it, Core.bundle.get("client.fd.safemine.reason.turrets"));
+                    use.remove(it);
                 }
             }
         }
@@ -975,7 +983,7 @@ public class MinersFDAI {
             // At repair pad — do not reassign to mine/building-heal until self-heal finishes
             if (healingUnits.contains(u.id)) continue;
             // Safe-mode detour — do not steal the move order
-            if (routingUnits.contains(u.id)) continue;
+            if (routingUnits.contains(u.id) || retreating.contains(u.id)) continue;
 
             // Respect player overrides (command and/or mine item stance)
             if (respectManualCommands && u.controller() instanceof CommandAI cai) {
@@ -1096,6 +1104,11 @@ public class MinersFDAI {
                     }
                 }
 
+                if (currentItem != null && safeMining && !OreSafety.isItemSafeForUnit(u, currentItem)) {
+                    if (!retreatToSafeVein(u, currentItem)) unassignedUnits.add(u);
+                    continue;
+                }
+
                 if (currentItem != null && quotas.get(currentItem, 0) > 0) {
                     quotas.put(currentItem, quotas.get(currentItem, 0) - 1);
                     lastAiCommand.put(u.id, UnitCommand.mineCommand);
@@ -1114,6 +1127,25 @@ public class MinersFDAI {
                 Item bestTarget = pickHighestQuota(possible, quotas);
                 if (bestTarget == null) {
                     bestTarget = possible.max(it -> itemWeights.get(it, 0f));
+                }
+                if (safeMining) {
+                    Item safeTarget = null;
+                    int bestQ = Integer.MIN_VALUE;
+                    for (Item it : possible) {
+                        if (!OreSafety.isItemSafeForUnit(u, it)) continue;
+                        int q = quotas.get(it, 0);
+                        if (safeTarget == null || q > bestQ) {
+                            bestQ = q;
+                            safeTarget = it;
+                        }
+                    }
+                    if (safeTarget != null) {
+                        bestTarget = safeTarget;
+                    } else if (bestTarget != null && retreatToSafeVein(u, bestTarget)) {
+                        continue;
+                    } else {
+                        continue;
+                    }
                 }
                 if (bestTarget == null) continue;
 
@@ -1411,7 +1443,7 @@ public class MinersFDAI {
         Item currentItem = getMiningItem(u, null);
 
         // Self-heal / safe-route uses moveCommand — never treat as player override
-        if (healingUnits.contains(u.id) || routingUnits.contains(u.id) || pendingMineHandoff.contains(u.id)) {
+        if (healingUnits.contains(u.id) || routingUnits.contains(u.id) || pendingMineHandoff.contains(u.id) || retreating.contains(u.id)) {
             return false;
         }
         // Stale AI move after routing/heal ended without a mine packet — reclaim
@@ -1549,6 +1581,9 @@ public class MinersFDAI {
         routingBoosted.clear();
         pendingBoost.clear();
         pendingMineHandoff.clear();
+        retreating.clear();
+        retreatCore.clear();
+        OreSafety.reset();
     }
 
     private static void pruneRoutingMaps(IntSet alive) {
@@ -1581,31 +1616,21 @@ public class MinersFDAI {
         return (turretRed != null && turretRed[i]) || (unitRed != null && unitRed[i]);
     }
 
-    /** True if (x,y) is inside an enemy turret or armed unit range + 5 tiles. */
+    /** True if (x,y) sits inside an enemy turret or drop-zone circle. */
     public static boolean isPosDangerous(float x, float y) {
-        ensureRedScan(false);
-        if (turretRed == null || world == null) return false;
-        return isRed(world.toTile(x), world.toTile(y));
+        if (!safeMining) return false;
+        OreSafety.ensureFresh();
+        return OreSafety.isThreatened(x, y);
     }
 
     public static boolean isTileDangerous(Tile tile) {
-        if (tile == null) return false;
-        ensureRedScan(false);
-        return isRed(tile.x, tile.y);
+        if (tile == null || !safeMining) return false;
+        return isPosDangerous(tile.worldx(), tile.worldy());
     }
 
-    /** Turret layer and the ore index at most once per 20s. Moving units repaint their own layer once a second. */
+    /** Leftover callers must not paint a map-sized grid. Circles refresh at most once a second. */
     private static void ensureRedScan(boolean force) {
-        if (world == null) return;
-        int n = world.width() * world.height();
-        boolean sizeOk = turretRed != null && redW == world.width() && redH == world.height() && turretRed.length == n;
-        if (force || !sizeOk || Time.timeSinceMillis(redScanAt) >= RED_SCAN_MS) {
-            scanRedZones();
-            return;
-        }
-        if (Time.timeSinceMillis(unitScanAt) >= UNIT_SCAN_MS) {
-            rescanEnemyUnits();
-        }
+        OreSafety.ensureFresh();
     }
 
     private static void scanRedZones() {
@@ -1806,42 +1831,17 @@ public class MinersFDAI {
     }
 
     /**
-     * Safest team core this unit can actually reach without flying through the red zone.
-     * Prefers high clearance (far from turrets/units); among those, the closer one.
-     * Falls back to {@code unit.closestCore()} if nothing is safely reachable.
+     * Nearest core that is outside enemy turret circles.
+     * Falls back to {@code unit.closestCore()} when every core is under fire.
      */
     public static Building findSafestReachableCore(Unit u) {
         if (u == null) {
             return player != null && player.team() != null ? player.team().core() : null;
         }
-        if (!safeMining || turretRed == null || !anyRed) return u.closestCore();
-        ensureRedScan(false);
-        ensureRankedCores();
-
-        Building bestLos = null;
-        float bestLosScore = Float.NEGATIVE_INFINITY;
-        for (int i = 0; i < rankedCores.size; i++) {
-            Building c = rankedCores.get(i);
-            if (c == null || !c.isValid()) continue;
-            if (!coreSafeDest(c, tmpCoreDest)) continue;
-            float score = coreClearance(c) * 20f * tilesize - u.dst(tmpCoreDest.x, tmpCoreDest.y);
-            if (!segmentHitsRed(u.x, u.y, tmpCoreDest.x, tmpCoreDest.y) && score > bestLosScore) {
-                bestLosScore = score;
-                bestLos = c;
-            }
-        }
-        if (bestLos != null) return bestLos;
-
-        int tries = 0;
-        for (int i = 0; i < rankedCores.size && tries < 4; i++) {
-            Building c = rankedCores.get(i);
-            if (c == null || !c.isValid()) continue;
-            if (!coreSafeDest(c, tmpCoreDest)) continue;
-            tries++;
-            Seq<Vec2> path = astarAvoidRed(u.x, u.y, tmpCoreDest.x, tmpCoreDest.y);
-            if (path != null && path.size > 0) return c;
-        }
-        return u.closestCore();
+        if (!safeMining) return u.closestCore();
+        OreSafety.ensureFresh();
+        Building safe = OreSafety.nearestSafeCore(u);
+        return safe != null ? safe : u.closestCore();
     }
 
     private static Vec2 worldPos(int tx, int ty) {
@@ -1866,43 +1866,8 @@ public class MinersFDAI {
 
     public static Tile findSafeOre(Unit unit, Item item) {
         if (item == null) return null;
-        ensureRedScan(false);
-        Seq<Tile> list = safeOres.get(item);
-        if (list == null || list.isEmpty()) return null;
-        UnitType type = unit != null ? unit.type : null;
-        Building home = unit != null ? findSafestReachableCore(unit)
-                : (player != null && player.team() != null ? player.team().core() : null);
-        float hx = home != null ? home.x : (unit != null ? unit.x : 0f);
-        float hy = home != null ? home.y : (unit != null ? unit.y : 0f);
-        float ux = unit != null ? unit.x : hx;
-        float uy = unit != null ? unit.y : hy;
-
-        Tile bestHomeClear = null, bestUnitClear = null, bestHome = null;
-        float dHomeClear = Float.MAX_VALUE, dUnitClear = Float.MAX_VALUE, dHome = Float.MAX_VALUE;
-        for (int i = 0; i < list.size; i++) {
-            Tile t = list.get(i);
-            if (!tileMinesItem(t, item, type)) continue;
-            if (isTileDangerous(t)) continue;
-            float twx = t.worldx(), twy = t.worldy();
-            float dh = Mathf.dst2(hx, hy, twx, twy);
-            float du = Mathf.dst2(ux, uy, twx, twy);
-            boolean clear = unit == null || !segmentHitsRed(ux, uy, twx, twy);
-            if (dh < dHome) {
-                dHome = dh;
-                bestHome = t;
-            }
-            if (clear && dh < dHomeClear) {
-                dHomeClear = dh;
-                bestHomeClear = t;
-            }
-            if (clear && du < dUnitClear) {
-                dUnitClear = du;
-                bestUnitClear = t;
-            }
-        }
-        if (bestHomeClear != null) return bestHomeClear;
-        if (bestUnitClear != null) return bestUnitClear;
-        return bestHome;
+        OreSafety.ensureFresh();
+        return OreSafety.nearestSafeTile(unit, item);
     }
 
     /** Used by MinerAI / MinePath when safe mode is on. */
@@ -1999,109 +1964,81 @@ public class MinersFDAI {
         }
     }
 
+    private static void retreatUnit(Unit u, Building core, Item item) {
+        if (u == null || core == null) return;
+        retreating.add(u.id);
+        retreatCore.put(u.id, core);
+        queueSetCommand(new int[]{u.id}, UnitCommand.moveCommand);
+        if (u.type != null && u.type.canBoost && UnitStance.boost != null) {
+            queueSetStance(new int[]{u.id}, UnitStance.boost, true);
+        }
+        queueCommandUnits(new int[]{u.id}, core.x, core.y);
+        lastAiCommand.put(u.id, UnitCommand.moveCommand);
+        if (item != null) lastAiItem.put(u.id, item);
+    }
+
+    /** Move to another core whose nearest vein of this item is safe. Packets stay in the budget. */
+    private static boolean retreatToSafeVein(Unit u, Item item) {
+        if (!safeMining || u == null || item == null) return false;
+        OreSafety.ensureFresh();
+        if (OreSafety.isItemSafeForUnit(u, item)) return false;
+        Building away = OreSafety.relocationCore(u, item);
+        if (away == null) return false;
+        retreatUnit(u, away, item);
+        return true;
+    }
+
     private static void handleSafeMining() {
         if (player == null || player.team() == null) return;
-        ensureRedScan(false);
+        OreSafety.ensureFresh();
 
-        if (!anyRed) {
-            IntSeq done = new IntSeq();
-            routingUnits.each(done::add);
-            pendingMineHandoff.each(done::add);
-            if (done.size > 0) finishRoutingBatch(done);
-            return;
+        if (!routingUnits.isEmpty()) {
+            IntSeq stuck = new IntSeq();
+            routingUnits.each(stuck::add);
+            for (int i = 0; i < stuck.size; i++) {
+                int id = stuck.get(i);
+                routingUnits.remove(id);
+                routingPaths.remove(id);
+                routingOre.remove(id);
+                routingToCore.remove(id);
+                Unit old = Groups.unit.getByID(id);
+                if (old != null && OreSafety.isThreatened(old.x, old.y)) {
+                    Building core = OreSafety.nearestSafeCore(old);
+                    if (core == null) core = old.closestCore();
+                    if (core != null && !OreSafety.isThreatened(core.x, core.y)) {
+                        retreatUnit(old, core, lastAiItem.get(id));
+                    }
+                } else if (old != null) {
+                    forceAssignNext = true;
+                }
+            }
         }
-
-        IntSeq arrived = new IntSeq();
-        collectPendingMineHandoffs(arrived);
 
         for (Unit u : Groups.unit) {
             if (u.team != player.team() || !u.isCommandable() || !u.isValid()) continue;
             if (!isManagedMinerType(u.type)) continue;
             if (manualUnits.contains(u.id) || assistingUnits.contains(u.id) || healingUnits.contains(u.id)) continue;
 
-            boolean depositing = u.stack.amount >= Math.max(1, u.itemCapacity()) * 0.85f;
-
-            if (routingUnits.contains(u.id)) {
-                advanceRouting(u, arrived);
-                continue;
-            }
-
-            if (pendingMineHandoff.contains(u.id)) continue;
-
-            if (isPosDangerous(u.x, u.y)) {
-                extractFromRed(u, depositing, arrived);
-                continue;
-            }
-
-            Item assigned = lastAiItem.get(u.id);
-            if (assigned == null) assigned = getMiningItem(u, null);
-
-            if (depositing) {
-                Building core = findSafestReachableCore(u);
-                if (core == null) core = u.closestCore();
-                if (core == null) continue;
-                Building closest = u.closestCore();
-                boolean wrongCore = closest != null && closest.id != core.id;
-                if (wrongCore || segmentHitsRed(u.x, u.y, core.x, core.y) || isPosDangerous(u.x, u.y)) {
-                    startRouteToCore(u, core);
+            if (retreating.contains(u.id)) {
+                Building dest = retreatCore.get(u.id);
+                boolean arrived = dest != null && dest.isValid() && u.within(dest, dest.hitSize() / 2f + 6f * tilesize);
+                boolean bad = dest == null || !dest.isValid() || OreSafety.isThreatened(dest.x, dest.y);
+                if (arrived || bad) {
+                    retreating.remove(u.id);
+                    retreatCore.remove(u.id);
+                    forceAssignNext = true;
                 }
                 continue;
             }
 
-            if (assigned == null) continue;
-
-            Tile dest = findSafeOre(u, assigned);
-            if (dest == null) {
-                disableMineResource(assigned, Core.bundle.get("client.fd.safemine.reason.turrets"));
-                Building core = findSafestReachableCore(u);
-                if (core == null) core = u.closestCore();
-                if (core != null) startRouteToCore(u, core);
-                continue;
+            if (!OreSafety.isThreatened(u.x, u.y)) continue;
+            Item item = lastAiItem.get(u.id);
+            Building away = item != null ? OreSafety.relocationCore(u, item) : null;
+            Building core = away != null ? away : OreSafety.nearestSafeCore(u);
+            if (core == null) core = u.closestCore();
+            if (core != null && !OreSafety.isThreatened(core.x, core.y)) {
+                retreatUnit(u, core, item);
             }
-
-            if (isActivelyMining(u, dest)) {
-                pendingMineHandoff.remove(u.id);
-                continue;
-            }
-
-            boolean headingBad = false;
-            if (u.mineTile != null && isTileDangerous(u.mineTile)) headingBad = true;
-            if (u.controller() instanceof CommandAI cai && cai.targetPos != null) {
-                if (isPosDangerous(cai.targetPos.x, cai.targetPos.y)
-                        || segmentHitsRed(u.x, u.y, cai.targetPos.x, cai.targetPos.y)) {
-                    headingBad = true;
-                }
-            }
-
-            boolean vanillaSafe = false;
-            Building core = findSafestReachableCore(u);
-            if (core != null && Vars.indexer != null) {
-                try {
-                    Tile vanilla = u.type.mineFloor ? Vars.indexer.findClosestOre(core.x, core.y, assigned) : null;
-                    if ((vanilla == null || isTileDangerous(vanilla)) && u.type.mineWalls) {
-                        Tile w = Vars.indexer.findClosestWallOre(core.x, core.y, assigned);
-                        if (w != null) vanilla = w;
-                    }
-                    vanillaSafe = vanilla != null && !isTileDangerous(vanilla)
-                            && !segmentHitsRed(u.x, u.y, vanilla.worldx(), vanilla.worldy());
-                } catch (Throwable ignored) {}
-            }
-
-            boolean atDest = u.within(dest, Math.max(u.type.mineRange, 32f));
-            if (atDest || (vanillaSafe && !headingBad)) {
-                if (needsMineHandoff(u)) {
-                    routingOre.put(u.id, dest);
-                    arrived.add(u.id);
-                }
-                continue;
-            }
-
-            startRouteToOre(u, dest, arrived);
-        }
-
-        flushPendingMoves();
-        if (arrived.size > 0) {
-            finishRoutingBatch(arrived);
         }
     }
 

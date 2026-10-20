@@ -85,22 +85,15 @@ public class Conveyor extends Block implements Autotiler{
             && lookingAtEither(tile, rotation, otherx, othery, otherrot, otherblock);
     }
 
-    //stack conveyors should be bridged over, not replaced; never eat existing hops
+    // Plastanium belts and payload blocks stay. Item, phase and direction bridges are replaced.
     @Override
     public boolean canReplace(Block other){
-        return super.canReplace(other) && !(other instanceof StackConveyor) && !(other instanceof PayloadBlock)
-            && !(other instanceof ItemBridge) && !(other instanceof DirectionBridge);
+        return super.canReplace(other) && !(other instanceof StackConveyor) && !(other instanceof PayloadBlock);
     }
 
     @Override
     public void handlePlacementLine(Seq<BuildPlan> plans){
-        if(plans == null || plans.isEmpty()) return;
-        // Keep existing bridges: drawing a belt through a hop must not replace B2/B3.
-        plans.removeAll(p -> {
-            Tile t = world.tile(p.x, p.y);
-            return t != null && Placement.isHopBridge(t.block());
-        });
-        if(plans.isEmpty() || bridgeReplacement == null) return;
+        if(plans == null || plans.isEmpty() || bridgeReplacement == null) return;
         boolean hasJuntionReplacement = junctionReplacement != null;
         if(bridgeReplacement instanceof DuctBridge bridge) Placement.calculateBridges(plans, bridge, hasJuntionReplacement, b -> b instanceof Duct || b instanceof Conveyor);
         if(bridgeReplacement instanceof ItemBridge bridge) Placement.calculateBridges(plans, bridge, hasJuntionReplacement, b -> b instanceof Conveyor);

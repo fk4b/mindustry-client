@@ -36,7 +36,7 @@ import mindustry.client.fallen.assistai.SelfBuilderAI;
 import mindustry.client.utils.AutoTransfer;
 import mindustry.client.utils.BuilderAssist;
 import mindustry.client.morj.*;
-import mindustry.client.morj.drill.DrillFill;
+
 import mindustry.content.*;
 import mindustry.core.NetClient;
 import mindustry.entities.Units;
@@ -268,7 +268,7 @@ public class PanelFragment extends Table{
         mindustry.client.fallen.FdLogicQol.init();
         mindustry.client.fallen.MinersFDAI.init();
         BuilderAssist.init();
-        DrillFill.init();
+        AutoDrillPlacer.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -291,10 +291,8 @@ public class PanelFragment extends Table{
         }
     }
 
-    private static final String[] tabKeys = {
-        "client.morj.tab.mine", "client.morj.tab.build", "client.morj.tab.view", "client.morj.tab.fight", "client.morj.tab.server"
-    };
-    private int panelTab = Mathf.clamp(Core.settings.getInt("morj-panel-tab", 0), 0, 4);
+    /** Key of the open tab (see {@link PanelLayout#tabs()}). */
+    private String panelTab = initialTab();
     private Table panelPage;
     private ScrollPane pagePane;
     private Cell<ScrollPane> pageCell;
@@ -303,36 +301,65 @@ public class PanelFragment extends Table{
     private Label panelTabLabel;
     private boolean placedPanel;
     private boolean pagesRegistered;
-    private final Seq<QueuedTile> tileQueue = new Seq<>();
+    /** Every panel button, registered once per {@link #reregister()}, in registration order. */
+    private final OrderedMap<String, QueuedTile> registry = new OrderedMap<>();
+    private boolean extrasRegistered;
     private int tileReg;
     private final Seq<PanelIcon> icons = new Seq<>();
     private final ObjectSet<String> iconIds = new ObjectSet<>();
     private final ObjectMap<String, Runnable> actions = new ObjectMap<>();
     /** Next tile() keeps this id. Used for settings pinned onto the panel. */
     private String forcedId;
-    private int regTab;
+    /** Home tab and home group of the buttons being registered. */
+    private String regTab = PanelLayout.builtinTabs[0], regGroup;
 
     public static final class PanelIcon{
         public final String id, label, caption;
         public final Drawable icon;
         /** Right click does something besides the main action. */
         public final boolean extra;
-        public final int reg, tab;
-        public PanelIcon(String id, String label, String caption, Drawable icon, boolean extra, int reg, int tab){
+        public final int reg;
+        /** Where the button lives unless the player moved it. homeGroup may be null. */
+        public final String homeTab, homeGroup;
+        public PanelIcon(String id, String label, String caption, Drawable icon, boolean extra, int reg, String homeTab, String homeGroup){
             this.id = id;
             this.label = label;
             this.caption = caption;
             this.icon = icon;
             this.extra = extra;
             this.reg = reg;
-            this.tab = tab;
+            this.homeTab = homeTab;
+            this.homeGroup = homeGroup;
+        }
+
+        /** Caption shown on the panel: the player's own text or the default. */
+        public String shownCaption(){
+            String custom = PanelLayout.caption(id);
+            return custom != null ? custom : caption;
+        }
+
+        /** Icon shown on the panel: the player's choice or the default. */
+        public Drawable shownIcon(){
+            Drawable custom = PanelLayout.icon(PanelLayout.iconKey(id));
+            return custom != null ? custom : icon;
+        }
+
+        public String tab(){
+            return PanelLayout.tabOf(id, homeTab);
+        }
+
+        public String group(){
+            return PanelLayout.groupOf(id, homeTab, homeGroup);
         }
     }
 
     private static final class QueuedTile{
         String id, label, tip, rightTip;
+        String tab, group;
         Drawable drawable;
         Boolp state;
+        /** Small text in the corner of the button (a count, a value, a timer). Null or empty hides it. */
+        Prov<String> badge;
         Runnable left, right;
         int reg;
     }
@@ -348,13 +375,21 @@ public class PanelFragment extends Table{
         return icons;
     }
 
-    public int currentTab(){
+    public String currentTab(){
         return panelTab;
     }
 
-    public Seq<PanelIcon> tabIcons(int tab){
+    private static String initialTab(){
+        String key = Core.settings.getString("morj-panel-tabkey", null);
+        if(key != null && !key.isEmpty()) return key;
+        int old = Mathf.clamp(Core.settings.getInt("morj-panel-tab", 0), 0, 4);
+        return PanelLayout.builtinTabs[old];
+    }
+
+    /** Buttons shown on a tab, in panel order. */
+    public Seq<PanelIcon> tabIcons(String tab){
         Seq<PanelIcon> out = new Seq<>();
-        for(PanelIcon icon : icons) if(icon.tab == tab) out.add(icon);
+        for(PanelIcon icon : icons) if(icon.tab().equals(tab)) out.add(icon);
         out.sort(Structs.comparingInt(icon -> {
             int index = PanelLayout.index(icon.id);
             return index >= PanelLayout.unordered ? PanelLayout.unordered + icon.reg : index;
@@ -365,35 +400,43 @@ public class PanelFragment extends Table{
     /** Drops the cached button list so a newly pinned setting is included. */
     public void reregister(){
         pagesRegistered = false;
+        registerPages();
+    }
+
+    /** Registers every button once, so the list exists before a tab is opened. Tabs are drawn from this list. */
+    public void registerPages(){
+        if(pagesRegistered || Items.copper == null) return;
+        pagesRegistered = true;
+        registry.clear();
         icons.clear();
         iconIds.clear();
         actions.clear();
         tileReg = 0;
-        registerPages();
-    }
-
-    /** Builds every tab once so the button list exists before a tab is opened. */
-    public void registerPages(){
-        if(pagesRegistered || Items.copper == null) return;
-        pagesRegistered = true;
-        pageMine(new Table());
-        pageBuild(new Table());
-        pageView(new Table());
-        pageFight(new Table());
-        pageServer(new Table());
-        tileQueue.clear();
+        pageMine(null);
+        pageBuild(null);
+        pageView(null);
+        pageFight(null);
+        pageServer(null);
+        registerExtras();
+        registerBadges();
+        regTab = PanelLayout.builtinTabs[0];
+        regGroup = null;
     }
     private static final Color panelDim = new Color(1f, 1f, 1f, 0.38f);
-    private static Drawable panelOnBg, panelOffBg, panelOverBg, panelActionBg;
+    private static final Color groupLine = new Color(1f, 1f, 1f, 0.12f);
+    private static Drawable panelOnBg, panelOffBg, panelOverBg, panelActionBg, panelBadgeBg, panelTabOnBg, panelClearBg;
     private static Button.ButtonStyle panelBtnStyle, panelActionStyle;
     private static ImageButton.ImageButtonStyle panelTabStyle;
 
     private void ensureStyles(){
         if(panelBtnStyle != null) return;
-        panelOffBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.06f);
-        panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.46f);
-        panelOverBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.16f);
-        panelActionBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.12f);
+        panelOffBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.045f);
+        panelOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.26f);
+        panelOverBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.13f);
+        panelActionBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0.085f);
+        panelBadgeBg = ((TextureRegionDrawable)Tex.whiteui).tint(0f, 0f, 0f, 0.72f);
+        panelTabOnBg = ((TextureRegionDrawable)Tex.whiteui).tint(Pal.accent.r, Pal.accent.g, Pal.accent.b, 0.18f);
+        panelClearBg = ((TextureRegionDrawable)Tex.whiteui).tint(1f, 1f, 1f, 0f);
         panelBtnStyle = new Button.ButtonStyle();
         panelBtnStyle.up = panelOffBg;
         panelBtnStyle.over = panelOverBg;
@@ -405,10 +448,10 @@ public class PanelFragment extends Table{
         panelActionStyle.down = panelOverBg;
         panelActionStyle.checked = panelActionBg;
         panelTabStyle = new ImageButton.ImageButtonStyle(Styles.clearTogglei);
-        panelTabStyle.up = panelOffBg;
+        panelTabStyle.up = panelClearBg;
         panelTabStyle.over = panelOverBg;
-        panelTabStyle.down = panelOnBg;
-        panelTabStyle.checked = panelOnBg;
+        panelTabStyle.down = panelTabOnBg;
+        panelTabStyle.checked = panelTabOnBg;
         panelTabStyle.imageUpColor = Color.lightGray;
         panelTabStyle.imageOverColor = Color.white;
         panelTabStyle.imageDownColor = Color.white;
@@ -424,12 +467,12 @@ public class PanelFragment extends Table{
     }
 
     private float tileHeight(float iconSize){
-        return iconSize + 22f * PanelLayout.titleScale();
+        return iconSize + 25f * PanelLayout.titleScale();
     }
 
     public void build(Group parent){
         if(Items.copper != null) loadMiningPrefs();
-        registerPages();
+        reregister();
         ensureStyles();
         placedPanel = false;
         parent.fill(full -> {
@@ -450,9 +493,13 @@ public class PanelFragment extends Table{
                 Image grip = new Image(Icon.moveSmall);
                 grip.setColor(Pal.accent);
                 head.add(grip).size(16f).padRight(5f);
-                Label title = head.add("morj").growX().left().get();
+                Label title = head.add("morj").left().get();
                 title.setFontScale(0.95f * PanelLayout.titleScale());
                 title.setColor(Pal.accent);
+                panelTabLabel = head.add("").left().growX().padLeft(6f).get();
+                panelTabLabel.setFontScale(0.78f * PanelLayout.titleScale());
+                panelTabLabel.setColor(Color.lightGray);
+                panelTabLabel.setEllipsis(true);
                 dragPanel(head);
                 head.button("?", Styles.cleart, () -> {
                     helpMode = !helpMode;
@@ -502,21 +549,25 @@ public class PanelFragment extends Table{
 
             panelShell.table(tabs -> {
                 tabs.left();
-                tabs.defaults().size(26f).pad(1f);
-                Drawable[] icons = {Icon.production, Icon.hammer, Icon.eye, Icon.units, Icon.host};
-                int[] order = PanelLayout.tabOrder();
-                for(int slot = 0; slot < order.length; slot++){
-                    int tab = order[slot];
-                    tabs.button(icons[tab], panelTabStyle, 18f, () -> showPanelTab(tab))
-                        .checked(b -> panelTab == tab)
-                        .tooltip(Core.bundle.get(tabKeys[tab]));
+                int slot = 0;
+                for(PanelLayout.Tab tab : PanelLayout.tabs()){
+                    String key = tab.key;
+                    Table cell = new Table();
+                    ImageButton button = new ImageButton(PanelLayout.tabIcon(tab), panelTabStyle);
+                    button.resizeImage(18f);
+                    button.clicked(() -> showPanelTab(key));
+                    button.update(() -> button.setChecked(key.equals(panelTab)));
+                    String name = PanelLayout.tabName(tab);
+                    button.addListener(new Tooltip(t -> t.background(Styles.black6).margin(4f).add(name)));
+                    cell.add(button).size(28f).row();
+                    Image line = new Image(Tex.whiteui);
+                    line.update(() -> line.setColor(key.equals(panelTab) ? Pal.accent : Color.clear));
+                    cell.add(line).height(2f).growX();
+                    tabs.add(cell).padRight(1f);
+                    if(++slot % 9 == 0) tabs.row();
                 }
-            }).left().padBottom(1f).row();
-
-            panelTabLabel = panelShell.add("").left().padBottom(3f).get();
-            panelTabLabel.setFontScale(0.8f * PanelLayout.titleScale());
-            panelTabLabel.setColor(Pal.accent);
-            panelShell.row();
+            }).left().padBottom(2f).row();
+            panelShell.image(Tex.whiteui).color(groupLine).height(1f).growX().padBottom(3f).row();
 
             panelPage = new Table();
             panelPage.top().left();
@@ -649,22 +700,18 @@ public class PanelFragment extends Table{
         panelShell.setPosition(Mathf.clamp(panelShell.x, 0f, maxX), Mathf.clamp(panelShell.y, 0f, maxY));
     }
 
-    private void showPanelTab(int tab){
-        panelTab = Mathf.clamp(tab, 0, 4);
-        settings.put("morj-panel-tab", panelTab);
-        if(panelTabLabel != null) panelTabLabel.setText(Core.bundle.get(tabKeys[panelTab]));
+    private void showPanelTab(String tab){
+        if(PanelLayout.tab(tab) == null) tab = PanelLayout.firstTab();
+        panelTab = tab;
+        settings.put("morj-panel-tabkey", panelTab);
+        if(!extrasRegistered && ui != null && ui.settings != null && PanelLayout.extras().any()) reregister();
+        if(panelTabLabel != null) panelTabLabel.setText("· " + PanelLayout.tabName(PanelLayout.tab(panelTab)));
         if(panelPage == null) return;
         // A taller page keeps the top edge. Past the cap, the page scrolls instead of covering the screen.
         boolean anchor = placedPanel && panelShell != null && panelShell.getHeight() > 1f;
         panelPage.clear();
         panelPage.top().left();
-        switch(panelTab){
-            case 0 -> pageMine(panelPage);
-            case 1 -> pageBuild(panelPage);
-            case 2 -> pageView(panelPage);
-            case 3 -> pageFight(panelPage);
-            default -> pageServer(panelPage);
-        }
+        buildPage(panelPage, panelTab);
         if(panelShell != null){
             fitShell(anchor);
             if(pagePane != null) pagePane.setScrollYForce(0f);
@@ -736,8 +783,9 @@ public class PanelFragment extends Table{
     }
 
     private void pageMine(Table page){
-        regTab = 0;
-        Table grid = grid(page);
+        regTab = "mine";
+        regGroup = null;
+        Table grid = null;
         int[] col = {0};
         ore(grid, col, Items.copper, "@client.fdpanel.minecopper");
         ore(grid, col, Items.lead, "@client.fdpanel.minelead");
@@ -794,13 +842,12 @@ public class PanelFragment extends Table{
                 currentfollowmode = 2;
                 Navigation.follow(new BuildPath("self"));
             }, null);
-        queueExtras(grid, col, 0);
-        flush(grid, 0);
     }
 
     private void pageBuild(Table page){
-        regTab = 1;
-        Table grid = grid(page);
+        regTab = "build";
+        regGroup = null;
+        Table grid = null;
         int[] col = {0};
         assist(grid, col, UnitTypes.poly, bundle.get("client.morj.btn.poly"), "@client.fdpanel.assistpoly",
             () -> MinersFDAI.assistBuildPoly, MinersFDAI::setAssistBuildPoly);
@@ -828,7 +875,7 @@ public class PanelFragment extends Table{
         tile(grid, col, new TextureRegionDrawable(UnitTypes.nova.uiIcon), bundle.get("client.morj.btn.nova"), "@client.fdpanel.novaassist",
             () -> BuilderAssist.enabled, BuilderAssist::toggle, BuilderAssist::showSettings, "client.morj.right.nova");
         tile(grid, col, new TextureRegionDrawable(Blocks.mechanicalDrill.uiIcon), bundle.get("client.morj.btn.drill"), "@client.fdpanel.autodrill",
-            DrillFill::enabled, DrillFill::toggle, DrillFill::showSettings, "client.morj.right.drill");
+            AutoDrillPlacer::active, AutoDrillPlacer::toggle, AutoDrillPlacer::showSettings, "client.morj.right.drill");
         tile(grid, col, Icon.list, bundle.get("client.morj.btn.recipe"), "@client.fdpanel.recipe",
             null, RecipeDialog::open, null);
         tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.schem"), "@client.fdpanel.schemcleanup",
@@ -848,23 +895,14 @@ public class PanelFragment extends Table{
             }, "client.morj.right.power");
         tile(grid, col, Icon.logic, bundle.get("client.morj.btn.fixcode"), "@client.fdpanel.fixcode",
             null, () -> ClientVars.clientCommandHandler.handleMessage("!fixcode r", player), null);
-        queueExtras(grid, col, 1);
-        flush(grid, 1);
     }
 
-    private Table beginSection(Table row, String key, boolean second){
-        Table box = new Table();
-        box.top().left();
-        header(box, key);
-        row.add(box).top().left().padLeft(second ? 4f : 0f);
-        return grid(box);
-    }
 
     private void pageView(Table page){
-        regTab = 2;
-        Table top = new Table();
-        top.top().left();
-        Table map = beginSection(top, "client.morj.sec.map", false);
+        regTab = "view";
+        regGroup = null;
+        regGroup = "sec.map";
+        Table map = null;
         int[] col = {0};
         tile(map, col, Icon.map, bundle.get("client.morj.btn.markers"), "@client.fdpanel.mapmarkers",
             () -> settings.getBool("mapmarkers", true), () -> settings.put("mapmarkers", !settings.getBool("mapmarkers", true)), null);
@@ -880,10 +918,9 @@ public class PanelFragment extends Table{
             () -> settings.getBool("wavepath", true), () -> settings.put("wavepath", !settings.getBool("wavepath", true)), null);
         tile(map, col, Icon.warning, bundle.get("client.morj.btn.whp"), "@client.fdpanel.wavehp",
             () -> settings.getBool("wavehp", true), () -> settings.put("wavehp", !settings.getBool("wavehp", true)), null);
-        flush(map, 2, true);
 
-        Table search = beginSection(top, "client.morj.sec.search", true);
-        col = new int[]{0};
+        regGroup = "sec.search";
+        Table search = null;
         tile(search, col, new TextureRegionDrawable(UnitTypes.dagger.uiIcon), bundle.get("client.morj.btn.scanunits"), "@client.fdpanel.eye.units", null, this::checkunits, null);
         tile(search, col, new TextureRegionDrawable(Blocks.coreShard.uiIcon), bundle.get("client.morj.btn.scancores"), "@client.fdpanel.eye.cores", null, this::checkcores, null);
         tile(search, col, Icon.modeAttack, bundle.get("client.morj.btn.scanspawn"), "@client.fdpanel.eye.spawns", null, this::checkspawns, null);
@@ -891,13 +928,9 @@ public class PanelFragment extends Table{
         tile(search, col, new TextureRegionDrawable(Blocks.itemSource.uiIcon), bundle.get("client.morj.btn.scansource"), "@client.fdpanel.eye.sources", null, this::checksources, null);
         tile(search, col, new TextureRegionDrawable(Blocks.worldProcessor.uiIcon), bundle.get("client.morj.btn.scanproc"), "@client.fdpanel.eye.worldproc", null, this::checkworldprocc, null);
         tile(search, col, new TextureRegionDrawable(UnitTypes.flare.uiIcon), bundle.get("client.morj.btn.wave"), "@client.fdpanel.eye.wave", null, this::checkNextWave, null);
-        flush(search, 2, true);
-        page.add(top).left().row();
 
-        Table bottom = new Table();
-        bottom.top().left();
-        Table labels = beginSection(bottom, "client.morj.sec.labels", false);
-        col = new int[]{0};
+        regGroup = "sec.labels";
+        Table labels = null;
         tile(labels, col, Icon.eyeOff, bundle.get("client.morj.btn.fade"), "@client.fdpanel.smarttransparency",
             () -> settings.getBool("smarttransparency", false), () -> settings.put("smarttransparency", !settings.getBool("smarttransparency", false)), null);
         tile(labels, col, new TextureRegionDrawable(Blocks.illuminator.uiIcon), bundle.get("client.morj.btn.light"), "@client.fdpanel.light",
@@ -921,10 +954,9 @@ public class PanelFragment extends Table{
             () -> settings.put("hiddenitemopacity", settings.getInt("hiddenitemopacity", 70) > 0 ? 0 : 70), null);
         tile(labels, col, Icon.modeAttack, bundle.get("client.morj.btn.dmg"), "@client.fdpanel.damagepopups",
             () -> settings.getBool("damagepopups", true), () -> settings.put("damagepopups", !settings.getBool("damagepopups", true)), null);
-        flush(labels, 2, true);
 
-        Table nets = beginSection(bottom, "client.morj.sec.nets", true);
-        col = new int[]{0};
+        regGroup = "sec.nets";
+        Table nets = null;
         tile(nets, col, new TextureRegionDrawable(Blocks.massDriver.uiIcon), bundle.get("client.morj.btn.driver"), "@client.fdpanel.massdriverline",
             () -> settings.getBool("massdriverline", true), () -> settings.put("massdriverline", !settings.getBool("massdriverline", true)), null);
         tile(nets, col, Icon.zoom, bundle.get("client.morj.btn.scan"), "@client.fdpanel.transportscan",
@@ -947,14 +979,13 @@ public class PanelFragment extends Table{
             () -> settings.getBool("procstatus", true), () -> settings.put("procstatus", !settings.getBool("procstatus", true)), null);
         tile(nets, col, Icon.chartBar, bundle.get("client.morj.btn.chart"), "@client.fdpanel.corechart",
             () -> settings.getBool("corechart", true), () -> settings.put("corechart", !settings.getBool("corechart", true)), null);
-        queueExtras(nets, col, 2);
-        flush(nets, 2, true);
-        page.add(bottom).left().padTop(2f);
+        regGroup = null;
     }
 
     private void pageFight(Table page){
-        regTab = 3;
-        Table grid = grid(page);
+        regTab = "fight";
+        regGroup = null;
+        Table grid = null;
         int[] col = {0};
         tile(grid, col, Icon.star, bundle.get("client.morj.btn.aim"), "@client.fdpanel.smarttargeting",
             FDAutoShoot::enabled, () -> FDAutoShoot.setEnabled(!FDAutoShoot.enabled()), FDAutoShoot::openMenu, "client.morj.right.aim");
@@ -972,13 +1003,12 @@ public class PanelFragment extends Table{
             () -> FDAutoShoot.viewUnitAim, () -> FDAutoShoot.viewUnitAim = !FDAutoShoot.viewUnitAim, null);
         tile(grid, col, new TextureRegionDrawable(UnitTypes.mega.uiIcon), bundle.get("client.morj.btn.ucmega"), "@client.fdpanel.mega",
             null, () -> ClientVars.clientCommandHandler.handleMessage("!uc " + UnitTypes.mega.localizedName, player), null);
-        queueExtras(grid, col, 3);
-        flush(grid, 3);
     }
 
     private void pageServer(Table page){
-        regTab = 4;
-        Table grid = grid(page);
+        regTab = "server";
+        regGroup = null;
+        Table grid = null;
         int[] col = {0};
         tile(grid, col, Icon.refresh, bundle.get("client.morj.btn.sync"), "@client.fdpanel.sync",
             null, () -> Call.sendChatMessage("/sync"), null);
@@ -992,17 +1022,8 @@ public class PanelFragment extends Table{
             null, () -> Call.sendChatMessage("/history"), null);
         tile(grid, col, Icon.rotate, bundle.get("client.morj.btn.elite"), "@client.fdpanel.elite",
             null, () -> Call.sendChatMessage("/elite"), null);
-        queueExtras(grid, col, 4);
-        flush(grid, 4);
     }
 
-    private Table grid(Table page){
-        tileQueue.clear();
-        Table grid = new Table();
-        grid.left().top();
-        page.add(grid).left().growX();
-        return grid;
-    }
 
     private void ore(Table grid, int[] col, Item item, String tip){
         tile(grid, col, new TextureRegionDrawable(item.uiIcon), item.localizedName, tip,
@@ -1022,12 +1043,14 @@ public class PanelFragment extends Table{
         tile(grid, col, drawable, label, tip, state, left, right, right == null ? null : "client.morj.right");
     }
 
+    /** Registers a button for the current home tab/group. The grid arguments are kept for old call sites and ignored. */
     private void tile(Table grid, int[] col, Drawable drawable, String label, String tip, Boolp state, Runnable left, Runnable right, String rightTip){
         String id = forcedId != null ? forcedId : (tip != null && tip.startsWith("@") ? tip.substring(1) : String.valueOf(label));
         forcedId = null;
         int reg = tileReg++;
+        if(registry.containsKey(id)) id = id + "#" + reg;
         String listLabel = id.startsWith("setting:") && tip != null ? tip : (tip != null && tip.startsWith("@") ? bundle.get(tip.substring(1)) : label);
-        if(iconIds.add(id)) icons.add(new PanelIcon(id, listLabel, label, drawable, right != null, reg, regTab));
+        if(iconIds.add(id)) icons.add(new PanelIcon(id, listLabel, label, drawable, right != null, reg, regTab, regGroup));
         if(left != null) actions.put(id, left);
         QueuedTile queued = new QueuedTile();
         queued.id = id;
@@ -1039,34 +1062,114 @@ public class PanelFragment extends Table{
         queued.right = right;
         queued.rightTip = rightTip;
         queued.reg = reg;
-        tileQueue.add(queued);
+        queued.tab = regTab;
+        queued.group = regGroup;
+        registry.put(id, queued);
     }
 
-    /** Pins saved client settings onto this tab, in the same grid as the other buttons. */
-    private void queueExtras(Table grid, int[] col, int tab){
-        if(ui == null || ui.settings == null) return;
+    /** Registers client settings pinned onto the panel. Each one starts on the tab it was pinned to. */
+    private void registerExtras(){
+        extrasRegistered = ui != null && ui.settings != null;
+        if(!extrasRegistered) return;
+        regGroup = null;
+        int[] col = {0};
         for(String rec : PanelLayout.extras()){
             int sep = rec.lastIndexOf('\t');
             if(sep <= 0) continue;
-            if(Strings.parseInt(rec.substring(sep + 1), -1) != tab) continue;
             String name = rec.substring(0, sep);
+            regTab = rec.substring(sep + 1);
             SettingsMenuDialog.SettingsTable.Setting setting = ui.settings.findSetting(name);
             if(setting == null || setting.title == null) continue;
             String full = setting.title;
             Drawable icon = Icon.settingsSmall;
-            forcedId = "setting:" + name;
+            String id = "setting:" + name;
+            forcedId = id;
             if(setting instanceof CheckSetting check){
-                tile(grid, col, icon, shortTitle(full), full, check::panelCheck, () -> check.putBool(!check.panelCheck()), () -> dropExtra(name), "client.morj.panel.extraremove");
+                tile(null, col, icon, shortTitle(full), full, check::panelCheck, () -> check.putBool(!check.panelCheck()), () -> dropExtra(name), "client.morj.panel.extraremove");
             }else if(setting instanceof SliderSetting slider){
-                tile(grid, col, icon, shortTitle(full), full, null, () -> openSlider(slider), () -> dropExtra(name), "client.morj.panel.extraremove");
+                tile(null, col, icon, shortTitle(full), full, null, () -> openSlider(slider), () -> dropExtra(name), "client.morj.panel.extraremove");
+                QueuedTile queued = registry.get(id);
+                if(queued != null) queued.badge = () -> slider.panelText(slider.panelValue());
             }else if(setting instanceof TextSetting text){
-                tile(grid, col, icon, shortTitle(full), full, null, () -> openText(text), () -> dropExtra(name), "client.morj.panel.extraremove");
+                tile(null, col, icon, shortTitle(full), full, null, () -> openText(text), () -> dropExtra(name), "client.morj.panel.extraremove");
             }else{
-                tile(grid, col, icon, shortTitle(full), full, null, () -> {
+                tile(null, col, icon, shortTitle(full), full, null, () -> {
                     if(ui.settings != null) ui.settings.show();
                 }, () -> dropExtra(name), "client.morj.panel.extraremove");
             }
         }
+    }
+
+    // ---- live counters shown in the corner of some buttons ----
+    private final ObjectIntMap<Item> mineCounts = new ObjectIntMap<>();
+    private int minerCount;
+    private final Interval badgeTimer = new Interval();
+
+    private void refreshCounts(){
+        if(!badgeTimer.get(30f)) return;
+        mineCounts.clear();
+        minerCount = 0;
+        if(player == null || player.team() == null || !state.isGame()) return;
+        for(Unit unit : player.team().data().units){
+            Tile tile = unit.mineTile;
+            if(tile == null) continue;
+            Item drop = tile.drop();
+            if(drop == null) drop = tile.wallDrop();
+            if(drop == null) continue;
+            mineCounts.increment(drop);
+            minerCount++;
+        }
+    }
+
+    private static String count(int value){
+        return value > 0 ? String.valueOf(value) : null;
+    }
+
+    private int teamCount(UnitType type){
+        if(player == null || player.team() == null || type == null || !state.isGame()) return 0;
+        return player.team().data().countType(type);
+    }
+
+    private void badge(String id, Prov<String> text){
+        QueuedTile queued = registry.get(id);
+        if(queued != null && queued.badge == null) queued.badge = text;
+    }
+
+    /** Hooks counters to built-in buttons: miners per ore, units per assist type, timers and values. */
+    private void registerBadges(){
+        Object[][] ores = {
+            {"client.fdpanel.minecopper", Items.copper}, {"client.fdpanel.minelead", Items.lead},
+            {"client.fdpanel.minetitan", Items.titanium}, {"client.fdpanel.minesand", Items.sand},
+            {"client.fdpanel.minecoal", Items.coal}, {"client.fdpanel.minescrap", Items.scrap},
+            {"client.fdpanel.mineberyl", Items.beryllium}
+        };
+        for(Object[] pair : ores){
+            Item item = (Item)pair[1];
+            badge((String)pair[0], () -> {
+                refreshCounts();
+                return count(mineCounts.get(item, 0));
+            });
+        }
+        badge("client.fdpanel.automine", () -> {
+            refreshCounts();
+            return count(minerCount);
+        });
+        badge("client.fdpanel.minepolys", () -> count(teamCount(UnitTypes.poly)));
+        badge("client.fdpanel.assistpoly", () -> count(teamCount(UnitTypes.poly)));
+        badge("client.fdpanel.assistpulsar", () -> count(teamCount(UnitTypes.pulsar)));
+        badge("client.fdpanel.assistmega", () -> count(teamCount(UnitTypes.mega)));
+        badge("client.fdpanel.assistquasar", () -> count(teamCount(UnitTypes.quasar)));
+        badge("client.fdpanel.mega", () -> count(teamCount(UnitTypes.mega)));
+        badge("client.fdpanel.fixpower", () -> {
+            if(!autoFixPower) return null;
+            float left = Math.max(0f, 60f * 60f - (Time.time - fixPowerTimer.getTime(0)));
+            int sec = (int)(left / 60f);
+            return (sec / 60) + ":" + (sec % 60 < 10 ? "0" : "") + (sec % 60);
+        });
+        badge("client.fdpanel.hiddenitems", () -> {
+            int value = settings.getInt("hiddenitemopacity", 70);
+            return value > 0 ? value + "%" : null;
+        });
     }
 
     private void dropExtra(String name){
@@ -1138,16 +1241,6 @@ public class PanelFragment extends Table{
         return !name.startsWith("mouse") && !name.startsWith("scroll") && !name.startsWith("controller");
     }
 
-    private void header(Table page, String key){
-        if(page.hasChildren()) page.row();
-        page.table(h -> {
-            h.left();
-            Label title = h.add(bundle.get(key)).color(Pal.accent).padRight(4f).get();
-            title.setFontScale(0.7f * PanelLayout.titleScale());
-            h.image(Tex.whiteui).color(Pal.accent).height(2f).growX();
-        }).growX().padTop(2f).padBottom(0f).left();
-        page.row();
-    }
 
     private String describe(QueuedTile queued){
         String base = queued.tip != null && queued.tip.startsWith("@") ? bundle.get(queued.tip.substring(1)) : queued.tip;
@@ -1161,56 +1254,102 @@ public class PanelFragment extends Table{
         return text.toString();
     }
 
-    private void flush(Table grid, int tab){
-        flush(grid, tab, false);
-    }
 
-    private void flush(Table grid, int tab, boolean tight){
-        Seq<QueuedTile> rows = new Seq<>(tileQueue);
-        tileQueue.clear();
-        rows.sort(Structs.comparingInt(q -> {
+    /** Fills a tab: loose buttons first, then the tab's groups (side by side when the tab asks for it). */
+    private void buildPage(Table page, String key){
+        ensureStyles();
+        PanelLayout.Tab tab = PanelLayout.tab(key);
+        int columns = tab == null ? 4 : Math.max(1, tab.cols);
+        Seq<QueuedTile> all = new Seq<>();
+        for(QueuedTile queued : registry.values()) all.add(queued);
+        all.sort(Structs.comparingInt(q -> {
             int index = PanelLayout.index(q.id);
             return index >= PanelLayout.unordered ? PanelLayout.unordered + q.reg : index;
         }));
-        ensureStyles();
-        Seq<String> ids = new Seq<>();
-        ObjectMap<String, QueuedTile> byId = new ObjectMap<>();
-        for(QueuedTile queued : rows){
+        Seq<String> loose = new Seq<>();
+        ObjectMap<String, Seq<String>> byGroup = new ObjectMap<>();
+        for(QueuedTile queued : all){
             if(PanelLayout.hidden(queued.id)) continue;
-            ids.add(queued.id);
-            byId.put(queued.id, queued);
+            if(!PanelLayout.tabOf(queued.id, queued.tab).equals(key)) continue;
+            String group = PanelLayout.groupOf(queued.id, queued.tab, queued.group);
+            if(group.isEmpty()) loose.add(queued.id);
+            else byGroup.get(group, Seq::new).add(queued.id);
         }
-        int columns = Math.max(1, PanelLayout.cols(tab));
-        if(tight) columns = Math.min(4, columns);
+        boolean any = false;
+        if(loose.any()){
+            Table grid = new Table();
+            grid.left().top();
+            layoutGrid(grid, loose, columns);
+            page.add(grid).left().row();
+            any = true;
+        }
+        int perRow = tab == null ? 1 : Math.max(1, tab.groupCols);
+        int inner = perRow > 1 ? Math.min(columns, 4) : columns;
+        Table sections = new Table();
+        sections.top().left();
+        int placed = 0;
+        for(PanelLayout.Group group : PanelLayout.groups(key)){
+            Seq<String> ids = byGroup.get(group.id);
+            if(ids == null || ids.isEmpty()) continue;
+            Table box = new Table();
+            box.top().left();
+            groupHeader(box, group, ids.size);
+            if(!group.collapsed){
+                Table grid = new Table();
+                grid.left().top();
+                layoutGrid(grid, ids, inner);
+                box.add(grid).left().row();
+            }
+            sections.add(box).top().left().growX().padRight(placed % perRow < perRow - 1 ? 6f : 0f).padTop(any || placed >= perRow ? 4f : 0f);
+            placed++;
+            if(placed % perRow == 0) sections.row();
+        }
+        if(placed > 0) page.add(sections).left().growX().row();
+        if(!any && placed == 0){
+            Label empty = page.add(bundle.get("client.morj.panel.emptytab")).pad(8f).get();
+            empty.setColor(Color.gray);
+            empty.setFontScale(0.7f * PanelLayout.titleScale());
+        }
+    }
+
+    /** Thin title line of a group. Click folds or unfolds it. */
+    private void groupHeader(Table box, PanelLayout.Group group, int size){
+        Table head = new Table();
+        head.left();
+        head.touchable = Touchable.enabled;
+        Image arrow = new Image(group.collapsed ? Icon.rightOpenSmall : Icon.downOpenSmall);
+        arrow.setColor(Pal.accent);
+        head.add(arrow).size(11f).padRight(3f);
+        String text = PanelLayout.groupTitle(group) + (group.collapsed ? "  [lightgray]" + size : "");
+        Label title = head.add(text).padRight(5f).get();
+        title.setColor(Pal.accent);
+        title.setFontScale(0.66f * PanelLayout.titleScale());
+        head.image(Tex.whiteui).color(groupLine).height(1f).growX();
+        head.clicked(() -> {
+            PanelLayout.setCollapsed(group.id, !group.collapsed);
+            Core.app.post(() -> showPanelTab(panelTab));
+        });
+        head.addListener(new arc.scene.event.HandCursorListener());
+        box.add(head).growX().minWidth(70f).padBottom(2f).row();
+    }
+
+    /** Lays buttons on a grid, keeping cells the player placed by hand. */
+    private void layoutGrid(Table grid, Seq<String> ids, int columns){
         Seq<PanelLayout.Slot> slots = PanelLayout.resolve(ids, columns);
-        if(ids.isEmpty()) return;
-        int rowCount;
-        int maxC;
-        QueuedTile[][] placed;
-        if(tight){
-            // Saved cells from the old single grid leave holes. Pack this section solid.
-            rowCount = (ids.size - 1) / columns;
-            maxC = columns - 1;
-            placed = new QueuedTile[rowCount + 1][columns];
-            for(int n = 0; n < ids.size; n++) placed[n / columns][n % columns] = byId.get(ids.get(n));
-        }else{
-            if(slots.isEmpty()) return;
-            int minR = Integer.MAX_VALUE, minC = Integer.MAX_VALUE, rawMaxC = 0, rawMaxR = 0;
-            for(PanelLayout.Slot slot : slots){
-                rawMaxC = Math.max(rawMaxC, slot.col);
-                rawMaxR = Math.max(rawMaxR, slot.row);
-                minR = Math.min(minR, slot.row);
-                minC = Math.min(minC, slot.col);
-            }
-            rowCount = rawMaxR - minR;
-            maxC = rawMaxC - minC;
-            placed = new QueuedTile[rowCount + 1][maxC + 1];
-            for(PanelLayout.Slot slot : slots){
-                int col = slot.col - minC;
-                int row = slot.row - minR;
-                if(col < 0 || row < 0 || col > maxC || row > rowCount) continue;
-                placed[row][col] = byId.get(slot.id);
-            }
+        if(slots.isEmpty()) return;
+        int minR = Integer.MAX_VALUE, minC = Integer.MAX_VALUE, rawMaxC = 0, rawMaxR = 0;
+        for(PanelLayout.Slot slot : slots){
+            rawMaxC = Math.max(rawMaxC, slot.col);
+            rawMaxR = Math.max(rawMaxR, slot.row);
+            minR = Math.min(minR, slot.row);
+            minC = Math.min(minC, slot.col);
+        }
+        int rowCount = rawMaxR - minR, maxC = rawMaxC - minC;
+        QueuedTile[][] placed = new QueuedTile[rowCount + 1][maxC + 1];
+        for(PanelLayout.Slot slot : slots){
+            int col = slot.col - minC, row = slot.row - minR;
+            if(col < 0 || row < 0 || col > maxC || row > rowCount) continue;
+            placed[row][col] = registry.get(slot.id);
         }
         float hole = tileIcon(1f);
         for(int r = 0; r <= rowCount; r++){
@@ -1221,86 +1360,133 @@ public class PanelFragment extends Table{
             for(int c = 0; c <= last; c++){
                 QueuedTile queued = placed[r][c];
                 if(queued == null){
-                    grid.add().size(tileWidth(hole), tileHeight(hole)).pad(1f);
+                    grid.add().size(tileWidth(hole), tileHeight(hole)).pad(1.5f);
                     continue;
                 }
-                float iconSize = tileIcon(PanelLayout.scale(queued.id));
-                boolean action = queued.state == null;
-                Button button = new Button(action ? panelActionStyle : panelBtnStyle);
-                button.top().margin(0f);
-                Image image = new Image(queued.drawable);
-                image.setScaling(Scaling.fit);
-                Stack iconStack = new Stack();
-                Table iconWrap = new Table();
-                iconWrap.add(image).size(iconSize).grow();
-                iconStack.add(iconWrap);
-                if(queued.right != null){
-                    Table mark = new Table();
-                    mark.top().right();
-                    Image dot = new Image(Tex.whiteui);
-                    dot.setColor(Pal.accent);
-                    mark.add(dot).size(5f).pad(1f);
-                    iconStack.add(mark);
-                }
-                button.add(iconStack).size(iconSize).padTop(1f).row();
-                Label caption = button.add(queued.label).growX().pad(0f, 2f, 0f, 2f).get();
-                caption.setFontScale(0.55f * PanelLayout.titleScale());
-                caption.setWrap(true);
-                caption.setAlignment(Align.center);
-                button.add().growY().row();
-                Image stripe = new Image(Tex.whiteui);
-                button.add(stripe).height(2f).growX();
-                Boolp state = queued.state;
-                Runnable left = queued.left;
-                Runnable right = queued.right;
-                String baseTip = queued.tip != null && queued.tip.startsWith("@") ? bundle.get(queued.tip.substring(1)) : queued.tip;
-                String rightText = queued.rightTip == null ? null : bundle.get(queued.rightTip);
-                button.addListener(new Tooltip(t -> {
-                    t.background(Styles.black6).margin(6f);
-                    t.add(baseTip == null ? "" : baseTip).wrap().width(280f).left();
-                    if(state != null){
-                        t.row();
-                        t.label(() -> state.get() ? "[accent]" + bundle.get("client.morj.on") : "[lightgray]" + bundle.get("client.morj.off")).left();
-                    }
-                    if(rightText != null){
-                        t.row();
-                        t.add("[lightgray]" + rightText).wrap().width(280f).left();
-                    }
-                }));
-                button.update(() -> {
-                    boolean on = state != null && state.get();
-                    button.setChecked(on);
-                    image.setColor(state == null || on ? Color.white : panelDim);
-                    if(state == null){
-                        caption.setColor(Color.white);
-                        stripe.setColor(Color.lightGray);
-                    }else if(on){
-                        caption.setColor(Color.white);
-                        stripe.setColor(Pal.accent);
-                    }else{
-                        caption.setColor(Color.gray);
-                        stripe.setColor(Color.darkGray);
-                    }
-                });
-                button.addListener(new InputListener(){
-                    @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
-                        if(helpMode && (key == KeyCode.mouseLeft || key == KeyCode.mouseRight)){
-                            ui.showInfo(describe(queued));
-                            return true;
-                        }
-                        if(key == KeyCode.mouseRight && right != null){
-                            right.run();
-                            return true;
-                        }
-                        if(key == KeyCode.mouseLeft && left != null){
-                            left.run();
-                            return true;
-                        }
-                        return false;
-                    }
-                });
-                grid.add(button).size(tileWidth(iconSize), tileHeight(iconSize)).pad(1f);
+                addTile(grid, queued);
             }
+        }
+    }
+
+    /** One panel button: icon, caption, state stripe, right-click dot and an optional live counter. */
+    private void addTile(Table grid, QueuedTile queued){
+        float iconSize = tileIcon(PanelLayout.scale(queued.id));
+        boolean action = queued.state == null;
+        Drawable custom = PanelLayout.icon(PanelLayout.iconKey(queued.id));
+        String customCaption = PanelLayout.caption(queued.id);
+        Button button = new Button(action ? panelActionStyle : panelBtnStyle);
+        button.top().margin(0f);
+        Image image = new Image(custom != null ? custom : queued.drawable);
+        image.setScaling(Scaling.fit);
+        Stack iconStack = new Stack();
+        Table iconWrap = new Table();
+        iconWrap.add(image).size(iconSize).grow();
+        iconStack.add(iconWrap);
+        button.add(iconStack).size(iconSize).padTop(3f).row();
+        Label caption = button.add(customCaption != null ? customCaption : queued.label).growX().pad(1f, 2f, 0f, 2f).get();
+        caption.setFontScale(0.55f * PanelLayout.titleScale());
+        caption.setWrap(true);
+        caption.setAlignment(Align.center);
+        button.add().growY().row();
+        Image stripe = new Image(Tex.whiteui);
+        button.add(stripe).height(2f).growX();
+
+        //corner marks sit over the whole button, not just the icon
+        Stack whole = new Stack();
+        whole.add(button);
+        if(queued.right != null){
+            Table mark = new Table();
+            mark.top().right();
+            mark.touchable = Touchable.disabled;
+            Image dot = new Image(Tex.whiteui);
+            dot.setColor(Pal.accent);
+            mark.add(dot).size(4f).pad(3f);
+            whole.add(mark);
+        }
+        Prov<String> badgeText = queued.badge;
+        if(badgeText != null){
+            Table corner = new Table();
+            corner.top().left();
+            corner.touchable = Touchable.disabled;
+            Table chip = new Table(panelBadgeBg);
+            chip.margin(0f, 3f, 1f, 3f);
+            Label value = new Label(() -> {
+                String text = badgeText.get();
+                return text == null ? "" : text;
+            });
+            value.setFontScale(0.48f * PanelLayout.titleScale());
+            value.setColor(Pal.accent);
+            chip.add(value);
+            chip.visible(() -> {
+                String text = badgeText.get();
+                return text != null && !text.isEmpty();
+            });
+            corner.add(chip).pad(2f);
+            whole.add(corner);
+        }
+
+        Boolp state = queued.state;
+        Runnable left = queued.left;
+        Runnable right = queued.right;
+        String baseTip = queued.tip != null && queued.tip.startsWith("@") ? bundle.get(queued.tip.substring(1)) : queued.tip;
+        String rightText = queued.rightTip == null ? null : bundle.get(queued.rightTip);
+        String boundKey = PanelLayout.keyOf(queued.id);
+        button.addListener(new Tooltip(t -> {
+            t.background(Styles.black8).margin(6f);
+            t.add(baseTip == null ? "" : baseTip).wrap().width(280f).left();
+            if(state != null){
+                t.row();
+                t.label(() -> state.get() ? "[accent]" + bundle.get("client.morj.on") : "[lightgray]" + bundle.get("client.morj.off")).left().padTop(3f);
+            }
+            if(rightText != null){
+                t.row();
+                t.add("[lightgray]" + rightText).wrap().width(280f).left().padTop(2f);
+            }
+            if(boundKey != null){
+                t.row();
+                t.add("[gray]" + bundle.get("client.morj.panel.key") + ": [white]" + keyName(boundKey)).left().padTop(2f);
+            }
+        }));
+        button.update(() -> {
+            boolean on = state != null && state.get();
+            button.setChecked(on);
+            image.setColor(state == null || on ? Color.white : panelDim);
+            if(state == null){
+                caption.setColor(Color.lightGray);
+                stripe.setColor(groupLine);
+            }else if(on){
+                caption.setColor(Color.white);
+                stripe.setColor(Pal.accent);
+            }else{
+                caption.setColor(Color.gray);
+                stripe.setColor(Color.clear);
+            }
+        });
+        button.addListener(new InputListener(){
+            @Override public boolean touchDown(InputEvent e, float x, float y, int pointer, KeyCode key){
+                if(helpMode && (key == KeyCode.mouseLeft || key == KeyCode.mouseRight)){
+                    ui.showInfo(describe(queued));
+                    return true;
+                }
+                if(key == KeyCode.mouseRight && right != null){
+                    right.run();
+                    return true;
+                }
+                if(key == KeyCode.mouseLeft && left != null){
+                    left.run();
+                    return true;
+                }
+                return false;
+            }
+        });
+        grid.add(whole).size(tileWidth(iconSize), tileHeight(iconSize)).pad(1.5f);
+    }
+
+    private static String keyName(String raw){
+        try{
+            return KeyCode.valueOf(raw).getName();
+        }catch(IllegalArgumentException ignored){
+            return raw;
         }
     }
 

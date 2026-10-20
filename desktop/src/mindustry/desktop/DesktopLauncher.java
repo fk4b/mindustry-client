@@ -16,6 +16,7 @@ import arc.util.Log.*;
 import arc.util.serialization.*;
 import mindustry.*;
 import mindustry.client.*;
+import mindustry.client.fallen.HeapPref;
 import mindustry.client.utils.*;
 import mindustry.core.*;
 import mindustry.desktop.steam.*;
@@ -46,6 +47,7 @@ public class DesktopLauncher extends ClientLauncher{
     Throwable steamError;
 
     public static void main(String[] arg){
+        HeapPref.relaunchIfNeeded(arg);
 //        Events.debugType = ClientLoadEvent.class;
         System.setProperty("java.awt.headless", "false");
         System.out.println("Launching Mindustry! Arguments: " + Arrays.toString(arg));

@@ -8,6 +8,7 @@ import arc.struct.ObjectMap;
 import arc.struct.Seq;
 import arc.util.Log;
 import arc.util.Strings;
+import arc.util.Time;
 import arc.util.Timer;
 import mindustry.Vars;
 import mindustry.client.ClientVars;
@@ -29,6 +30,9 @@ import static mindustry.Vars.*;
 public class ActivityLogger {
 
     private static boolean initialized = false;
+    /** Same player and role keep one chat line while losses keep arriving. */
+    private static final long deathAlarmWindow = 20_000L;
+    private static final ObjectMap<String, DeathAlarm> deathAlarms = new ObjectMap<>();
 
     public static void init() {
         // PanelFragment.startInit() and UI both call this; register handlers only once
@@ -154,6 +158,8 @@ public class ActivityLogger {
             ));
         });
 
+        Events.on(ResetEvent.class, e -> deathAlarms.clear());
+
         Events.on(UnitDeadEvent.class, it -> {
             if (it.unit == null || it.unit.type == null) return;
 
@@ -171,7 +177,8 @@ public class ActivityLogger {
                 ));
 
                 if (canAlarm && isHeavyUnit) {
-                    addLocalMessage("!![#fa]⚠[]:  [#" + it.unit.team.color + "]" + it.unit.type.localizedName + " убито с позором. [" + Mathf.ceil(it.unit.lastX / 8) + "," + Mathf.ceil(it.unit.lastY / 8) +"] Пилот: " + p.name );
+                    alarmUnitDeath(true, p.name, it.unit.type, String.valueOf(it.unit.team.color),
+                            (int)Mathf.ceil(it.unit.lastX / 8f), (int)Mathf.ceil(it.unit.lastY / 8f));
                 }
             } else {
                 ActionsHistory.deathunitscontrolplan.addFirst(new ActionsHistory.UnitsKilledByControllPlayers(
@@ -179,7 +186,8 @@ public class ActivityLogger {
                 ));
 
                 if (canAlarm && isHeavyUnit) {
-                    addLocalMessage("!![#fa]⚠[]: [#" + it.unit.team.color + "]" + it.unit.type.localizedName + " бездарно потерян. ["+ Mathf.ceil(it.unit.lastX / 8) + "," + Mathf.ceil(it.unit.lastY / 8) +"] Командир: " + commander);
+                    alarmUnitDeath(false, commander, it.unit.type, String.valueOf(it.unit.team.color),
+                            (int)Mathf.ceil(it.unit.lastX / 8f), (int)Mathf.ceil(it.unit.lastY / 8f));
                 }
             }
         });
@@ -254,10 +262,104 @@ public class ActivityLogger {
         counts.forEach(entry -> result.add(new UnitTypeCount(entry.key, entry.value)));
         return result;
     }
-    private static void addLocalMessage(String msg) {
-        if (ui.chatfrag == null) return;
+    private static ChatFragment.ChatMessage addLocalMessage(String msg) {
+        if (ui.chatfrag == null) return null;
         ChatFragment.ChatMessage m = ui.chatfrag.addMessage(msg, null, null, "", msg);
         NetClient.findCoords(m);
+        return m;
+    }
+
+    /** One chat line per player: later deaths of the same role update the count. */
+    private static void alarmUnitDeath(boolean piloted, String who, UnitType type, String color, int x, int y) {
+        if (ui.chatfrag == null || type == null) return;
+        String name = who == null ? "" : who;
+        String key = (piloted ? "p:" : "c:") + Strings.stripColors(name);
+        DeathAlarm alarm = deathAlarms.get(key);
+        int idx = alarm == null || alarm.msg == null || ui.chatfrag.messages == null ? -1 : ui.chatfrag.messages.indexOf(alarm.msg);
+        boolean stack = alarm != null && idx >= 0 && Time.timeSinceMillis(alarm.last) < deathAlarmWindow;
+        if (!stack) {
+            alarm = new DeathAlarm(piloted, name);
+            deathAlarms.put(key, alarm);
+        }
+        alarm.add(type, color);
+        alarm.x = x;
+        alarm.y = y;
+        alarm.last = Time.millis();
+        String text = deathText(alarm);
+        if (!stack) {
+            alarm.msg = addLocalMessage(text);
+        } else if (alarm.msg != null) {
+            ui.chatfrag.doFade(2f);
+            alarm.msg.message = text;
+            alarm.msg.unformatted = text;
+            alarm.msg.format();
+            if (alarm.msg.buttons != null) alarm.msg.buttons.clear();
+            NetClient.findCoords(alarm.msg);
+        }
+    }
+
+    private static String deathText(DeathAlarm alarm) {
+        int total = alarm.total();
+        if (total <= 1) {
+            UnitLoss only = alarm.losses.first();
+            if (alarm.piloted) {
+                return "!![#fa]⚠[]:  [#" + only.color + "]" + only.type.localizedName + " убито с позором. [" + alarm.x + "," + alarm.y + "] Пилот: " + alarm.who;
+            }
+            return "!![#fa]⚠[]: [#" + only.color + "]" + only.type.localizedName + " бездарно потерян. [" + alarm.x + "," + alarm.y + "] Командир: " + alarm.who;
+        }
+
+        Seq<UnitLoss> ordered = new Seq<>(alarm.losses);
+        ordered.sort((a, b) -> Integer.compare(b.count, a.count));
+        StringBuilder units = new StringBuilder();
+        for (int i = 0; i < ordered.size; i++) {
+            UnitLoss loss = ordered.get(i);
+            if (i > 0) units.append(", ");
+            units.append("[white]").append(loss.count).append("[] [#").append(loss.color).append("]").append(loss.type.localizedName).append("[]");
+        }
+        String verb = alarm.piloted ? "убито с позором" : "бездарно потеряно";
+        String role = alarm.piloted ? "Пилот: " : "Командир: ";
+        return "!![#fa]⚠[]: " + units + " " + verb + ". [" + alarm.x + "," + alarm.y + "] " + role + alarm.who;
+    }
+
+    private static final class DeathAlarm {
+        final boolean piloted;
+        final String who;
+        final Seq<UnitLoss> losses = new Seq<>();
+        int x, y;
+        ChatFragment.ChatMessage msg;
+        long last;
+
+        DeathAlarm(boolean piloted, String who) {
+            this.piloted = piloted;
+            this.who = who;
+        }
+
+        void add(UnitType type, String color) {
+            UnitLoss loss = losses.find(l -> l.type == type);
+            if (loss == null) {
+                losses.add(new UnitLoss(type, color));
+            } else {
+                loss.count++;
+                loss.color = color;
+            }
+        }
+
+        int total() {
+            int n = 0;
+            for (int i = 0; i < losses.size; i++) n += losses.get(i).count;
+            return n;
+        }
+    }
+
+    private static final class UnitLoss {
+        final UnitType type;
+        int count = 1;
+        String color;
+
+        UnitLoss(UnitType type, String color) {
+            this.type = type;
+            this.color = color;
+        }
     }
 
     private static void checkGriefersFromHistory() {
