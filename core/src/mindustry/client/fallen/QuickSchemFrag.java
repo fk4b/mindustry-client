@@ -1,6 +1,7 @@
 package mindustry.client.fallen;
 
 import arc.*;
+import arc.files.Fi;
 import arc.graphics.*;
 import arc.input.*;
 import arc.math.*;
@@ -30,7 +31,7 @@ public class QuickSchemFrag extends Table {
     private Seq<QuickTab> tabs = new Seq<>();
     private int currentTab = 0;
     private Table tabTable;
-    private boolean visible = Core.settings.getBool("quickschems", false);
+    private boolean visible = Core.settings.getBool("quickschems-open", Core.settings.getBool("quickschems", false));
     private Json json = new Json();
 
     private float lastX = 0, lastY = 0;
@@ -126,6 +127,8 @@ public class QuickSchemFrag extends Table {
             }
         });
         rebuild();
+        // Схемы грузятся после UI — пересобираем, чтобы появились подсказки с превью
+        Events.on(mindustry.game.EventType.ClientLoadEvent.class, e -> rebuild());
     }
 
     private void rebuildTabs() {
@@ -224,7 +227,8 @@ public class QuickSchemFrag extends Table {
         int cols = Core.settings.getInt("qs-cols", 5);
 
         int count = 0;
-        for (int i = 0; i < tab.slots.size; i++) {
+        int shown = Math.min(tab.slots.size, cols * Core.settings.getInt("qs-rows", 4));
+        for (int i = 0; i < shown; i++) {
             QuickSlot slot = tab.slots.get(i);
             String iconToDraw = slot.iconName;
             boolean isContentToDraw = slot.isContent;
@@ -691,20 +695,67 @@ public class QuickSchemFrag extends Table {
         }
     }
 
+    // Новый Arc не создаёт классы по тегу "class" из JSON, если они не разрешены явно.
+    // Старые quickschems.json содержат такие теги, поэтому регистрируем их вручную.
+    private void setupJson() {
+        json.setIgnoreUnknownFields(true);
+        json.addClassTag(QuickTab.class.getName(), QuickTab.class);
+        json.addClassTag(QuickSlot.class.getName(), QuickSlot.class);
+    }
+
+    // true, если quickschems.json прочитан без ошибок (или уже перезаписан нами) — только тогда копируем его в .bak
+    private boolean mainFileOk = false;
+
+    private Seq<QuickTab> readTabs(Fi f) {
+        if (!f.exists()) return null;
+        try {
+            Seq<QuickTab> loaded = json.fromJson(Seq.class, QuickTab.class, f.readString());
+            if (loaded != null) loaded.removeAll(t -> t == null);
+            return loaded;
+        } catch (Throwable e) {
+            Log.err("QuickSchems: cannot read " + f.name(), e);
+            // Сохраняем нечитаемый файл отдельно, чтобы его не затёрло следующим сохранением
+            try { f.copyTo(Vars.dataDirectory.child(f.name() + ".broken-" + Time.millis())); } catch (Throwable ignored) {}
+            return null;
+        }
+    }
+
     private void loadData() {
-        var file = Vars.dataDirectory.child("quickschems.json");
-        if (file.exists()) {
-            try { tabs = json.fromJson(Seq.class, QuickTab.class, file.readString()); } catch (Exception e) { tabs.add(new QuickTab("General")); }
-        } else { tabs.add(new QuickTab("General")); }
+        setupJson();
+        Seq<QuickTab> loaded = readTabs(Vars.dataDirectory.child("quickschems.json"));
+        mainFileOk = loaded != null;
+        if (loaded == null || loaded.isEmpty()) {
+            Seq<QuickTab> bak = readTabs(Vars.dataDirectory.child("quickschems.json.bak"));
+            if (bak != null && !bak.isEmpty()) loaded = bak;
+        }
+        if (loaded != null && !loaded.isEmpty()) {
+            tabs = loaded;
+        } else {
+            tabs = new Seq<>();
+            tabs.add(new QuickTab("General"));
+        }
     }
 
     private void saveData() {
         var file = Vars.dataDirectory.child("quickschems.json");
-        file.writeString(json.prettyPrint(tabs));
+        var tmp = Vars.dataDirectory.child("quickschems.json.tmp");
+        try {
+            // Пишем без тегов классов: тип элементов известен заранее
+            tmp.writeString(json.prettyPrint(json.toJson(tabs, Seq.class, QuickTab.class)));
+            // Битый файл в .bak не копируем — там может лежать последняя рабочая версия
+            if (file.exists() && mainFileOk) file.copyTo(Vars.dataDirectory.child("quickschems.json.bak"));
+            tmp.moveTo(file);
+            mainFileOk = true;
+        } catch (Throwable e) {
+            Log.err("QuickSchems: cannot save", e);
+        }
     }
 
     public void toggle() {
         visible = !visible;
+        Core.settings.put("quickschems-open", visible);
+        // Окно показывается только при включённой настройке — включаем её при открытии из меню
+        if (visible && !Core.settings.getBool("quickschems", false)) Core.settings.put("quickschems", true);
         if (visible) { rebuild(); toFront(); }
     }
 
@@ -718,11 +769,7 @@ public class QuickSchemFrag extends Table {
         int rows = Core.settings.getInt("qs-rows", 4);
         int totalSlots = cols * rows;
 
-        // truncate(n) — встроенный метод Seq, который быстро обрезает список до нужной длины
-        if (tab.slots.size > totalSlots) {
-            tab.slots.truncate(totalSlots);
-        }
-
+        // Лишние слоты не удаляем: при уменьшении сетки они просто скрыты и вернутся при увеличении
         // Добавляем пустые слоты, если их не хватает
         while (tab.slots.size < totalSlots) {
             QuickSlot ns = new QuickSlot();
