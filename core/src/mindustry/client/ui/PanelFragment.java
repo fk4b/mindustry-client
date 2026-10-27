@@ -269,6 +269,7 @@ public class PanelFragment extends Table{
         mindustry.client.fallen.MinersFDAI.init();
         BuilderAssist.init();
         AutoDrillPlacer.init();
+        ThreatRadar.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -989,6 +990,8 @@ public class PanelFragment extends Table{
         int[] col = {0};
         tile(grid, col, Icon.star, bundle.get("client.morj.btn.aim"), "@client.fdpanel.smarttargeting",
             FDAutoShoot::enabled, () -> FDAutoShoot.setEnabled(!FDAutoShoot.enabled()), FDAutoShoot::openMenu, "client.morj.right.aim");
+        tile(grid, col, Icon.warning, bundle.get("client.morj.btn.radar"), "@client.fdpanel.radar",
+            () -> ThreatRadar.enabled, ThreatRadar::toggle, ThreatRadar::showSettings, "client.morj.right.radar");
         tile(grid, col, new TextureRegionDrawable(Blocks.duo.uiIcon), bundle.get("client.morj.btn.builds"), "@client.fdpanel.smartbuildings",
             () -> settings.getBool("smartshoot-buildings", false),
             () -> settings.put("smartshoot-buildings", !settings.getBool("smartshoot-buildings", false)), null);

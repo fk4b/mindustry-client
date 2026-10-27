@@ -190,6 +190,7 @@ public final class OreSafety{
     }
 
     public static boolean isThreatened(float x, float y){
+        if(ThreatRadar.isThreatened(x, y)) return true;
         float[] d = dangerTilesData.items;
         for(int i = 0; i < dangerTilesData.size; i += 3){
             float dx = x - d[i], dy = y - d[i + 1];
