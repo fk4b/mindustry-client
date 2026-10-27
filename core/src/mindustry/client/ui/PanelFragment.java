@@ -270,6 +270,8 @@ public class PanelFragment extends Table{
         BuilderAssist.init();
         AutoDrillPlacer.init();
         ThreatRadar.init();
+        WaveForecast.init();
+        SquadCommander.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -992,6 +994,10 @@ public class PanelFragment extends Table{
             FDAutoShoot::enabled, () -> FDAutoShoot.setEnabled(!FDAutoShoot.enabled()), FDAutoShoot::openMenu, "client.morj.right.aim");
         tile(grid, col, Icon.warning, bundle.get("client.morj.btn.radar"), "@client.fdpanel.radar",
             () -> ThreatRadar.enabled, ThreatRadar::toggle, ThreatRadar::showSettings, "client.morj.right.radar");
+        tile(grid, col, Icon.waves, bundle.get("client.morj.btn.forecast"), "@client.fdpanel.forecast",
+            () -> WaveForecast.enabled, WaveForecast::toggle, WaveForecast::showSettings, "client.morj.right.forecast");
+        tile(grid, col, Icon.commandRally, bundle.get("client.morj.btn.squad"), "@client.fdpanel.squad",
+            SquadCommander::active, SquadCommander::toggle, SquadCommander::showSettings, "client.morj.right.squad");
         tile(grid, col, new TextureRegionDrawable(Blocks.duo.uiIcon), bundle.get("client.morj.btn.builds"), "@client.fdpanel.smartbuildings",
             () -> settings.getBool("smartshoot-buildings", false),
             () -> settings.put("smartshoot-buildings", !settings.getBool("smartshoot-buildings", false)), null);

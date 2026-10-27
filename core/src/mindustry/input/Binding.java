@@ -186,7 +186,9 @@ public class Binding{
     toolGlobalChat = KeyBind.add("tool_global_chat", KeyCode.unset),
     runJS = KeyBind.add("run_js", KeyCode.u),
     /** Vein drill placer. F10, because H already selects every unit factory. */
-    auto_drill = KeyBind.add("auto_drill", KeyCode.f10)
+    auto_drill = KeyBind.add("auto_drill", KeyCode.f10),
+    /** Squad front line: draw it, units hold it. Unbound by default - all free F-keys are taken. */
+    squad_front = KeyBind.add("squad_front", KeyCode.unset)
     ;
 
     //dummy static class initializer
