@@ -311,6 +311,16 @@ class AutoTransfer {
 
         if (fromContainers && (core == null || !player.within(core, buildingRange))) core = containers.selectFrom(builds) { it.block is StorageBlock && (item == null || it.items.has(item)) }.min { it -> it.dst(player) }
 
+        // Away from every core and container the held stack is a miner's haul: leave it alone instead of dumping it into nearby blocks.
+        val source = core
+        if (source == null || !player.within(source, buildingRange)) {
+            if (rush) {
+                defenseRushUntil = 0f
+                timer = 0f
+            }
+            return false
+        }
+
         builds.retainAll {
             it.block.findConsumer<Consume?> { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic } != null
                 && it !is NuclearReactorBuild
@@ -326,7 +336,6 @@ class AutoTransfer {
             }
         }
 
-        val source = core
         var wantItem: Item? = null
         var wantBuild: Building? = null
         var wantCat = Int.MAX_VALUE
