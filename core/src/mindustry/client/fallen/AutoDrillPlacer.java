@@ -1,6 +1,7 @@
 package mindustry.client.fallen;
 
 import arc.*;
+import arc.graphics.*;
 import arc.graphics.g2d.*;
 import arc.input.*;
 import arc.math.*;
@@ -11,6 +12,7 @@ import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import mindustry.core.*;
 import mindustry.entities.units.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
@@ -34,9 +36,10 @@ import static mindustry.Vars.*;
  * Раскладка: ряды конвейеров через каждые (2 * размер бура + 1) тайлов, буры по обе стороны ряда.
  * Ряды сходятся в один конвейер-коллектор сбоку поля, от его конца строится маршрут до точки вывода.
  * Если включено ограничение, самые бедные буры отбрасываются, пока суммарный выход не влезет в один конвейер.
+ * Перед установкой раскладка фиксируется на шаге подтверждения: видны цена, время стройки и заполнение каждого бура.
  */
 public class AutoDrillPlacer{
-    private enum Step{vein, drill, target}
+    private enum Step{vein, drill, target, confirm}
 
     private static final int maxVein = 3000, routeMargin = 60, maxRouteNodes = 300_000, maxRouteDist = 300;
     /** Пересчёт раскладки, когда курсор задержался на тайле, а не на каждом движении мыши. */
@@ -64,6 +67,8 @@ public class AutoDrillPlacer{
     /** Мост для маршрута; null - мосты недоступны. */
     private static BufferedItemBridge bridge;
     private static Layout layout;
+    /** Бур под курсором на панели: его раскладка рисуется на карте вместо текущей. */
+    private static Drill hoverDrill;
     private static int lastTarget = -1;
     private static long targetChanged;
     private static boolean targetDirty;
@@ -85,6 +90,8 @@ public class AutoDrillPlacer{
         int drills, conveyors, route = -1; //route: -1 без маршрута, -2 путь не найден
         float rate, rawRate;
         boolean chess; //поле на мостах
+        final ItemSeq cost = new ItemSeq();
+        float buildTime; //в тиках при скорости стройки 1
         BuildPlan end; //последний тайл коллектора, от него идёт маршрут
         int flowRot;
         final IntSeq bridgeLinks = new IntSeq(); //пары (мост, следующий мост или -1)
@@ -120,6 +127,7 @@ public class AutoDrillPlacer{
             }
             if(Core.input.keyTap(Binding.auto_drill) && Core.scene.getKeyboardFocus() == null && !control.input.commandMode) toggle();
             if(step != null) update();
+            if(step == Step.confirm && Core.scene.getKeyboardFocus() == null && Core.input.keyTap(KeyCode.enter)) place();
         });
 
         Events.run(Trigger.draw, () -> {
@@ -152,6 +160,7 @@ public class AutoDrillPlacer{
         step = null;
         drill = null;
         layout = null;
+        hoverDrill = null;
         previews.clear();
         resetVein();
         if(overlay != null){
@@ -163,7 +172,12 @@ public class AutoDrillPlacer{
     }
 
     private static void back(){
-        if(step == Step.target){
+        if(step == Step.confirm){
+            //снова ведём раскладку за курсором
+            step = Step.target;
+            lastTarget = -1;
+            targetDirty = false;
+        }else if(step == Step.target){
             step = Step.drill;
             drill = null;
             layout = null;
@@ -203,6 +217,13 @@ public class AutoDrillPlacer{
             selectVein();
         }else if(step == Step.target){
             if(targetDirty) recomputeTarget(tile);
+            if(layout != null && Core.settings.getBool("autodrill-confirm", true)){
+                step = Step.confirm;
+                rebuildPanel();
+            }else{
+                place();
+            }
+        }else if(step == Step.confirm){
             place();
         }
     }
@@ -372,6 +393,10 @@ public class AutoDrillPlacer{
         lastTarget = -1;
         targetDirty = false;
         layout = null;
+        if(step == Step.confirm){
+            step = Step.target;
+            rebuildPanel();
+        }
     }
 
     // ---------- раскладка ----------
@@ -423,7 +448,36 @@ public class AutoDrillPlacer{
         }
 
         if(best != null && target != null && Core.settings.getBool("autodrill-route", true)) route(best, target);
+        if(best != null) summarize(best);
         return best;
+    }
+
+    private static void summarize(Layout l){
+        l.cost.clear();
+        l.buildTime = 0f;
+        for(BuildPlan plan : l.plans){
+            for(ItemStack stack : plan.block.requirements) l.cost.add(stack.item, Mathf.round(stack.amount * state.rules.buildCostMultiplier));
+            l.buildTime += plan.block.buildTime * state.rules.buildCostMultiplier;
+        }
+    }
+
+    /** Секунды стройки текущим юнитом, -1 если он не строит. */
+    private static float buildSeconds(Layout l){
+        Unit u = player.unit();
+        if(u == null || u.type.buildSpeed <= 0f) return -1f;
+        return l.buildTime / (u.type.buildSpeed * u.buildSpeedMultiplier() * state.rules.buildSpeed(player.team())) / 60f;
+    }
+
+    /** Доля тайлов под буром с целевой рудой. */
+    private static float fill(BuildPlan plan){
+        Drill d = (Drill)plan.block;
+        Tile tile = world.tile(plan.x, plan.y);
+        if(tile == null) return 0f;
+        int mine = 0;
+        for(Tile o : tile.getLinkedTilesAs(d, tmpTiles)){
+            if(d.canMine(o) && d.getDrop(o) == item) mine++;
+        }
+        return mine / (float)(d.size * d.size);
     }
 
     private static int x(int o, int u, int v){
@@ -1081,9 +1135,18 @@ public class AutoDrillPlacer{
         }
         Draw.reset();
 
-        Layout shown = step == Step.target ? layout : null;
+        Layout shown = hoverDrill != null && step != Step.confirm ? previews.get(hoverDrill) : step == Step.target || step == Step.confirm ? layout : null;
         if(shown != null){
-            for(BuildPlan plan : shown.plans) plan.block.drawPlan(plan, shown.plans, true, 0.85f);
+            for(BuildPlan plan : shown.plans) plan.block.drawPlan(plan, shown.plans, true, step == Step.confirm ? 1f : 0.85f);
+
+            //заполнение рудой: красный - бур на краю жилы, зелёный - вся площадь на руде
+            Draw.z(Layer.plans + 0.1f);
+            for(BuildPlan plan : shown.plans){
+                if(!(plan.block instanceof Drill)) continue;
+                Draw.color(Tmp.c1.set(Color.scarlet).lerp(Color.lime, fill(plan)), 0.3f);
+                Fill.square(plan.drawx(), plan.drawy(), plan.block.size * tilesize / 2f - 1f);
+            }
+            Draw.reset();
         }
 
         if(step == Step.target){
@@ -1108,6 +1171,7 @@ public class AutoDrillPlacer{
             return item == null ? Core.bundle.get("client.drill.hint.vein") : Core.bundle.format("client.drill.hint.veinpick", vein.size, item.localizedName);
         }
         if(step == Step.drill) return Core.bundle.get("client.drill.hint.drill");
+        if(step == Step.confirm) return Core.bundle.get("client.drill.hint.confirm");
         return Core.bundle.get("client.drill.hint.target");
     }
 
@@ -1125,6 +1189,7 @@ public class AutoDrillPlacer{
         if(overlay == null) return;
         Table p = overlay.panel;
         p.clear();
+        hoverDrill = null;
         p.defaults().pad(2);
 
         p.table(head -> {
@@ -1144,6 +1209,10 @@ public class AutoDrillPlacer{
                 ImageButton b = t.button(new TextureRegionDrawable(d.uiIcon), Styles.clearNoneTogglei, 40f, () -> chooseDrill(d))
                 .size(56f).checked(btn -> drill == d).tooltip(d.localizedName).get();
                 b.setDisabled(() -> previews.get(d) == null);
+                b.hovered(() -> hoverDrill = d);
+                b.exited(() -> {
+                    if(hoverDrill == d) hoverDrill = null;
+                });
                 t.label(() -> {
                     Layout lp = previews.get(d);
                     return lp == null ? "[gray]-" : "x" + lp.drills + "\n[accent]" + Strings.autoFixed(lp.rate, 1) + Core.bundle.get("client.drill.per");
@@ -1178,7 +1247,33 @@ public class AutoDrillPlacer{
             .disabled(b -> bridge == null).tooltip(Core.bundle.get("client.drill.chess.tip"));
         }).left().row();
 
-        p.label(() -> step == Step.target ? stats(layout) : Core.bundle.get("client.drill.pick")).left();
+        p.label(() -> step == Step.target || step == Step.confirm ? stats(layout) : Core.bundle.get("client.drill.pick")).left();
+
+        if(step == Step.confirm && layout != null) confirmPanel(p, layout);
+    }
+
+    private static void confirmPanel(Table p, Layout l){
+        p.row();
+        p.table(t -> {
+            t.left();
+            t.add(Core.bundle.get("client.drill.cost")).padRight(6);
+            for(ItemStack stack : l.cost){
+                t.image(stack.item.uiIcon).size(iconSmall).padRight(2);
+                t.label(() -> {
+                    var core = player.core();
+                    return (core == null || core.items.has(stack.item, stack.amount) ? "" : "[scarlet]") + UI.formatAmount(stack.amount);
+                }).padRight(8);
+            }
+        }).left().row();
+
+        p.table(t -> {
+            t.left();
+            float sec = buildSeconds(l);
+            String time = sec < 0 ? Core.bundle.get("client.drill.time.none") : Core.bundle.format("client.drill.time", UI.formatTime(sec * 60f));
+            t.add(Core.bundle.format("client.drill.perminute", Strings.autoFixed(l.rate * 60f, 0)) + "   " + time).padRight(10);
+            t.button(Core.bundle.get("client.drill.place"), Icon.ok, Styles.flatt, AutoDrillPlacer::place).size(150f, 40f).padRight(4);
+            t.button(Core.bundle.get("client.drill.back"), Icon.left, Styles.flatt, AutoDrillPlacer::back).size(120f, 40f);
+        }).left();
     }
 
     public static void showSettings(){
@@ -1192,6 +1287,7 @@ public class AutoDrillPlacer{
                 t.check(Core.bundle.get("client.drill.cap"), Core.settings.getBool("autodrill-cap", true), b -> Core.settings.put("autodrill-cap", b)).row();
                 slider(t, "autodrill-cappct", 100, 50, 300, 10, v -> Core.bundle.format("client.drill.cappct", v));
                 t.check(Core.bundle.get("client.drill.route"), Core.settings.getBool("autodrill-route", true), b -> Core.settings.put("autodrill-route", b)).row();
+                t.check(Core.bundle.get("client.drill.confirm"), Core.settings.getBool("autodrill-confirm", true), b -> Core.settings.put("autodrill-confirm", b)).row();
                 t.add(Core.bundle.get("client.drill.key")).row();
             });
             settingsDialog.hidden(AutoDrillPlacer::recompute);
