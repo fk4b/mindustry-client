@@ -1069,7 +1069,8 @@ public class DesktopInput extends InputHandler{
             }else if(selectPlans.any()){
                 flushPlans(
                     temp.selectFrom(selectPlans, s -> (state.rules.editor || s.block.isVisible()) || s.block instanceof CoreBlock),
-                    isFreezeQueueing, Core.input.keyDown(Binding.forcePlaceModifier), isFreezeQueueing);
+                    isFreezeQueueing, Core.input.keyDown(Binding.forcePlaceModifier), isFreezeQueueing,
+                    Core.settings.getBool("placeSchematicWithCleanup"));
                 temp.clear();
                 movedPlan = true;
             }else if(isPlacing()){

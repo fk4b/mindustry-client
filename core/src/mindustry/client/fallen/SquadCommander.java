@@ -50,7 +50,8 @@ public class SquadCommander{
     private static BaseDialog settingsDialog;
     private static final FloatSeq line = new FloatSeq(), draft = new FloatSeq();
     private static final Seq<Member> members = new Seq<>();
-    //очередь приказов: id, x, y
+    //очередь приказов: id юнита и x, y. id отдельно: во float id больше 2^24 округляется, и приказ уходит не тому юниту
+    private static final IntSeq orderIds = new IntSeq(), picked = new IntSeq();
     private static final FloatSeq orders = new FloatSeq();
     private static float lastCheck;
 
@@ -94,6 +95,9 @@ public class SquadCommander{
     }
 
     private static void start(){
+        //выделение запоминается при включении: пока рисуешь линию, игра может его сбросить
+        picked.clear();
+        for(Unit u : control.input.selectedUnits) if(usable(u)) picked.add(u.id);
         draft.clear();
         drawing = false;
         overlay = new Overlay();
@@ -102,6 +106,7 @@ public class SquadCommander{
 
     public static void disband(){
         members.clear();
+        orderIds.clear();
         orders.clear();
         line.clear();
         draft.clear();
@@ -146,6 +151,12 @@ public class SquadCommander{
             if(usable(u)) out.add(u);
         }
         if(out.isEmpty()){
+            for(int i = 0; i < picked.size; i++){
+                Unit u = Groups.unit.getByID(picked.get(i));
+                if(usable(u)) out.add(u);
+            }
+        }
+        if(out.isEmpty()){
             Rect view = Core.camera.bounds(Tmp.r1);
             for(Unit u : player.team().data().units){
                 if(usable(u) && u.type.canAttack && view.contains(u.x, u.y)) out.add(u);
@@ -161,6 +172,7 @@ public class SquadCommander{
     /** Места на линии через равные промежутки; юниты по порядку проекции на линию, чтобы не перебегали друг через друга. */
     private static void assign(Seq<Unit> units){
         members.clear();
+        orderIds.clear();
         orders.clear();
         int n = units.size;
         float total = length();
@@ -243,15 +255,22 @@ public class SquadCommander{
     }
 
     private static void order(int id, float x, float y){
-        orders.add(id, x, y);
+        //новый приказ юниту заменяет ещё не отправленный старый
+        int i = orderIds.indexOf(id);
+        if(i != -1){
+            orders.items[i * 2] = x;
+            orders.items[i * 2 + 1] = y;
+            return;
+        }
+        orderIds.add(id);
+        orders.add(x, y);
     }
 
     private static void flush(){
         int sent = 0;
-        while(orders.size >= 3 && sent < sendsPerTick){
-            int id = (int)orders.items[0];
-            float x = orders.items[1], y = orders.items[2];
-            orders.removeIndex(0);
+        while(orderIds.size > 0 && sent < sendsPerTick){
+            int id = orderIds.removeIndex(0);
+            float x = orders.items[0], y = orders.items[1];
             orders.removeIndex(0);
             orders.removeIndex(0);
             Unit u = Groups.unit.getByID(id);
@@ -336,6 +355,7 @@ public class SquadCommander{
             panel.label(() -> {
                 int sel = 0;
                 for(Unit u : control.input.selectedUnits) if(usable(u)) sel++;
+                if(sel == 0) for(int i = 0; i < picked.size; i++) if(usable(Groups.unit.getByID(picked.get(i)))) sel++;
                 return Core.bundle.get("client.squad.hint") + "\n[lightgray]" + (sel > 0 ? Core.bundle.format("client.squad.selected", sel) : Core.bundle.get("client.squad.onscreen"));
             }).padRight(8);
             panel.button(Icon.settingsSmall, Styles.clearNonei, SquadCommander::showSettings).size(36f);

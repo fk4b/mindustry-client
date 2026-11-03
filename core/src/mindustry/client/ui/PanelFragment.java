@@ -882,7 +882,8 @@ public class PanelFragment extends Table{
         tile(grid, col, Icon.list, bundle.get("client.morj.btn.recipe"), "@client.fdpanel.recipe",
             null, RecipeDialog::open, null);
         tile(grid, col, Icon.cancel, bundle.get("client.morj.btn.schem"), "@client.fdpanel.schemcleanup",
-            () -> settings.getBool("placeSchematicWithCleanup"), () -> settings.put("placeSchematicWithCleanup", !settings.getBool("placeSchematicWithCleanup")), null);
+            () -> settings.getBool("placeSchematicWithCleanup"), () -> settings.put("placeSchematicWithCleanup", !settings.getBool("placeSchematicWithCleanup")),
+            CustomBuildLogic::showSettings, "client.morj.right.schem");
         tile(grid, col, Icon.crafting, bundle.get("client.morj.btn.transfer"), "@client.fdpanel.autotransfer",
             () -> AutoTransfer.enabled, () -> {
                 boolean next = !AutoTransfer.enabled;

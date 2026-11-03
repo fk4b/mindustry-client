@@ -21,6 +21,7 @@ import mindustry.ai.types.*;
 import mindustry.annotations.Annotations.*;
 import mindustry.async.*;
 import mindustry.client.*;
+import mindustry.client.fallen.CustomBuildLogic;
 import mindustry.client.antigrief.*;
 import mindustry.client.navigation.*;
 import mindustry.client.utils.*;
@@ -1986,10 +1987,16 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
     }
 
     public void flushPlans(Seq<BuildPlan> plans, boolean freeze, boolean force, boolean removeFrozen){
+        flushPlans(plans, freeze, force, removeFrozen, false);
+    }
+
+    /** @param cleanup break what stands under a blocked plan and queue the plan once its footprint is free */
+    public void flushPlans(Seq<BuildPlan> plans, boolean freeze, boolean force, boolean removeFrozen, boolean cleanup){
         var configLogic = Core.settings.getBool("processorconfigs");
         var temp = new BuildPlan[plans.size + plans.count(plan -> plan.block == Blocks.waterExtractor) * 3]; // Cursed but works good enough for me
         var added = 0;
-        IntSet toBreak = force ? new IntSet() : null;
+        cleanup &= !freeze && !force;
+        IntSet toBreak = force || cleanup ? new IntSet() : null;
         ObjectSet<Building> flushBreaking = new ObjectSet<>();
         for(BuildPlan plan : plans){
             if(!plan.breaking) continue;
@@ -2055,6 +2062,12 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             boolean valid = validPlace(plan.x, plan.y, plan.block, plan.rotation, null, true)
                 || (state.rules.editor && plan.block instanceof OreBlock o && o.wallOre) //Always allow placing wall ores in editor mode, because there might be a wall in the plans that makes it valid
                 || blockedOnlyByQueuedBreak(plan, flushBreaking);
+            if(cleanup && !valid){
+                BuildPlan copy = plan.copy();
+                if(configLogic && copy.block instanceof LogicBlock && copy.config != null) copy.configLocal = net.client();
+                CustomBuildLogic.placeAfterCleanup(copy, toBreak);
+                continue;
+            }
             if(freeze || (force && world.tile(plan.x, plan.y) != null) || valid){
                 BuildPlan copy = plan.copy();
                 if(configLogic && copy.block instanceof LogicBlock && copy.config != null) { // Store the configs for logic blocks locally, they cause issues when sent to the server
