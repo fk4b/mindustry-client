@@ -146,6 +146,7 @@ public class Reconstructor extends UnitBlock{
         ConsumeItems cons = findConsumer(c -> c instanceof ConsumeItems);
         if(cons != null){
             for(ItemStack stack : cons.items){
+                if(stack.item.id >= capacities.length) continue;
                 capacities[stack.item.id] = Math.max(capacities[stack.item.id], stack.amount * 2);
                 itemCapacity = Math.max(itemCapacity, stack.amount * 2);
             }

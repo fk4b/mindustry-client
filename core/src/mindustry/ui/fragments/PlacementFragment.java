@@ -992,7 +992,8 @@ public class PlacementFragment{
     }
 
     private ItemSeq schemRequirements(){
-        if(schemReqTmp == null) schemReqTmp = new ItemSeq();
+        //число предметов меняется, когда сервер добавляет/убирает свой контент — пересоздаём кэш
+        if(schemReqTmp == null || schemReqTmp.values.length != content.items().size) schemReqTmp = new ItemSeq();
         schemReqTmp.clear();
         if(control == null || control.input == null) return schemReqTmp;
         for(BuildPlan p : control.input.selectPlans){
@@ -1013,7 +1014,7 @@ public class PlacementFragment{
         for(Item item : content.items()){
             int need = Math.round(req.get(item) * mul);
             if(need <= 0) continue;
-            int got = have == null ? 0 : have.get(item);
+            int got = have == null || item.id >= have.length() ? 0 : have.get(item);
             h = h * 31 + item.id * 10007 + Math.max(0, need - got);
         }
         return h;
@@ -1043,7 +1044,7 @@ public class PlacementFragment{
         for(Item item : content.items()){
             int need = Math.round(req.get(item) * mul);
             if(need <= 0) continue;
-            int got = have == null ? 0 : have.get(item);
+            int got = have == null || item.id >= have.length() ? 0 : have.get(item);
             int miss = need - got;
             if(miss <= 0) continue;
             any = true;

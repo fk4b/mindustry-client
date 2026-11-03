@@ -436,7 +436,11 @@ public class DataPatcher{
     void visit(Object object){
         visitStack.add(object);
         if(object instanceof Content c && usedpatches.add(c)){
-            after(c::afterPatch);
+            //при unapply контент сервера уже удалён (removed): его afterPatch считает массивы
+            //по старому набору предметов и падает с ArrayIndexOutOfBounds
+            after(() -> {
+                if(!c.removed) c.afterPatch();
+            });
         }
     }
 
