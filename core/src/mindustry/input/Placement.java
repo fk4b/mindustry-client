@@ -1417,19 +1417,28 @@ public class Placement{
             return 20;
             //why is this 20? I forgot how A* works but isn't that a bit low? Pathfinder uses 6000 right?
             //the planner seems to work fine anyway
-        }else{
-            if(parents.containsKey(tile.pos())){
-                Tile prev = world.tile(parents.get(tile.pos(), 0));
-                if(tile.relativeTo(prev) != other.relativeTo(tile)){
-                    return 8;
-                }
-            }
         }
+        //поворот бесплатный: лесенка по диагонали лучше длинного угла
         return 1;
     }
 
     private static float distanceHeuristic(int x1, int y1, int x2, int y2){
         return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    }
+
+    /** Ключ очереди: f (в десятых) в старших битах, затем удаление от прямой старт-финиш, затем позиция тайла. */
+    private static long astarKey(float g, int x, int y, int sx, int sy, int ex, int ey){
+        long f = (long)((g + distanceHeuristic(x, y, ex, ey)) * 10f);
+        return (f << 40) | ((long)lineDeviation(x, y, sx, sy, ex, ey) << 32) | (Point2.pack(x, y) & 0xffffffffL);
+    }
+
+    /** Расстояние от тайла до прямой (sx,sy)-(ex,ey) в полутайлах, 0..255. */
+    public static int lineDeviation(int x, int y, int sx, int sy, int ex, int ey){
+        int dx = ex - sx, dy = ey - sy;
+        float len = Mathf.len(dx, dy);
+        if(len < 0.001f) return 0;
+        float d = Math.abs((x - sx) * dy - (y - sy) * dx) / len;
+        return Math.min((int)(d * 2f), 255);
     }
 
     private static boolean validNode(Tile tile, Tile other){
@@ -1453,25 +1462,31 @@ public class Placement{
         int nodeLimit = 10000;
         int totalNodes = 0;
 
-        PQueue<Tile> queue = new PQueue<>(10, (a, b) -> Float.compare(costs.get(a.pos(), 0f) + distanceHeuristic(a.x, a.y, end.x, end.y), costs.get(b.pos(), 0f) + distanceHeuristic(b.x, b.y, end.x, end.y)));
-        queue.add(start);
+        //Честный A* без штрафа за повороты: все монотонные пути одной длины равны,
+        //а среди равных первыми раскрываются тайлы ближе к прямой старт-финиш -
+        //поэтому конвейер идёт "лесенкой" по диагонали, а не углом.
+        PriorityQueue<Long> queue = new PriorityQueue<>();
+        costs.put(start.pos(), 0f);
+        queue.add(astarKey(0f, start.x, start.y, startX, startY, endX, endY));
         boolean found = false;
-        while(!queue.empty() && totalNodes++ < nodeLimit){
-            Tile next = queue.poll();
+        while(!queue.isEmpty() && totalNodes++ < nodeLimit){
+            long top = queue.poll();
+            Tile next = world.tile((int)top);
+            if(next == null || !closed.add(next.pos())) continue;
             float baseCost = costs.get(next.pos(), 0f);
             if(next == end){
                 found = true;
                 break;
             }
-            closed.add(Point2.pack(next.x, next.y));
             for(Point2 point : Geometry.d4){
                 int newx = next.x + point.x, newy = next.y + point.y;
                 Tile child = world.tile(newx, newy);
-                if(child != null && validNode(next, child)){
-                    if(closed.add(child.pos())){
+                if(child != null && !closed.contains(child.pos()) && validNode(next, child)){
+                    float c = baseCost + tileHeuristic(next, child);
+                    if(c < costs.get(child.pos(), Float.POSITIVE_INFINITY)){
                         parents.put(child.pos(), next.pos());
-                        costs.put(child.pos(), tileHeuristic(next, child) + baseCost);
-                        queue.add(child);
+                        costs.put(child.pos(), c);
+                        queue.add(astarKey(c, newx, newy, startX, startY, endX, endY));
                     }
                 }
             }

@@ -76,6 +76,8 @@ public class AutoDrillPlacer{
     //буферы A*, переиспользуются между расчётами
     private static int[] routeCost = {}, routeParent = {};
     private static byte[] routePass = {};
+    private static byte[] routeJump = {}; //длина прыжка моста, которым пришли в состояние (0 - обычный шаг)
+    private static final int bridgeJumpCost = 30; //пара мостов дороже трёх конвейеров - ставим, только если обход длиннее
 
     //кэш оценки позиции бура в пределах одного расчёта: центр -> кол-во руды или -1
     private static final IntIntMap drillCache = new IntIntMap();
@@ -971,48 +973,72 @@ public class AutoDrillPlacer{
             routeCost = new int[states];
             routeParent = new int[states];
             routePass = new byte[w * h];
+            routeJump = new byte[states];
         }
         int[] cost = routeCost, parent = routeParent;
         byte[] pass = routePass; //0 - не проверен, 1 - можно, 2 - нельзя
+        byte[] jump = routeJump;
         Arrays.fill(cost, 0, states, Integer.MAX_VALUE);
         Arrays.fill(pass, 0, w * h, (byte)0);
+        Arrays.fill(jump, 0, states, (byte)0);
         PriorityQueue<Long> open = new PriorityQueue<>();
 
+        //Конвейер идёт лесенкой: поворот бесплатный, а среди равных по длине путей
+        //первыми раскрываются тайлы ближе к прямой "коллектор - цель".
+        //Через чужие конвейеры/стены перепрыгиваем парой мостов (вход + выход).
+        int turn = bridges ? turnCost : 0;
+        boolean jumps = !bridges && bridge != null && bridge.range >= 2;
+        int tx = target.x, ty = target.y;
+
+        //стартовое псевдо-состояние - сам коллектор, в путь не попадает
         int startDir = l.flowRot;
-        for(int dir = 0; dir < 4; dir++){
-            int nx = sx + dirs[dir].x, ny = sy + dirs[dir].y;
-            if(!passable(l, block, pass, bx0, by0, w, h, nx, ny)) continue;
-            int st = ((nx - bx0) + (ny - by0) * w) * 4 + dir;
-            int c = stepCost + (dir == startDir ? 0 : turnCost);
-            cost[st] = c;
-            parent[st] = -1;
-            open.add(((long)(c + heuristic(nx, ny, target, hop)) << 32) | st);
-        }
+        int startState = ((sx - bx0) + (sy - by0) * w) * 4 + startDir;
+        cost[startState] = 0;
+        parent[startState] = -1;
+        open.add(routeKey(heuristic(sx, sy, target, hop), sx, sy, sx, sy, tx, ty, startState));
 
         int found = -1, expanded = 0;
         while(!open.isEmpty() && expanded++ < maxRouteNodes){
             long top = open.poll();
-            int st = (int)top, f = (int)(top >>> 32);
+            int st = (int)(top & 0xffffffffL), f = (int)(top >>> 40);
             int idx = st / 4, dir = st % 4;
             int cx = idx % w + bx0, cy = idx / w + by0;
             if(f - heuristic(cx, cy, target, hop) > cost[st]) continue;
-            if(goals.contains(Point2.pack(cx, cy))){
+            if(st != startState && goals.contains(Point2.pack(cx, cy))){
                 found = st;
                 break;
             }
             for(int nd = 0; nd < 4; nd++){
                 //назад нельзя: у моста первый прыжок назад упёрся бы в коллектор, который его кормит
-                if(nd == (dir + 2) % 4) continue;
+                if(st != startState && nd == (dir + 2) % 4) continue;
+                int dturn = nd == dir ? 0 : st == startState ? turnCost : turn;
                 for(int len = 1; len <= hop; len++){
                     int nx = cx + dirs[nd].x * len, ny = cy + dirs[nd].y * len;
                     if(!passable(l, block, pass, bx0, by0, w, h, nx, ny)) continue;
                     int ns = ((nx - bx0) + (ny - by0) * w) * 4 + nd;
                     //длинный прыжок стоит чуть меньше - меньше мостов на тот же путь
-                    int c = cost[st] + stepCost + (bridges ? hop - len : 0) + (nd == dir ? 0 : turnCost);
+                    int c = cost[st] + stepCost + (bridges ? hop - len : 0) + dturn;
                     if(c < cost[ns]){
                         cost[ns] = c;
                         parent[ns] = st;
-                        open.add(((long)(c + heuristic(nx, ny, target, hop)) << 32) | ns);
+                        jump[ns] = 0;
+                        open.add(routeKey(c + heuristic(nx, ny, target, hop), nx, ny, sx, sy, tx, ty, ns));
+                    }
+                }
+                if(!jumps) continue;
+                //вход моста на соседнем тайле, выход через 2..range тайлов; между ними - что угодно
+                int ax = cx + dirs[nd].x, ay = cy + dirs[nd].y;
+                if(!passable(l, block, pass, bx0, by0, w, h, ax, ay) || !bridgeInputOk(ax, ay)) continue;
+                for(int len = 2; len <= bridge.range; len++){
+                    int nx = ax + dirs[nd].x * len, ny = ay + dirs[nd].y * len;
+                    if(!passable(l, block, pass, bx0, by0, w, h, nx, ny) || !bridgeOutputOk(nx, ny, nd, into)) continue;
+                    int ns = ((nx - bx0) + (ny - by0) * w) * 4 + nd;
+                    int c = cost[st] + stepCost * (len + 1) + bridgeJumpCost + dturn;
+                    if(c < cost[ns]){
+                        cost[ns] = c;
+                        parent[ns] = st;
+                        jump[ns] = (byte)len;
+                        open.add(routeKey(c + heuristic(nx, ny, target, hop), nx, ny, sx, sy, tx, ty, ns));
                     }
                 }
             }
@@ -1023,7 +1049,7 @@ public class AutoDrillPlacer{
         }
 
         IntSeq path = new IntSeq();
-        for(int st = found; st != -1; st = parent[st]) path.add(st);
+        for(int st = found; st != startState; st = parent[st]) path.add(st);
         path.reverse();
 
         l.end.rotation = path.first() % 4;
@@ -1047,9 +1073,22 @@ public class AutoDrillPlacer{
         }
 
         //каждый тайл смотрит на следующий, последний - в здание или по ходу движения
+        int tiles = 0;
         for(int i = 0; i < path.size; i++){
             int idx = path.get(i) / 4;
             int px = idx % w + bx0, py = idx / w + by0;
+            int len = jump[path.get(i)];
+            if(len > 0){
+                //пара мостов: вход связан с выходом, выход сам выгружает в следующий конвейер/ядро
+                int d = path.get(i) % 4, ax = px - dirs[d].x * len, ay = py - dirs[d].y * len;
+                l.plans.insert(insert++, new BuildPlan(ax, ay, 0, bridge, new Point2(px - ax, py - ay)));
+                l.bridgeLinks.add(Point2.pack(ax, ay), Point2.pack(px, py));
+                l.plans.insert(insert++, new BuildPlan(px, py, 0, bridge));
+                l.bridgeLinks.add(Point2.pack(px, py), -1);
+                tiles += len + 1;
+                continue;
+            }
+            tiles++;
             int r;
             if(i + 1 < path.size){
                 r = path.get(i + 1) % 4;
@@ -1067,11 +1106,39 @@ public class AutoDrillPlacer{
             }
             l.plans.insert(insert++, new BuildPlan(px, py, r, conveyor));
         }
-        l.route = path.size;
+        l.route = tiles;
     }
 
     private static int heuristic(int x, int y, Tile target, int hop){
         return (Math.abs(x - target.x) + Math.abs(y - target.y)) * stepCost / hop;
+    }
+
+    /** Ключ очереди A*: f, затем удаление от прямой (лесенка вдоль неё), затем состояние. */
+    private static long routeKey(int f, int x, int y, int sx, int sy, int tx, int ty, int state){
+        return ((long)f << 40) | ((long)Placement.lineDeviation(x, y, sx, sy, tx, ty) << 32) | (state & 0xffffffffL);
+    }
+
+    /** Вход моста: в него не должен смотреть чужой конвейер - иначе подмешает свои предметы. */
+    private static boolean bridgeInputOk(int x, int y){
+        Tile self = world.tile(x, y);
+        for(Point2 d : dirs){
+            Tile n = world.tile(x + d.x, y + d.y);
+            if(n == null || n.build == null || !n.build.block.rotate || !n.build.block.acceptsItems) continue;
+            Building front = n.build.front();
+            if(front != null && front.tile == self) return false;
+        }
+        return true;
+    }
+
+    /** Выход моста выгружает во всех соседей, кроме стороны входа: рядом не должно быть чужих приёмников, кроме цели. */
+    private static boolean bridgeOutputOk(int x, int y, int dir, Building into){
+        int back = (dir + 2) % 4;
+        for(int d = 0; d < 4; d++){
+            if(d == back) continue;
+            Tile n = world.tile(x + dirs[d].x, y + dirs[d].y);
+            if(n != null && n.build != null && n.build != into && n.build.block.acceptsItems) return false;
+        }
+        return true;
     }
 
     private static void collectPlanned(){
