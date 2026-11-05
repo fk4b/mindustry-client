@@ -835,6 +835,10 @@ public class SettingsMenuDialog extends BaseDialog{
         // graphics.checkPref("showweather", true); FINISHME: Move client weather alpha to this
         graphics.checkPref("animatedwater", true);
 
+        if(Shaders.shield != null){
+            graphics.checkPref("animatedshields", true);
+        }
+
         graphics.checkPref("bloom", true, val -> renderer.toggleBloom(val));
 
         graphics.checkPref("pixelate", false, val -> {
@@ -889,7 +893,11 @@ public class SettingsMenuDialog extends BaseDialog{
         moderation.sliderPref("leavecount", 100, 5, 1000, 10, String::valueOf);
         // End Moderation Settings
 
-        dev.checkPref("console", false);
+        dev.checkPref("console", false, val -> {
+            if(val == false && ui.consolefrag != null){
+                ui.consolefrag.close();
+            }
+        });
         dev.checkPref("drawhitboxes", false);
         dev.checkPref("showperformance", false);
 

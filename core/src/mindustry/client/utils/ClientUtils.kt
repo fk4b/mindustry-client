@@ -5,9 +5,8 @@ package mindustry.client.utils
 
 import arc.*
 import arc.files.*
-import arc.func.Floatf
+import arc.func.*
 import arc.graphics.*
-import arc.input.*
 import arc.math.*
 import arc.math.geom.*
 import arc.scene.*
@@ -112,17 +111,24 @@ object Compression {
         return output
     }
 
-    fun inflate(input: ByteArray): ByteArray {
-        val inflater = InflaterInputStream(input.inputStream())
-        val output = inflater.readBytes()
-        inflater.close()
-        return output
+    /** @throws IOException If inflated output exceeds [maxSize] */
+    fun inflate(input: ByteArray, maxSize: Int = Int.MAX_VALUE): ByteArray {
+        InflaterInputStream(input.inputStream()).use { inflater ->
+            val output = ByteArrayOutputStream()
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = inflater.read(buffer)
+                if (read == -1) return output.toByteArray()
+                if (output.size() + read > maxSize) throw IOException("Inflated data exceeds $maxSize bytes")
+                output.write(buffer, 0, read)
+            }
+        }
     }
 }
 
 fun ByteArray.compress() = Compression.compress(this)
 
-fun ByteArray.inflate() = Compression.inflate(this)
+fun ByteArray.inflate(maxSize: Int = Int.MAX_VALUE) = Compression.inflate(this, maxSize)
 
 fun String.capLength(length: Int): String {
     if (this.length <= length) return this
@@ -385,8 +391,54 @@ fun compressImageAsPng(img: Pixmap): ByteArray {
         return bytes.toByteArray()
     }
 
-fun inflateImage(array: ByteArray, offset: Int, length: Int): Pixmap? {
-    return try { Pixmap(array, offset, length) } catch (e: Exception) { Log.err(e); null }
+private val pngHeader = byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A)
+private val jpegHeader = byteArrayOf(0xFF.toByte(), 0xD8.toByte())
+
+private fun ByteArray.startsWith(prefix: ByteArray, offset: Int, length: Int) = length >= prefix.size && prefix.indices.all { this[offset + it] == prefix[it] }
+
+/** Reads the size of an image from the header. This feels like wizardry, I had to do too much googling for this.
+ * @return (width, height), or null if the data is neither format, or the header is malformed. May be negative (png sizes unsigned int). */
+private fun imageSize(array: ByteArray, offset: Int, length: Int): Pair<Int, Int>? {
+    val buf = ByteBuffer.wrap(array, offset, length) // Big-endian, as are both formats
+    runCatching { // Catch exceptions caused by malformed headers.
+        if (array.startsWith(pngHeader, offset, length)) {
+            buf.position(offset + pngHeader.size)
+            val chunkLength = buf.int
+            val chunkType = buf.int
+            if (chunkLength != 13 || chunkType != 0x49484452) return null // IHDR chunk: length and type are always the same.
+            return buf.int to buf.int // After the IHDR chunk label is the size of the image.
+        }
+
+        if (array.startsWith(jpegHeader, offset, length)) {
+            buf.position(offset + jpegHeader.size)
+            while (true) {
+                if (buf.get().toUByte().toInt() != 0xFF) return null // All JPEG markers start with this byte
+                var marker = buf.get().toUByte().toInt()
+                while (marker == 0xFF) marker = buf.get().toUByte().toInt() // The marker may be repeated for padding reasons
+
+                val segmentLength = buf.short.toUShort().toInt() // Includes the length field itself
+                if (marker in 0xC0..0xC2) { // Baseline/extended/progressive type JPEG start of frame markers
+                    buf.get() // Sample precision
+                    val height = buf.short.toUShort().toInt()
+                    val width = buf.short.toUShort().toInt()
+                    return width to height
+                }
+                if (segmentLength < Short.SIZE_BYTES) return null // If we don't have another segment, we don't have a size anywhere.
+                buf.position(buf.position() + segmentLength - Short.SIZE_BYTES) // Check the next segment as this was not the start of frame segment.
+            }
+        }
+    }
+    return null
+}
+
+/** Decodes only PNG or JPEG. Other formats or images above [maxPixels] are rejected before any memory is allocated. */
+fun inflateUntrustedImage(array: ByteArray, offset: Int, length: Int, maxPixels: Int): Pixmap? {
+    val (width, height) = imageSize(array, offset, length) ?: run { Log.err("Failed to decode image: Invalid PNG/JPEG"); return null }
+    if (width <= 0 || height <= 0 || width.toLong() * height > maxPixels) {
+        Log.err("Rejected @x@ image as it is too large (@/@)", width, height, width * height, maxPixels)
+        return null
+    }
+    return try { Pixmap(array, offset, length) } catch (e: Exception) { Log.err("Failed to decode image", e); null }
 }
 
 inline fun circle(x: Int, y: Int, radius: Float, cons: (Tile?) -> Unit) {
@@ -464,6 +516,19 @@ fun isDeveloper() = Main.keyStorage.cert() in Main.keyStorage.builtInCerts
 //    }
 //}
 
+/** Finds the newest chat message received within the last [withinMs] ms (default 10s) matching [predicate]. Searches newest first, stopping once messages are too old to match. */
+fun findRecentMessage(withinMs: Long = 10_000, predicate: (ChatMessage) -> Boolean): ChatMessage? {
+    val cutoff = Time.millis() - withinMs
+    val msgs = ui.chatfrag.messages
+    @Suppress("ReplaceManualRangeWithIndicesCalls") // Breaking out of a seq while iterating clogs the iterator
+    for (i in 0..<msgs.size) {
+        val msg = msgs[i]
+        if (msg.receivedAt < cutoff) break
+        if (predicate(msg)) return msg
+    }
+    return null
+}
+
 fun ChatMessage.findCoords(): ChatMessage = NetClient.findCoords(this)
 
 fun ChatMessage.findLinks(start: Int = 0): ChatMessage = NetClient.findLinks(this, start)
@@ -472,14 +537,12 @@ fun ChatMessage.findPlayerName(playerSender: Player): ChatMessage = NetClient.fi
 
 fun findItem(arg: String): Item = content.items().min { b -> biasedLevenshtein(arg, b.localizedName) }
 
-fun findUnit(arg: String): UnitType = content.units().min(
-    { u: UnitType -> !u.internal },
+fun findUnit(arg: String): UnitType {
+    val useLocalizedName = Core.settings.getBool("uselocalizedname", true)
+    val distance: Floatf<UnitType> = if (useLocalizedName) Floatf { u -> biasedLevenshtein(arg, u.localizedName) } else Floatf { u -> biasedLevenshtein(arg, u.name) }
     // Filter out internals as people will try spawning block entities and crash the game otherwise (all internals are filtered since they should likely never be manually spawned)
-    if (Core.settings.getBool("uselocalizedname", true))
-        fun(u: UnitType):Float = biasedLevenshtein(arg, u.localizedName)
-    else
-        fun(u: UnitType):Float = biasedLevenshtein(arg, u.name)
-)
+    return content.units().min({ u: UnitType -> !u.internal }, distance)
+}
 
 fun findBlock(arg: String): Block = content.blocks().min { b -> biasedLevenshtein(arg, b.localizedName) }
 
