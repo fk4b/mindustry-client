@@ -188,7 +188,11 @@ public class Binding{
     /** Vein drill placer. F10, because H already selects every unit factory. */
     auto_drill = KeyBind.add("auto_drill", KeyCode.f10),
     /** Squad front line: draw it, units hold it. Unbound by default - all free F-keys are taken. */
-    squad_front = KeyBind.add("squad_front", KeyCode.unset)
+    squad_front = KeyBind.add("squad_front", KeyCode.unset),
+    /** Pick squad 1-3. Unbound by default: the number row selects block categories. */
+    squad_1 = KeyBind.add("squad_1", KeyCode.unset),
+    squad_2 = KeyBind.add("squad_2", KeyCode.unset),
+    squad_3 = KeyBind.add("squad_3", KeyCode.unset)
     ;
 
     //dummy static class initializer
