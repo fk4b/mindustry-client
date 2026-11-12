@@ -5,6 +5,7 @@ import arc.struct.IntSeq;
 import arc.struct.Seq;
 import arc.util.Time;
 import mindustry.Vars;
+import mindustry.content.Blocks;
 import mindustry.game.Team;
 import mindustry.gen.Building;
 import mindustry.gen.Groups;
@@ -82,8 +83,8 @@ public final class OreSafety{
             for(int x = 0; x < w; x++){
                 Tile t = Vars.world.tile(x, y);
                 if(t == null) continue;
-                Item drop = t.drop();
-                if(drop == null) drop = t.wallDrop();
+                Item drop = t.wallDrop();
+                if(drop == null) drop = t.drop();
                 dropGrid[x + y * w] = drop;
             }
         }
@@ -182,7 +183,7 @@ public final class OreSafety{
             for(int i = 0; i < c.sampleX.length; i++){
                 Tile t = Vars.world.tile(c.sampleX[i], c.sampleY[i]);
                 if(t == null) continue;
-                if(!t.solid()) free++;
+                if(mineable(t, c.item, null)) free++;
                 if(isThreatened(t.worldx(), t.worldy())) c.threatened = true;
             }
             c.freeTiles = free > 0;
@@ -291,37 +292,68 @@ public final class OreSafety{
         return best;
     }
 
-    /** A free sample of the nearest safe vein, or null when every vein is under fire. */
+    /**
+     * True if the tile can actually be mined for this item right now. A building on top
+     * of floor ore (conveyor, bridge, etc.) blocks mining even though it is not solid.
+     */
+    public static boolean mineable(Tile t, Item item, Unit unit){
+        if(t == null || item == null) return false;
+        if(unit != null) return unit.getMineResult(t) == item;
+        return (t.block() == Blocks.air && t.drop() == item) || t.wallDrop() == item;
+    }
+
+    /** A free tile of the nearest safe vein, or null when every vein is under fire or built over. */
     public static Tile nearestSafeTile(Unit unit, Item item){
         if(item == null) return null;
         Building home = unit != null ? unit.closestCore() : (player != null && player.team() != null ? player.team().core() : null);
         float hx = home != null ? home.x : (unit != null ? unit.x : 0f);
         float hy = home != null ? home.y : (unit != null ? unit.y : 0f);
 
-        Cluster best = null;
-        float bestD = Float.MAX_VALUE;
+        Seq<Cluster> candidates = new Seq<>();
         for(Cluster c : clusters){
             if(c.item != item || !c.freeTiles || c.threatened) continue;
             if(home != null && !pathSafe(home.x, home.y, c.x, c.y)) continue;
             if(unit != null && !pathSafe(unit.x, unit.y, c.x, c.y)) continue;
-            float d = (c.x - hx) * (c.x - hx) + (c.y - hy) * (c.y - hy);
-            if(d < bestD){
-                bestD = d;
-                best = c;
-            }
+            candidates.add(c);
         }
-        if(best == null || best.sampleX == null) return null;
+        candidates.sort(c -> (c.x - hx) * (c.x - hx) + (c.y - hy) * (c.y - hy));
 
+        for(Cluster c : candidates){
+            Tile tile = freeTileIn(c, unit, item, hx, hy);
+            if(tile != null) return tile;
+        }
+        return null;
+    }
+
+    /** Closest free sample of the cluster; if all samples are built over, searches the cluster area. */
+    private static Tile freeTileIn(Cluster c, Unit unit, Item item, float hx, float hy){
         Tile tile = null;
         float td = Float.MAX_VALUE;
-        for(int i = 0; i < best.sampleX.length; i++){
-            Tile t = Vars.world.tile(best.sampleX[i], best.sampleY[i]);
-            if(t == null || t.solid()) continue;
-            if(isThreatened(t.worldx(), t.worldy())) continue;
-            float d = (t.worldx() - hx) * (t.worldx() - hx) + (t.worldy() - hy) * (t.worldy() - hy);
-            if(d < td){
-                td = d;
-                tile = t;
+        if(c.sampleX != null){
+            for(int i = 0; i < c.sampleX.length; i++){
+                Tile t = Vars.world.tile(c.sampleX[i], c.sampleY[i]);
+                if(!mineable(t, item, unit)) continue;
+                if(isThreatened(t.worldx(), t.worldy())) continue;
+                float d = (t.worldx() - hx) * (t.worldx() - hx) + (t.worldy() - hy) * (t.worldy() - hy);
+                if(d < td){
+                    td = d;
+                    tile = t;
+                }
+            }
+        }
+        if(tile != null) return tile;
+
+        int cx = (int)(c.x / 8f), cy = (int)(c.y / 8f);
+        for(int y = cy - MAX_CLUSTER_RADIUS; y <= cy + MAX_CLUSTER_RADIUS; y++){
+            for(int x = cx - MAX_CLUSTER_RADIUS; x <= cx + MAX_CLUSTER_RADIUS; x++){
+                Tile t = Vars.world.tile(x, y);
+                if(!mineable(t, item, unit)) continue;
+                if(isThreatened(t.worldx(), t.worldy())) continue;
+                float d = (t.worldx() - hx) * (t.worldx() - hx) + (t.worldy() - hy) * (t.worldy() - hy);
+                if(d < td){
+                    td = d;
+                    tile = t;
+                }
             }
         }
         return tile;

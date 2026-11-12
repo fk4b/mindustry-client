@@ -172,6 +172,10 @@ object Main : ApplicationListener {
                 is SchematicTransmission -> {
                     transmission.addToChat()
                 }
+
+                is FocusMarkTransmission -> {
+                    if (senderId != communicationSystem.id) Core.app.post { mindustry.client.fallen.FocusMarks.receive(transmission, senderId) }
+                }
             }
         }
 

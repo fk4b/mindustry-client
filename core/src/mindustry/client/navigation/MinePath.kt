@@ -165,7 +165,7 @@ class MinePath @JvmOverloads constructor(
 
         if (isInventoryFull) {
             if (canContinueMiningWithFullInventory) {
-                if (player.within(tile, player.unit().type.mineRange)) {
+                if (player.unit().validMine(tile)) {
                     player.unit().mineTile = tile
                 }
                 player.boosting = player.unit().type.canBoost && !player.within(tile, player.unit().type.mineRange)
@@ -202,7 +202,7 @@ class MinePath @JvmOverloads constructor(
             return
         }
 
-        if (player.within(tile, player.unit().type.mineRange)) {
+        if (player.unit().validMine(tile)) {
             player.unit().mineTile = tile
         }
         player.boosting = player.unit().type.canBoost && !player.within(tile, player.unit().type.mineRange)

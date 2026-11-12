@@ -192,7 +192,11 @@ public class Binding{
     /** Pick squad 1-3. Unbound by default: the number row selects block categories. */
     squad_1 = KeyBind.add("squad_1", KeyCode.unset),
     squad_2 = KeyBind.add("squad_2", KeyCode.unset),
-    squad_3 = KeyBind.add("squad_3", KeyCode.unset)
+    squad_3 = KeyBind.add("squad_3", KeyCode.unset),
+    /** Area upgrade, focus mark, map search: unbound by default, the panel has buttons for them. */
+    area_upgrade = KeyBind.add("area_upgrade", KeyCode.unset),
+    focus_mark = KeyBind.add("focus_mark", KeyCode.unset),
+    map_search = KeyBind.add("map_search", KeyCode.unset)
     ;
 
     //dummy static class initializer

@@ -328,7 +328,7 @@ public class SquadCommander{
         closeOverlay();
     }
 
-    private static @Nullable Teamc targetAt(float x, float y){
+    static @Nullable Teamc targetAt(float x, float y){
         Unit best = null;
         float bestDst = Float.MAX_VALUE;
         for(Unit e : Groups.unit){
@@ -716,6 +716,24 @@ public class SquadCommander{
             return;
         }
         s.focus = target;
+    }
+
+    /** Focus fire for every formed squad (focus marks). Quiet: no "nobody can hit" popup. */
+    public static void focusAll(Teamc target){
+        if(target == null) return;
+        for(Squad s : squads){
+            if(s.members.isEmpty()) continue;
+            boolean any = false;
+            for(Member m : s.members){
+                Unit u = Groups.unit.getByID(m.id);
+                if(u != null && m.state == State.hold && canHit(u, target)){ any = true; break; }
+            }
+            if(any) setFocus(s, target, false);
+        }
+    }
+
+    public static void endFocusAll(){
+        for(Squad s : squads) if(s.focus != null) endFocus(s);
     }
 
     private static boolean canHit(Unit u, Teamc target){

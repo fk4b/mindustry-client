@@ -272,6 +272,9 @@ public class PanelFragment extends Table{
         ThreatRadar.init();
         WaveForecast.init();
         SquadCommander.init();
+        AreaUpgrade.init();
+        FocusMarks.init();
+        MapSearchDialog.init();
         AntiAttemPatcher.load();
         Log.info("Start init");
     }
@@ -877,6 +880,8 @@ public class PanelFragment extends Table{
             }, () -> PolySettingsDialog.instance.show(), "client.morj.right.poly");
         tile(grid, col, new TextureRegionDrawable(UnitTypes.nova.uiIcon), bundle.get("client.morj.btn.nova"), "@client.fdpanel.novaassist",
             () -> BuilderAssist.enabled, BuilderAssist::toggle, BuilderAssist::showSettings, "client.morj.right.nova");
+        tile(grid, col, Icon.upOpen, bundle.get("client.morj.btn.upgrade"), "@client.fdpanel.areaupgrade",
+            AreaUpgrade::active, AreaUpgrade::toggle, null);
         tile(grid, col, new TextureRegionDrawable(Blocks.mechanicalDrill.uiIcon), bundle.get("client.morj.btn.drill"), "@client.fdpanel.autodrill",
             AutoDrillPlacer::active, AutoDrillPlacer::toggle, AutoDrillPlacer::showSettings, "client.morj.right.drill");
         tile(grid, col, Icon.list, bundle.get("client.morj.btn.recipe"), "@client.fdpanel.recipe",
@@ -908,6 +913,10 @@ public class PanelFragment extends Table{
         regGroup = "sec.map";
         Table map = null;
         int[] col = {0};
+        tile(map, col, Icon.zoom, bundle.get("client.morj.btn.mapsearch"), "@client.fdpanel.mapsearch",
+            null, MapSearchDialog::open, null);
+        tile(map, col, Icon.power, bundle.get("client.morj.btn.perf"), "@client.fdpanel.perfmode",
+            PerformanceMode::enabled, PerformanceMode::toggle, null);
         tile(map, col, Icon.map, bundle.get("client.morj.btn.markers"), "@client.fdpanel.mapmarkers",
             () -> settings.getBool("mapmarkers", true), () -> settings.put("mapmarkers", !settings.getBool("mapmarkers", true)), null);
         tile(map, col, Icon.waves, bundle.get("client.morj.btn.winfo"), "@client.fdpanel.waveinfo",
@@ -999,6 +1008,8 @@ public class PanelFragment extends Table{
             () -> WaveForecast.enabled, WaveForecast::toggle, WaveForecast::showSettings, "client.morj.right.forecast");
         tile(grid, col, Icon.commandRally, bundle.get("client.morj.btn.squad"), "@client.fdpanel.squad",
             SquadCommander::active, SquadCommander::toggle, SquadCommander::showSettings, "client.morj.right.squad");
+        tile(grid, col, Icon.commandAttack, bundle.get("client.morj.btn.mark"), "@client.fdpanel.focusmark",
+            FocusMarks::hasOwn, FocusMarks::toggle, FocusMarks::showSettings, "client.morj.right.mark");
         tile(grid, col, new TextureRegionDrawable(Blocks.duo.uiIcon), bundle.get("client.morj.btn.builds"), "@client.fdpanel.smartbuildings",
             () -> settings.getBool("smartshoot-buildings", false),
             () -> settings.put("smartshoot-buildings", !settings.getBool("smartshoot-buildings", false)), null);
