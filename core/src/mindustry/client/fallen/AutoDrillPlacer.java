@@ -12,6 +12,7 @@ import arc.scene.ui.*;
 import arc.scene.ui.layout.*;
 import arc.struct.*;
 import arc.util.*;
+import mindustry.content.*;
 import mindustry.core.*;
 import mindustry.entities.units.*;
 import mindustry.game.EventType.*;
@@ -45,6 +46,8 @@ public class AutoDrillPlacer{
     /** Пересчёт раскладки, когда курсор задержался на тайле, а не на каждом движении мыши. */
     private static final long recomputeDelay = 60;
     private static final int stepCost = 10, turnCost = 4;
+    /** Доплата за прямой шаг, пока до цели остались обе оси: так A* выкладывает лесенку. */
+    private static final int staircasePenalty = 2;
     private static final Point2[] dirs = Geometry.d4;
 
     private static boolean hooked;
@@ -92,6 +95,7 @@ public class AutoDrillPlacer{
         int drills, conveyors, route = -1; //route: -1 без маршрута, -2 путь не найден
         float rate, rawRate;
         boolean chess; //поле на мостах
+        boolean usedBridges; //маршрут пришлось проложить мостами
         final ItemSeq cost = new ItemSeq();
         float buildTime; //в тиках при скорости стройки 1
         BuildPlan end; //последний тайл коллектора, от него идёт маршрут
@@ -932,8 +936,19 @@ public class AutoDrillPlacer{
 
     private static void route(Layout l, Tile target){
         boolean bridges = useBridges();
+        route(l, target, bridges, false);
+        //конвейер не смог - пробуем тот же маршрут мостами, не трогая чужие постройки
+        if(!bridges && l.route == -2 && bridge != null){
+            route(l, target, true, true);
+        }
+    }
+
+    private static void route(Layout l, Tile target, boolean bridges, boolean avoidBuilt){
         Block block = bridges ? bridge : conveyor;
         int hop = bridges ? bridge.range : 1;
+        l.usedBridges = bridges;
+        //для конвейера -1 разрешает ставить поверх такого же конвейера (иначе режет поворот на 0)
+        int placeRot = bridges ? 0 : -1;
         Building into = target.build != null && !l.occupied.contains(target.pos()) ? target.build : null;
         int sx = l.end.x, sy = l.end.y;
         if(Math.abs(sx - target.x) + Math.abs(sy - target.y) > maxRouteDist){
@@ -955,10 +970,10 @@ public class AutoDrillPlacer{
             for(Tile t : into.tile.getLinkedTiles(new Seq<>())){
                 for(Point2 d : dirs){
                     Tile n = world.tile(t.x + d.x, t.y + d.y);
-                    if(n != null && n.build != into && !l.occupied.contains(n.pos()) && fits(block, n.x, n.y)) goals.add(n.pos());
+                    if(n != null && n.build != into && (!avoidBuilt || n.build == null) && !l.occupied.contains(n.pos()) && existingTransport(n.x, n.y) == null && fits(block, n.x, n.y, placeRot)) goals.add(n.pos());
                 }
             }
-        }else if(!l.occupied.contains(target.pos()) && fits(block, target.x, target.y)){
+        }else if(!l.occupied.contains(target.pos()) && (!avoidBuilt || target.build == null) && existingTransport(target.x, target.y) == null && fits(block, target.x, target.y, placeRot)){
             goals.add(target.pos());
         }
         if(goals.isEmpty()){
@@ -1011,13 +1026,24 @@ public class AutoDrillPlacer{
             for(int nd = 0; nd < 4; nd++){
                 //назад нельзя: у моста первый прыжок назад упёрся бы в коллектор, который его кормит
                 if(st != startState && nd == (dir + 2) % 4) continue;
+                //на тайле с уже стоящим транспортом можно только ехать прямо: там будет junction
+                if(!bridges && existingTransport(cx, cy) != null && nd != dir) continue;
                 int dturn = nd == dir ? 0 : st == startState ? turnCost : turn;
                 for(int len = 1; len <= hop; len++){
                     int nx = cx + dirs[nd].x * len, ny = cy + dirs[nd].y * len;
-                    if(!passable(l, block, pass, bx0, by0, w, h, nx, ny)) continue;
+                    if(!passable(l, block, pass, bx0, by0, w, h, nx, ny, placeRot, avoidBuilt)) continue;
                     int ns = ((nx - bx0) + (ny - by0) * w) * 4 + nd;
-                    //длинный прыжок стоит чуть меньше - меньше мостов на тот же путь
-                    int c = cost[st] + stepCost + (bridges ? hop - len : 0) + dturn;
+                    int c;
+                    if(bridges){
+                        //длинный прыжок стоит чуть меньше - меньше мостов на тот же путь
+                        c = cost[st] + stepCost + (hop - len) + dturn;
+                    }else{
+                        //в середине маршрута поворот дешевле прямого, у цели - наоборот;
+                        //предмет на поворотном тайле стартует с середины (Conveyor.handleItem), поэтому лесенка быстрее угла
+                        boolean stair = cx != target.x && cy != target.y;
+                        c = cost[st] + stepCost + stepExtra(stair, nd == dir)
+                            + trajectoryDev(nx, ny, sx, sy, target.x, target.y);
+                    }
                     if(c < cost[ns]){
                         cost[ns] = c;
                         parent[ns] = st;
@@ -1028,10 +1054,10 @@ public class AutoDrillPlacer{
                 if(!jumps) continue;
                 //вход моста на соседнем тайле, выход через 2..range тайлов; между ними - что угодно
                 int ax = cx + dirs[nd].x, ay = cy + dirs[nd].y;
-                if(!passable(l, block, pass, bx0, by0, w, h, ax, ay) || !bridgeInputOk(ax, ay)) continue;
+                if(!passable(l, block, pass, bx0, by0, w, h, ax, ay, placeRot, avoidBuilt) || !bridgeInputOk(ax, ay)) continue;
                 for(int len = 2; len <= bridge.range; len++){
                     int nx = ax + dirs[nd].x * len, ny = ay + dirs[nd].y * len;
-                    if(!passable(l, block, pass, bx0, by0, w, h, nx, ny) || !bridgeOutputOk(nx, ny, nd, into)) continue;
+                    if(!passable(l, block, pass, bx0, by0, w, h, nx, ny, placeRot, avoidBuilt) || !bridgeOutputOk(nx, ny, nd, into)) continue;
                     int ns = ((nx - bx0) + (ny - by0) * w) * 4 + nd;
                     int c = cost[st] + stepCost * (len + 1) + bridgeJumpCost + dturn;
                     if(c < cost[ns]){
@@ -1077,6 +1103,7 @@ public class AutoDrillPlacer{
         for(int i = 0; i < path.size; i++){
             int idx = path.get(i) / 4;
             int px = idx % w + bx0, py = idx / w + by0;
+            int inDir = path.get(i) % 4;
             int len = jump[path.get(i)];
             if(len > 0){
                 //пара мостов: вход связан с выходом, выход сам выгружает в следующий конвейер/ядро
@@ -1093,7 +1120,7 @@ public class AutoDrillPlacer{
             if(i + 1 < path.size){
                 r = path.get(i + 1) % 4;
             }else{
-                r = path.get(i) % 4;
+                r = inDir;
                 if(into != null){
                     for(int dir = 0; dir < 4; dir++){
                         Tile n = world.tile(px + dirs[dir].x, py + dirs[dir].y);
@@ -1104,6 +1131,18 @@ public class AutoDrillPlacer{
                     }
                 }
             }
+
+            Building existing = existingTransport(px, py);
+            if(existing != null){
+                //уже junction - просто проезжаем, новый план не нужен
+                if(existing.block instanceof Junction) continue;
+                //перпендикулярный конвейер/дукт режем junction'ом
+                if(Mathf.mod(existing.rotation - inDir, 2) == 1){
+                    l.plans.insert(insert++, new BuildPlan(px, py, inDir, Blocks.junction));
+                    continue;
+                }
+            }
+
             l.plans.insert(insert++, new BuildPlan(px, py, r, conveyor));
         }
         l.route = tiles;
@@ -1111,6 +1150,25 @@ public class AutoDrillPlacer{
 
     private static int heuristic(int x, int y, Tile target, int hop){
         return (Math.abs(x - target.x) + Math.abs(y - target.y)) * stepCost / hop;
+    }
+
+    /**
+     * Доплата за шаг. Пока до цели остались обе оси, прямой шаг чуть дороже поворота -
+     * так A* сам выкладывает лесенку. Когда по одной оси уже выровнялись, наоборот:
+     * прямой шаг бесплатен, поворот стоит turnCost.
+     */
+    private static int stepExtra(boolean stair, boolean straight){
+        return stair ? (straight ? staircasePenalty : 0) : (straight ? 0 : turnCost);
+    }
+
+    /** Насколько тайл ушёл от прямой старт->цель; в середине пути тянет лесенку к линии. */
+    private static int trajectoryDev(int x, int y, int startX, int startY, int targetX, int targetY){
+        int ax = Math.abs(targetX - startX), ay = Math.abs(targetY - startY);
+        int diag = Math.min(ax, ay);
+        int cx = Math.abs(x - startX), cy = Math.abs(y - startY);
+
+        if(cx <= diag && cy <= diag) return Math.abs(cx - cy);
+        return ax > ay ? Math.abs(y - targetY) : Math.abs(x - targetX);
     }
 
     /** Ключ очереди A*: f, затем удаление от прямой (лесенка вдоль неё), затем состояние. */
@@ -1151,15 +1209,27 @@ public class AutoDrillPlacer{
     }
 
     private static boolean fits(Block block, int x, int y){
-        if(plannedTiles.contains(Point2.pack(x, y))) return false;
-        return Build.validPlaceIgnoreUnits(block, player.team(), x, y, 0, true, true);
+        return fits(block, x, y, 0);
     }
 
-    private static boolean passable(Layout l, Block block, byte[] pass, int bx0, int by0, int w, int h, int x, int y){
+    private static boolean fits(Block block, int x, int y, int rotation){
+        if(plannedTiles.contains(Point2.pack(x, y))) return false;
+        return Build.validPlaceIgnoreUnits(block, player.team(), x, y, rotation, true, true);
+    }
+
+    /** Существующий транспорт своей команды на тайле: конвейер, дукт или junction. */
+    private static Building existingTransport(int x, int y){
+        Tile t = world.tile(x, y);
+        if(t == null || t.build == null || t.build.team != player.team()) return null;
+        Building b = t.build;
+        return b.block instanceof Conveyor || b.block instanceof Duct || b.block instanceof Junction ? b : null;
+    }
+
+    private static boolean passable(Layout l, Block block, byte[] pass, int bx0, int by0, int w, int h, int x, int y, int rotation, boolean avoidBuilt){
         int lx = x - bx0, ly = y - by0;
         if(lx < 0 || ly < 0 || lx >= w || ly >= h) return false;
         int i = lx + ly * w;
-        if(pass[i] == 0) pass[i] = (byte)(!l.occupied.contains(Point2.pack(x, y)) && fits(block, x, y) ? 1 : 2);
+        if(pass[i] == 0) pass[i] = (byte)(!l.occupied.contains(Point2.pack(x, y)) && (!avoidBuilt || world.build(x, y) == null) && fits(block, x, y, rotation) ? 1 : 2);
         return pass[i] == 1;
     }
 
@@ -1248,7 +1318,7 @@ public class AutoDrillPlacer{
         String transport = Core.bundle.format(l.chess ? "client.drill.stats.bridges" : "client.drill.stats.conveyors", l.conveyors);
         String route = "";
         if(l.route == -2) route = Core.bundle.get("client.drill.stats.noroute");
-        else if(l.route >= 0) route = Core.bundle.format("client.drill.stats.route", l.route, Core.bundle.get(useBridges() ? "client.drill.stats.routebridge" : "client.drill.stats.routebelt"));
+        else if(l.route >= 0) route = Core.bundle.format("client.drill.stats.route", l.route, Core.bundle.get((l.usedBridges || useBridges()) ? "client.drill.stats.routebridge" : "client.drill.stats.routebelt"));
         return Core.bundle.format("client.drill.stats", l.drills, Strings.autoFixed(l.rate, 2), raw, Strings.autoFixed(transportSpeed(), 1), transport, route);
     }
 

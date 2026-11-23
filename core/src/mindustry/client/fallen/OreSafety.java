@@ -83,8 +83,8 @@ public final class OreSafety{
             for(int x = 0; x < w; x++){
                 Tile t = Vars.world.tile(x, y);
                 if(t == null) continue;
-                Item drop = t.wallDrop();
-                if(drop == null) drop = t.drop();
+                //floor/overlay ore is mineable only on an air tile; a conveyor or any other block covers it
+                Item drop = t.block() == Blocks.air ? t.drop() : t.wallDrop();
                 dropGrid[x + y * w] = drop;
             }
         }

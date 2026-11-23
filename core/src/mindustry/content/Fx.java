@@ -1373,8 +1373,10 @@ public class Fx{
             stroke(1.5f);
             Draw.alpha(0.09f);
             Fill.poly(e.x, e.y, 6, e.rotation * e.fout());
-            Draw.alpha(1f);
-            Lines.poly(e.x, e.y, 6, e.rotation * e.fout());
+            if(!renderer.hideShieldOutline){
+                Draw.alpha(1f);
+                Lines.poly(e.x, e.y, 6, e.rotation * e.fout());
+            }
         }
     }).layer(Layer.shields),
 

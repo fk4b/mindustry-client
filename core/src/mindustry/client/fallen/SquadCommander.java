@@ -14,6 +14,8 @@ import arc.struct.*;
 import arc.util.*;
 import mindustry.ai.*;
 import mindustry.ai.types.*;
+import mindustry.content.UnitTypes;
+import mindustry.core.*;
 import mindustry.game.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
@@ -22,7 +24,9 @@ import mindustry.input.*;
 import mindustry.type.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
+import mindustry.world.*;
 import mindustry.world.blocks.defense.*;
+import mindustry.world.blocks.defense.turrets.*;
 import mindustry.world.meta.*;
 
 import static mindustry.Vars.*;
@@ -48,10 +52,32 @@ public class SquadCommander{
         float ux, uy, range;
         boolean healer;
         int rank;
+        /** Право прохода: юнит временно стоит в стороне от движущегося раненого. */
+        boolean yielding;
+        int yieldFor = -1;
+        float yieldX, yieldY;
+        /** Точка, где юнит стоял до того, как начал уступать дорогу. */
+        float yieldFromX, yieldFromY;
+        /** Юнит держит огонь, ожидая залпа. */
+        boolean waitingForVolley;
+        boolean holdFireForVolley;
+        /** Группа залпа по цели, к которой привязан юнит в текущем тике. */
+        @Nullable VolleyGroup volleyGroup;
 
         Member(int id){
             this.id = id;
         }
+    }
+
+    /** Залп синхронизируется по типу и по общей/близкой цели. */
+    static class VolleyGroup{
+        UnitType type;
+        @Nullable Teamc target;
+        float timer = -1f;
+        boolean done;
+        boolean assigned;
+        boolean allInRange;
+        boolean defend;
     }
 
     static class Squad{
@@ -60,6 +86,7 @@ public class SquadCommander{
         final FloatSeq line = new FloatSeq();
         final ObjectSet<UnitType> types = new ObjectSet<>();
         final IntSet focusIds = new IntSet();
+        final Seq<VolleyGroup> volleys = new Seq<>();
         Shape shape = Shape.line;
         Tactic tactic = Tactic.hold;
         boolean retreatAll;
@@ -85,6 +112,7 @@ public class SquadCommander{
             autoFocus = false;
             fallX = fallY = hp = maxHp = 0f;
             laidOut = lost = healing = 0;
+            volleys.clear();
         }
 
         int retreatPercent(){
@@ -125,6 +153,12 @@ public class SquadCommander{
     /** Автоосада: важные постройки ищем в этом радиусе от линии, прочие (стены и т.п.) - только вплотную к ней. */
     private static final float siegeRadius = 20f * tilesize, obstacleRadius = 8f * tilesize;
     private static final float advanceStep = 8f * tilesize, fallStep = 12f * tilesize, enemyRadius = 32f * tilesize, contactRadius = 25f * tilesize, coreKeepOut = 15f * tilesize;
+    /** Интервал проверки залпа - чаще, чем check(), для точности синхронизации. */
+    private static final float volleyTicks = 10f;
+    /** Задержка залпа по умолчанию (кадров) после выхода всей группы на дистанцию. */
+    private static final int defaultVolleyDelay = 15;
+    /** Радиус объединения близких целей в один залп по умолчанию (блоков/тайлов). */
+    private static final int defaultVolleyTargetRadius = 10;
 
     private static boolean hooked, drawing, dragging;
     private static Overlay overlay;
@@ -138,8 +172,9 @@ public class SquadCommander{
     private static final IntSet known = new IntSet();
     private static final IntIntMap healLoad = new IntIntMap();
     private static final Seq<Order> queue = new Seq<>();
-    private static float lastCheck;
+    private static float lastCheck, lastVolleyCheck;
     private static long nextSend;
+    private static final Vec2 sideSpot = new Vec2();
     //перетаскивание в режиме сдвига
     private static float dragStartX, dragStartY, previewX, previewY, previewAngle;
     private static boolean rotating;
@@ -165,6 +200,7 @@ public class SquadCommander{
                 if(Core.input.keyTap(Binding.squad_1)) select(0);
                 if(Core.input.keyTap(Binding.squad_2)) select(1);
                 if(Core.input.keyTap(Binding.squad_3)) select(2);
+                if(Core.input.keyTap(Binding.squad_hud_move)) toggleHudMove();
             }
             updateTools();
             if(anySquad() && Time.time - lastCheck >= checkTicks){
@@ -172,6 +208,10 @@ public class SquadCommander{
                 rebuildHealLoad();
                 reinforce();
                 for(Squad s : squads) if(s.members.any()) check(s);
+            }
+            if(anySquad() && Time.time - lastVolleyCheck >= volleyTicks){
+                lastVolleyCheck = Time.time;
+                syncVolleys();
             }
             flush();
         });
@@ -229,12 +269,16 @@ public class SquadCommander{
     public static void disband(){
         Squad s = cur();
         dropOrders(s);
+        resetMembers(s);
         s.clear();
         if(overlay != null && tool != Tool.draw) closeOverlay();
     }
 
     private static void disbandAll(){
-        for(Squad s : squads) s.clear();
+        for(Squad s : squads){
+            resetMembers(s);
+            s.clear();
+        }
         queue.clear();
         known.clear();
         draft.clear();
@@ -245,6 +289,17 @@ public class SquadCommander{
 
     private static void dropOrders(Squad s){
         for(Member m : s.members) unqueue(m.id);
+    }
+
+    /** Снять с юнитов клиентские настройки отряда при роспуске. */
+    private static void resetMembers(Squad s){
+        for(Member m : s.members){
+            Unit u = Groups.unit.getByID(m.id);
+            if(u != null && u.controller() instanceof CommandAI ai){
+                ai.targetBlocksOnly = false;
+                if(m.holdFireForVolley) ai.setStance(UnitStance.holdFire, false);
+            }
+        }
     }
 
     private static void closeOverlay(){
@@ -468,9 +523,10 @@ public class SquadCommander{
         s.lastLayout = Time.time;
     }
 
-    /** Юнит сейчас стоит на линии и слушает приказы линии: не лечится, не бьёт цель фокуса. */
+    /** Юнит сейчас стоит на линии и слушает приказы линии: не лечится, не бьёт цель фокуса, не уступает дорогу. */
     private static boolean holding(Squad s, Member m){
-        return m.state == State.hold && !s.retreatAll && !s.focusIds.contains(m.id);
+        //юнита, которого UnitClearLogic уводит со стройки, не тянем обратно в слот
+        return m.state == State.hold && !m.yielding && !s.retreatAll && !s.focusIds.contains(m.id) && !UnitClearLogic.isClearing(m.id);
     }
 
     private static void slotPoint(Squad s, float f, float rankOffset, Vec2 fw, Vec2 c, Vec2 out){
@@ -567,6 +623,8 @@ public class SquadCommander{
 
     private static void check(Squad s){
         float low = s.retreatPercent() / 100f, healed = s.returnPercent() / 100f;
+        boolean blocksOnly = Core.settings.getBool("squad-blocksonly", false);
+        String myName = player == null ? "" : Strings.stripColors(player.name);
         float hp = 0f, maxHp = 0f;
         int healing = 0;
         for(int i = s.members.size - 1; i >= 0; i--){
@@ -574,6 +632,10 @@ public class SquadCommander{
             Unit u = Groups.unit.getByID(m.id);
             if(!usable(u)){
                 if(u == null || u.dead) s.lost++;
+                if(u != null && u.controller() instanceof CommandAI ai){
+                    ai.targetBlocksOnly = false;
+                    if(m.holdFireForVolley) ai.setStance(UnitStance.holdFire, false);
+                }
                 s.focusIds.remove(m.id);
                 s.members.remove(i);
                 continue;
@@ -581,19 +643,68 @@ public class SquadCommander{
             hp += u.health;
             maxHp += u.maxHealth;
             float ratio = u.health / u.maxHealth;
+
+            // Опция "атаковать только постройки": игнорируем вражеских юнитов, но не мешаем игроку.
+            if(!u.isPlayer() && u.controller() instanceof CommandAI ai && ai.targetBlocksOnly != blocksOnly){
+                ai.targetBlocksOnly = blocksOnly;
+                if(blocksOnly){
+                    if(ai.attackTarget instanceof Unit) ai.attackTarget = null;
+                    ai.targetInvalidated();
+                }
+            }
+
             if(!s.retreatAll){
                 if(m.state == State.hold && ratio < low){
                     retreat(s, m, u);
+                    releaseVolley(u, m);
                 }else if(m.state == State.retreat && ratio >= healed){
                     comeBack(s, m, u);
+                    releaseVolley(u, m);
                 }
             }
             if(m.state == State.retreat && healGone(m)) retreat(s, m, u);
+
+            // Право прохода: если раненый уже прошёл, юнит возвращается на своё место.
+            if(m.yielding && !yieldStillNeeded(m, u)){
+                m.yielding = false;
+                m.yieldFor = -1;
+                m.yieldX = m.yieldY = m.yieldFromX = m.yieldFromY = 0f;
+                if(m.state == State.hold && !s.retreatAll){
+                    if(s.focusIds.contains(m.id) && s.focus != null){
+                        order(m.id, s.focus.getX(), s.focus.getY(), s.focus);
+                    }else{
+                        order(m.id, m.slotX, m.slotY, null);
+                    }
+                }
+            }
+
+            // Чужой приказ (другой игрок/скрипт) перебиваем своим, пока юнит не ранен.
+            if(!u.isPlayer() && !m.yielding){
+                String cmdr = u.lastCommanded != null ? Strings.stripColors(u.lastCommanded) : "";
+                if(!cmdr.isEmpty() && !cmdr.equals(myName)){
+                    if(m.state == State.retreat && m.healPos != -1){
+                        Building heal = world.build(m.healPos);
+                        if(heal != null){
+                            Vec2 spot = healSpot(u, heal, new Vec2());
+                            order(m.id, spot.x, spot.y, null);
+                        }
+                    }else if(m.state == State.hold && !s.retreatAll){
+                        if(s.focusIds.contains(m.id) && s.focus != null){
+                            order(m.id, s.focus.getX(), s.focus.getY(), s.focus);
+                        }else{
+                            order(m.id, m.slotX, m.slotY, null);
+                        }
+                    }
+                }
+            }
+
             if(m.state == State.retreat) healing++;
         }
         s.hp = hp;
         s.maxHp = maxHp;
         s.healing = healing;
+
+        yieldRightOfWay();
 
         if(s.members.isEmpty()){
             ui.showInfoFade(Core.bundle.get("client.squad.gone"));
@@ -720,7 +831,7 @@ public class SquadCommander{
             if(u == null || !canHit(u, target)) continue;
             if(onlyInRange && !u.within(target, u.range() + (target instanceof Hitboxc z ? z.hitSize() / 2f : target instanceof Building b ? b.hitSize() / 2f : 0f))) continue;
             s.focusIds.add(m.id);
-            order(m.id, target.getX(), target.getY(), target);
+            if(!m.yielding) order(m.id, target.getX(), target.getY(), target);
         }
         if(s.focusIds.isEmpty()){
             if(!auto) ui.showInfoFade(Core.bundle.get("client.squad.nofocus"));
@@ -798,6 +909,12 @@ public class SquadCommander{
             if(!b.isValid() || b.inFogTo(player.team()) || unreachable.contains(b.pos())) continue;
             int priority = siegePriority(b);
             if(priority > bestPriority) continue;
+            if(priority == 3 && !Core.settings.getBool("squad-attackblockers", true)) continue;
+            // Пустые турели атакует только заданный процент юнитов (детерминированно по id).
+            if(priority == 0 && b instanceof Turret.TurretBuild tb && !tb.hasAmmo()){
+                int emptyPercent = Core.settings.getInt("squad-empty-turret-percent", 20);
+                if(emptyPercent <= 0 || (b.id % 100) >= emptyPercent) continue;
+            }
             float dst = lineDst(s, b.x, b.y);
             if(dst > siegeRange(b)) continue;
             if(priority < bestPriority || dst < bestDst){
@@ -858,8 +975,12 @@ public class SquadCommander{
     private static void endFocus(Squad s){
         s.focus = null;
         s.autoFocus = false;
+        for(VolleyGroup g : s.volleys){
+            g.timer = -1f;
+            g.done = false;
+        }
         for(Member m : s.members){
-            if(s.focusIds.contains(m.id) && m.state == State.hold && !s.retreatAll) order(m.id, m.slotX, m.slotY, null);
+            if(s.focusIds.contains(m.id) && m.state == State.hold && !s.retreatAll && !m.yielding && !UnitClearLogic.isClearing(m.id)) order(m.id, m.slotX, m.slotY, null);
         }
         s.focusIds.clear();
     }
@@ -872,6 +993,9 @@ public class SquadCommander{
         if(m.healPos != -1) healLoad.increment(m.healPos, -1);
         m.state = State.retreat;
         m.healPos = heal.pos();
+        m.yielding = false;
+        m.yieldFor = -1;
+        m.yieldX = m.yieldY = m.yieldFromX = m.yieldFromY = 0f;
         healLoad.increment(m.healPos);
         s.focusIds.remove(m.id);
         Vec2 spot = healSpot(u, heal, new Vec2());
@@ -927,6 +1051,9 @@ public class SquadCommander{
 
     private static void comeBack(Squad s, Member m, Unit u){
         m.state = State.hold;
+        m.yielding = false;
+        m.yieldFor = -1;
+        m.yieldX = m.yieldY = m.yieldFromX = m.yieldFromY = 0f;
         if(m.healPos != -1) healLoad.increment(m.healPos, -1);
         m.healPos = -1;
         if(s.focus != null && canHit(u, s.focus)){
@@ -968,6 +1095,7 @@ public class SquadCommander{
         float bestScore = Float.MAX_VALUE;
         for(Building b : indexer.getFlagged(player.team(), BlockFlag.repair)){
             if(!b.isValid()) continue;
+            if(healCrowded(u, b)) continue;
             float score = b.dst(u) + healLoad.get(b.pos(), 0) * healLoadPenalty;
             //дорогая проверка пути только у тех, кто и так лучше текущего
             if(score < bestScore && !OreSafety.isThreatened(b.x, b.y) && OreSafety.pathSafe(u.x, u.y, b.x, b.y)){
@@ -978,6 +1106,333 @@ public class SquadCommander{
         if(best != null) return best;
         Building core = OreSafety.nearestSafeCore(u);
         return core != null ? core : u.closestCore();
+    }
+
+    /** Сколько раненых уже стоит у ремонтной точки; переполненные пропускаем, если юнит ещё не там. */
+    private static boolean healCrowded(Unit u, Building b){
+        int limit = Core.settings.getInt("squad-heal-crowd", 3);
+        if(limit <= 0) return false;
+        float radius = b.block.size * tilesize * 0.5f + tilesize * 6f;
+        if(u.dst2(b) <= radius * radius * 0.81f) return false;
+        int count = 0;
+        for(Unit other : Groups.unit){
+            if(other == null || other == u || other.dead || !other.isValid()) continue;
+            if(other.team != player.team() || !other.damaged()) continue;
+            if(other.dst2(b) <= radius * radius) count++;
+        }
+        return count >= limit;
+    }
+
+    // ---------- синхронизация залпа ----------
+
+    private static boolean ignoreEnemyUnits(){
+        return Core.settings.getBool("squad-ignore-enemy-units", true);
+    }
+
+    private static int volleyDelay(){
+        return Mathf.clamp(Core.settings.getInt("squad-volley-delay", defaultVolleyDelay), 0, 300);
+    }
+
+    /** Радиус, в котором цели разных юнитов считаются одной группой залпа. */
+    private static float volleyTargetRadius(){
+        return Mathf.clamp(Core.settings.getInt("squad-volley-target-radius", defaultVolleyTargetRadius), 0, 100) * tilesize;
+    }
+
+    /** Залп синхронизируем для «Ворона» и «Омуры»: у них долгая перезарядка и тяжёлый выстрел. */
+    private static boolean isVolleyUnit(Unit u){
+        return u.type == UnitTypes.corvus || u.type == UnitTypes.omura;
+    }
+
+    private static boolean hasEnemyUnitsNear(Unit u){
+        float checkRange = u.range() * 2f;
+        float r2 = checkRange * checkRange;
+        for(Unit e : Groups.unit){
+            if(e == null || e.dead || !e.isValid() || e.team == u.team) continue;
+            if(e.dst2(u) <= r2) return true;
+        }
+        return false;
+    }
+
+    private static void releaseVolley(Unit u, Member m){
+        if(!m.holdFireForVolley){
+            m.waitingForVolley = false;
+            return;
+        }
+        if(u != null && u.controller() instanceof CommandAI ai) ai.setStance(UnitStance.holdFire, false);
+        m.waitingForVolley = false;
+        m.holdFireForVolley = false;
+    }
+
+    private static void releaseVolley(Squad s, VolleyGroup g){
+        for(Member m : s.members){
+            if(m.volleyGroup != g || !m.holdFireForVolley) continue;
+            releaseVolley(Groups.unit.getByID(m.id), m);
+        }
+    }
+
+    private static void holdVolley(Unit u, Member m){
+        if(m.waitingForVolley || !(u.controller() instanceof CommandAI ai)) return;
+        ai.setStance(UnitStance.holdFire, true);
+        m.waitingForVolley = true;
+        m.holdFireForVolley = true;
+    }
+
+    /** Держит огонь у членов одной группы залпа: общая или близкая цель, один тип. */
+    private static void holdVolley(Squad s, VolleyGroup g){
+        for(Member m : s.members){
+            if(m.volleyGroup != g || m.state != State.hold) continue;
+            Unit u = Groups.unit.getByID(m.id);
+            if(u == null || !usable(u) || u.isPlayer()) continue;
+            holdVolley(u, m);
+        }
+    }
+
+    private static void syncVolleys(){
+        for(Squad s : squads){
+            if(s.members.any()) syncVolley(s);
+        }
+    }
+
+    /**
+     * Залп синхронизируется по типу и по общей/близкой цели.
+     * В одну группу попадают только «Вороны» (или только «Омуры»), выбравшие одну цель
+     * или цели в радиусе {@code squad-volley-target-radius} (по умолчанию 10 блоков).
+     * Пока хотя бы один юнит группы не вышел на свой радиус атаки, вся группа держит огонь.
+     */
+    private static void syncVolley(Squad s){
+        boolean ignore = ignoreEnemyUnits();
+        float targetRadius = volleyTargetRadius();
+
+        for(VolleyGroup g : s.volleys){
+            g.assigned = false;
+            g.allInRange = true;
+            g.defend = false;
+        }
+
+        for(Member m : s.members){
+            m.volleyGroup = null;
+            Unit u = Groups.unit.getByID(m.id);
+            if(m.state != State.hold || u == null || !usable(u) || u.isPlayer() || !isVolleyUnit(u) || !(u.controller() instanceof CommandAI ai)){
+                if(m.holdFireForVolley) releaseVolley(u, m);
+                continue;
+            }
+
+            Teamc target = volleyTarget(s, m, u, ai);
+            if(target == null){
+                // Цели нет: не держим юнит, пусть сам ищет цель и стреляет.
+                if(m.holdFireForVolley) releaseVolley(u, m);
+                continue;
+            }
+
+            VolleyGroup g = volleyGroup(s, u.type, target, targetRadius);
+            if(g == null){
+                g = new VolleyGroup();
+                g.type = u.type;
+                g.target = target;
+                s.volleys.add(g);
+            }
+            m.volleyGroup = g;
+            g.assigned = true;
+            if(!ignore && hasEnemyUnitsNear(u)) g.defend = true;
+            if(!inVolleyRange(u, target)) g.allInRange = false;
+        }
+
+        int delay = volleyDelay();
+        for(int i = s.volleys.size - 1; i >= 0; i--){
+            VolleyGroup g = s.volleys.get(i);
+            if(!g.assigned){
+                s.volleys.remove(i);
+                continue;
+            }
+
+            if(g.defend){
+                releaseVolley(s, g);
+                g.timer = -1f;
+                g.done = true;
+                continue;
+            }
+
+            // Залп этой группы по текущим целям уже выпущен: не мешаем стрелять, пока цели не пропадут.
+            if(g.done){
+                releaseVolley(s, g);
+                g.timer = -1f;
+                continue;
+            }
+
+            if(!g.allInRange){
+                g.timer = -1f;
+                holdVolley(s, g);
+                continue;
+            }
+
+            if(delay <= 0){
+                releaseVolley(s, g);
+                g.timer = -1f;
+                g.done = true;
+                continue;
+            }
+
+            if(g.timer < 0f) g.timer = Time.time;
+            if(Time.time - g.timer >= delay){
+                releaseVolley(s, g);
+                g.timer = -1f;
+                g.done = true;
+            }else{
+                holdVolley(s, g);
+            }
+        }
+    }
+
+    /** Группа того же типа с такой же или близкой целью; null - нужна новая группа. */
+    private static @Nullable VolleyGroup volleyGroup(Squad s, UnitType type, Teamc target, float radius){
+        VolleyGroup near = null;
+        for(VolleyGroup g : s.volleys){
+            if(g.type != type) continue;
+            if(g.target == target) return g;
+            if(near == null && validTarget(g.target) && g.target.within(target, radius)) near = g;
+        }
+        return near;
+    }
+
+    /** Цель юнита: фокус отряда, цель ИИ или ближайший враг в радиусе обнаружения. */
+    private static @Nullable Teamc volleyTarget(Squad s, Member m, Unit u, CommandAI ai){
+        if(s.focus != null && s.focusIds.contains(m.id) && validTarget(s.focus)) return s.focus;
+        Teamc target = ai.currentTarget();
+        if(validTarget(target)) return target;
+        return nearestEnemy(u, u.range() * 2f);
+    }
+
+    private static boolean inVolleyRange(Unit u, Teamc target){
+        return u.within(target, u.range() * 0.95f + (target instanceof Hitboxc z ? z.hitSize() / 2f : 0f));
+    }
+
+    private static boolean validTarget(@Nullable Teamc t){
+        return t != null && hostile(t.team()) && targetAlive(t);
+    }
+
+    private static @Nullable Unit nearestEnemy(Unit u, float range){
+        Unit best = null;
+        float bestDst = range * range;
+        for(Unit e : Groups.unit){
+            if(e == null || e.dead || !e.isValid() || e.team == u.team || !u.canTarget(e)) continue;
+            float dst = e.dst2(u);
+            if(dst <= bestDst){
+                bestDst = dst;
+                best = e;
+            }
+        }
+        return best;
+    }
+
+    // ---------- право прохода ----------
+
+    /** Направление движения раненого: скорость, а если стоит - направление к ремонтной точке. */
+    private static boolean retreatDirection(Member ret, Unit ru, Vec2 out){
+        if(ru.vel.len2() >= 0.01f){
+            out.set(ru.vel).nor();
+            return true;
+        }
+        if(ret.healPos != -1){
+            Building heal = world.build(ret.healPos);
+            if(heal != null && Mathf.dst2(ru.x, ru.y, heal.x, heal.y) > 0.01f){
+                out.set(heal.x - ru.x, heal.y - ru.y).nor();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void yieldRightOfWay(){
+        for(Squad s : squads){
+            for(Member ret : s.members){
+                if(ret.state != State.retreat) continue;
+                Unit ru = Groups.unit.getByID(ret.id);
+                if(!usable(ru) || ru.isPlayer() || !retreatDirection(ret, ru, Tmp.v1)) continue;
+                float dx = Tmp.v1.x, dy = Tmp.v1.y;
+
+                boolean taken = false;
+                for(Squad t : squads){
+                    for(Member m : t.members){
+                        if(m.yielding && m.yieldFor == ret.id){
+                            taken = true;
+                            break;
+                        }
+                    }
+                    if(taken) break;
+                }
+                if(taken) continue;
+
+                Member best = null;
+                Unit bestUnit = null;
+                float bestDst = Float.MAX_VALUE;
+                for(Squad t : squads){
+                    for(Member m : t.members){
+                        if(m == ret || m.state == State.retreat || m.yielding) continue;
+                        Unit u = Groups.unit.getByID(m.id);
+                        if(!usable(u) || u.isPlayer()) continue;
+                        float relX = u.x - ru.x, relY = u.y - ru.y;
+                        float along = relX * dx + relY * dy;
+                        if(along < 0f || along > tilesize * 4f) continue;
+                        float side = relX * -dy + relY * dx;
+                        float clear = (u.hitSize + ru.hitSize) / 2f + 6f;
+                        if(Math.abs(side) > clear) continue;
+                        float dst = u.dst2(ru);
+                        if(dst < bestDst){
+                            bestDst = dst;
+                            best = m;
+                            bestUnit = u;
+                        }
+                    }
+                }
+                if(best == null) continue;
+
+                float relX = bestUnit.x - ru.x, relY = bestUnit.y - ru.y;
+                float sideSign = (relX * -dy + relY * dx) >= 0f ? 1f : -1f;
+                float dirX = -dy * sideSign, dirY = dx * sideSign;
+                float clear = (bestUnit.hitSize + ru.hitSize) / 2f + 6f;
+                if(!sideSpot(bestUnit, dirX, dirY, clear)) continue;
+
+                best.yielding = true;
+                best.yieldFor = ret.id;
+                best.yieldX = sideSpot.x;
+                best.yieldY = sideSpot.y;
+                best.yieldFromX = bestUnit.x;
+                best.yieldFromY = bestUnit.y;
+                order(best.id, best.yieldX, best.yieldY, null);
+            }
+        }
+    }
+
+    private static boolean yieldStillNeeded(Member m, Unit u){
+        if(!m.yielding || m.yieldFor == -1) return false;
+        for(Squad s : squads){
+            Member ret = s.members.find(r -> r.id == m.yieldFor);
+            if(ret == null) continue;
+            if(ret.state != State.retreat) return false;
+            Unit ru = Groups.unit.getByID(m.yieldFor);
+            if(!usable(ru) || ru.isPlayer() || !retreatDirection(ret, ru, Tmp.v1)) return false;
+
+            // Раненый прошёл точку, где стоял уступающий, - можно возвращаться на место.
+            float relX = m.yieldFromX - ru.x, relY = m.yieldFromY - ru.y;
+            float along = relX * Tmp.v1.x + relY * Tmp.v1.y;
+            if(along < -tilesize * 1.5f) return false;
+
+            float maxDist = tilesize * 8f;
+            return u.dst2(ru) <= maxDist * maxDist;
+        }
+        return false;
+    }
+
+    private static boolean sideSpot(Unit u, float dirX, float dirY, float distance){
+        for(int i = 0; i < 5; i++){
+            float dist = distance + i * tilesize;
+            int tx = World.toTile(u.x + dirX * dist), ty = World.toTile(u.y + dirY * dist);
+            if(!walkable(u, tx, ty)) continue;
+            Tile tile = world.tile(tx, ty);
+            sideSpot.set(tile.worldx(), tile.worldy());
+            return true;
+        }
+        return false;
     }
 
     // ---------- очередь приказов ----------
@@ -1102,9 +1557,7 @@ public class SquadCommander{
 
     private static void buildHud(){
         hud = new Table();
-        hud.setFillParent(true);
         hud.touchable = Touchable.childrenOnly;
-        hud.right();
         hud.visible(() -> state.isGame() && anySquad() && ui.hudfrag.shown);
 
         Table p = new Table(Styles.black6);
@@ -1161,8 +1614,71 @@ public class SquadCommander{
             action(row, Icon.trashSmall, "client.squad.btn.disband", SquadCommander::disband);
         }).row();
 
-        hud.add(p).padRight(4f);
+        p.addCaptureListener(new InputListener(){
+            float lastX, lastY;
+            boolean dragging;
+
+            @Override
+            public boolean touchDown(InputEvent event, float x, float y, int pointer, KeyCode button){
+                if(button != KeyCode.mouseRight || !hudMoveMode()) return false;
+                lastX = event.stageX;
+                lastY = event.stageY;
+                dragging = true;
+                return true;
+            }
+
+            @Override
+            public void touchDragged(InputEvent event, float x, float y, int pointer){
+                if(!dragging) return;
+                hud.moveBy(event.stageX - lastX, event.stageY - lastY);
+                lastX = event.stageX;
+                lastY = event.stageY;
+                clampHud();
+            }
+
+            @Override
+            public void touchUp(InputEvent event, float x, float y, int pointer, KeyCode button){
+                if(!dragging) return;
+                dragging = false;
+                saveHudPosition();
+            }
+        });
+
+        hud.add(p);
+        hud.pack();
+        restoreHudPosition();
+        hud.update(SquadCommander::clampHud);
         Core.scene.add(hud);
+    }
+
+    private static boolean hudMoveMode(){
+        return Core.settings.getBool("squad-hud-move", true);
+    }
+
+    private static void toggleHudMove(){
+        boolean enabled = !hudMoveMode();
+        Core.settings.put("squad-hud-move", enabled);
+        ui.showInfoFade(Core.bundle.get("client.squad.hud." + (enabled ? "movable" : "locked")));
+    }
+
+    private static void restoreHudPosition(){
+        if(Core.settings.has("squad-hud-x") && Core.settings.has("squad-hud-y")){
+            hud.setPosition(Core.settings.getFloat("squad-hud-x"), Core.settings.getFloat("squad-hud-y"));
+        }else{
+            hud.setPosition(Core.graphics.getWidth() - hud.getWidth() - 4f, (Core.graphics.getHeight() - hud.getHeight()) / 2f);
+        }
+        clampHud();
+    }
+
+    private static void saveHudPosition(){
+        Core.settings.put("squad-hud-x", hud.x);
+        Core.settings.put("squad-hud-y", hud.y);
+    }
+
+    private static void clampHud(){
+        if(hud == null) return;
+        hud.x = Mathf.clamp(hud.x, 0f, Math.max(0f, Core.graphics.getWidth() - hud.getWidth()));
+        hud.y = Mathf.clamp(hud.y, 0f, Math.max(0f, Core.graphics.getHeight() - hud.getHeight()));
     }
 
     private static float fraction(){
@@ -1208,7 +1724,14 @@ public class SquadCommander{
             check(t, "squad-ranks", "client.squad.set.ranks");
             check(t, "squad-reinforce", "client.squad.set.reinforce");
             check(t, "squad-closegaps", "client.squad.set.closegaps");
-            check(t, "squad-siege", "client.squad.set.siege");
+            check(t, "squad-siege", "client.squad.set.attackbuildings");
+            check(t, "squad-blocksonly", "client.squad.set.blocksonly");
+            check(t, "squad-attackblockers", "client.squad.set.attackblockers");
+            check(t, "squad-ignore-enemy-units", "client.squad.set.ignoreenemyunits");
+            slider(t, "squad-volley-delay", defaultVolleyDelay, 0, 120, 5, v -> Core.bundle.format("client.squad.set.volleydelay", v));
+            slider(t, "squad-volley-target-radius", defaultVolleyTargetRadius, 0, 50, 1, v -> Core.bundle.format("client.squad.set.volleyradius", v));
+            slider(t, "squad-empty-turret-percent", 20, 0, 100, 5, v -> Core.bundle.format("client.squad.set.emptyturret", v));
+            slider(t, "squad-heal-crowd", 3, 0, 10, 1, v -> Core.bundle.format("client.squad.set.healcrowd", v));
             t.add(Core.bundle.get("client.squad.key")).row();
         });
         settingsDialog.show();

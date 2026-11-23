@@ -279,6 +279,7 @@ public class Shaders{
                 Core.camera.position.y - Core.camera.height / 2);
             setUniformf("u_texsize", Core.camera.width, Core.camera.height);
             setUniformf("u_invsize", 1f/Core.camera.width, 1f/Core.camera.height);
+            setUniformf("u_outline", renderer.hideShieldOutline ? 0f : 1f);
         }
     }
 

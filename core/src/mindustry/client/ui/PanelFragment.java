@@ -274,6 +274,7 @@ public class PanelFragment extends Table{
         ThreatRadar.init();
         WaveForecast.init();
         SquadCommander.init();
+        UnitClearLogic.init();
         AreaUpgrade.init();
         FocusMarks.init();
         mindustry.client.fallen.MapPings.init();
@@ -2535,7 +2536,8 @@ public class PanelFragment extends Table{
     }
 
     private void drawTextOnly(float x, float y, float prog, Font font) {
-        Draw.z(Layer.darkness + 1);
+        //скрытые планы рисуются на Layer.plans - процент постройки должен быть выше них
+        Draw.z(Layer.plans + 1);
 
         sb.setLength(0);
         sb.append((int)(prog * 100)).append("%");

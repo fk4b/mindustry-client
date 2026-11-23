@@ -193,6 +193,8 @@ public class Binding{
     squad_1 = KeyBind.add("squad_1", KeyCode.unset),
     squad_2 = KeyBind.add("squad_2", KeyCode.unset),
     squad_3 = KeyBind.add("squad_3", KeyCode.unset),
+    /** Toggles RMB dragging for the squad status panel. */
+    squad_hud_move = KeyBind.add("squad_hud_move", KeyCode.unset),
     /** Area upgrade, focus mark, map search: unbound by default, the panel has buttons for them. */
     area_upgrade = KeyBind.add("area_upgrade", KeyCode.unset),
     focus_mark = KeyBind.add("focus_mark", KeyCode.unset),

@@ -62,6 +62,11 @@ public class AIController implements UnitController{
         return false;
     }
 
+    /** @return текущая основная цель контроллера, либо null. */
+    public @Nullable Teamc currentTarget(){
+        return target;
+    }
+
     /** Called when the parent CommandAI changes its stance. */
     public void stanceChanged(){}
 

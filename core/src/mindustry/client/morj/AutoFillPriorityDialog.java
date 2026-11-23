@@ -14,6 +14,7 @@ import mindustry.content.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
 import mindustry.type.*;
+import mindustry.world.*;
 import mindustry.ui.*;
 import mindustry.ui.dialogs.*;
 
@@ -42,7 +43,7 @@ public class AutoFillPriorityDialog extends BaseDialog{
         addCloseButton();
         paneCell = cont.pane(list).grow();
         buttons.button("@client.autofill.reset", Icon.refresh, () -> {
-            AutoTransfer.resetPriority();
+            AutoTransfer.resetSettings();
             rebuild();
         });
         shown(() -> {
@@ -90,8 +91,8 @@ public class AutoFillPriorityDialog extends BaseDialog{
         });
         list.add(toggles).left().padBottom(4f).row();
 
-        slider(list, "@client.autofill.mincore", 0f, 2000f, 10f,
-            Core.settings.getInt("autotransfer-mincoreitems", 10),
+        slider(list, "@client.autofill.mincore", 1f, 2000f, 1f,
+            Math.max(1, Core.settings.getInt("autotransfer-mincoreitems", 10)),
             value -> {
                 int amount = (int)value;
                 AutoTransfer.Settings.setMinCoreItems(amount);
@@ -129,25 +130,17 @@ public class AutoFillPriorityDialog extends BaseDialog{
                     box.getLabel().setColor(box.isChecked() ? Color.white : Color.lightGray);
                 });
                 row.add(box).growX().left().padRight(8f);
-                row.button(Icon.upOpen, Styles.cleari, () -> moveCat(cats, index, -1)).size(40f).disabled(index == 0);
-                row.button(Icon.downOpen, Styles.cleari, () -> moveCat(cats, index, 1)).size(40f).padRight(6f).disabled(index == cats.length - 1);
+                row.button(Icon.info, Styles.cleari, () -> BlockFillSettingsDialog.open(id)).size(40f)
+                    .tooltip("@client.autofill.category.info");
+                row.button(Icon.upOpen, Styles.cleari, () -> moveCat(id, -1)).size(40f).disabled(index == 0);
+                row.button(Icon.downOpen, Styles.cleari, () -> moveCat(id, 1)).size(40f).padRight(6f).disabled(index == cats.length - 1);
             }).growX().padBottom(3f).row();
         }
+    }
 
-        section(list, "@client.autofill.what");
-        note(list, "@client.autofill.what.note");
-        Seq<Item> items = ordered();
-        for(int i = 0; i < items.size; i++){
-            int index = i;
-            Item item = items.get(i);
-            list.table(row -> {
-                row.left();
-                if(item.uiIcon != null) row.image(item.uiIcon).size(28f).padRight(8f);
-                row.add(item.localizedName).growX().left();
-                row.button(Icon.upOpen, Styles.cleari, () -> move(items, index, -1)).size(40f).disabled(index == 0);
-                row.button(Icon.downOpen, Styles.cleari, () -> move(items, index, 1)).size(40f).disabled(index == items.size - 1);
-            }).growX().padBottom(2f).row();
-        }
+    private void moveCat(String id, int dir){
+        AutoTransfer.moveCategory(id, dir);
+        Core.app.post(this::rebuild);
     }
 
     private static void section(Table table, String key){
@@ -185,6 +178,7 @@ public class AutoFillPriorityDialog extends BaseDialog{
     private static TextureRegion iconFor(String id){
         return switch(id){
             case "defense" -> Blocks.duo.uiIcon;
+            case "generators" -> Blocks.combustionGenerator.uiIcon;
             case "factory" -> Blocks.siliconSmelter.uiIcon;
             case "units" -> Blocks.groundFactory.uiIcon;
             case "recon" -> Blocks.additiveReconstructor.uiIcon;
@@ -192,36 +186,4 @@ public class AutoFillPriorityDialog extends BaseDialog{
         };
     }
 
-    private static Seq<Item> ordered(){
-        Seq<Item> items = new Seq<>();
-        ObjectSet<Item> seen = new ObjectSet<>();
-        for(String name : AutoTransfer.prioritySnapshot()){
-            Item item = content.item(name);
-            if(item != null && seen.add(item)) items.add(item);
-        }
-        for(Item item : content.items()){
-            if(item != null && !item.isHidden() && seen.add(item)) items.add(item);
-        }
-        return items;
-    }
-
-    private void move(Seq<Item> items, int index, int dir){
-        int next = index + dir;
-        if(next < 0 || next >= items.size) return;
-        items.swap(index, next);
-        String[] names = new String[items.size];
-        for(int i = 0; i < items.size; i++) names[i] = items.get(i).name;
-        AutoTransfer.savePriority(names);
-        Core.app.post(this::rebuild);
-    }
-
-    private void moveCat(String[] cats, int index, int dir){
-        int next = index + dir;
-        if(next < 0 || next >= cats.length) return;
-        String swap = cats[index];
-        cats[index] = cats[next];
-        cats[next] = swap;
-        AutoTransfer.saveCategories(cats);
-        Core.app.post(this::rebuild);
-    }
 }

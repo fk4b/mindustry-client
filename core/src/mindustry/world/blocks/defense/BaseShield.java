@@ -142,8 +142,10 @@ public class BaseShield extends Block{
                     Lines.stroke(1.5f);
                     Draw.alpha(0.09f + Mathf.clamp(0.08f * hit));
                     Fill.poly(x, y, sides, radius);
-                    Draw.alpha(1f);
-                    Lines.poly(x, y, sides, radius);
+                    if(!renderer.hideShieldOutline){
+                        Draw.alpha(1f);
+                        Lines.poly(x, y, sides, radius);
+                    }
                     Draw.reset();
                 }
             }

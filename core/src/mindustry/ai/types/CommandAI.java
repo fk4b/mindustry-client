@@ -40,6 +40,8 @@ public class CommandAI extends AIController{
     protected float payloadPickupCooldown;
     protected int transferState = transferStateNone;
 
+    /** Client-side squad option: ignore enemy units and auto-target buildings only. */
+    public boolean targetBlocksOnly;
     /** Current command this unit is following. */
     public UnitCommand command;
     /** Stance, usually related to firing mode. Each bit is a stance ID. */
@@ -534,6 +536,7 @@ public class CommandAI extends AIController{
            //excluding bullets
            (!(bullet.owner instanceof Bullet) && bullet.owner instanceof Teamc teamc) && teamc.team() != unit.team && attackTarget == null &&
             //can only counter-attack every few seconds to prevent rapidly changing targets
+            !(targetBlocksOnly && teamc instanceof Unit) &&
             !(teamc instanceof Unit u && !u.checkTarget(unit.type.targetAir, unit.type.targetGround)) && timer.get(timerTarget4, 60f * 10f)){
             commandTarget(teamc, true);
         }
@@ -546,7 +549,29 @@ public class CommandAI extends AIController{
 
     @Override
     public Teamc findTarget(float x, float y, float range, boolean air, boolean ground){
+        if(targetBlocksOnly && attackTarget instanceof Unit) attackTarget = null;
+
+        if(targetBlocksOnly){
+            //an explicitly commanded building is kept until it is destroyed, so units do not stop at every wall
+            if(attackTarget != null && Units.isHittable(attackTarget, air, ground)) return attackTarget;
+            //no unit predicate: only buildings are valid targets
+            return Units.closestTarget(unit.team, x, y, range, u -> false, t -> ground && (unit.type.targetUnderBlocks || !t.block.underBullets));
+        }
+
         return !nearAttackTarget(x, y, range) ? super.findTarget(x, y, range, air, ground) : Units.isHittable(attackTarget, air, ground) ? attackTarget : null;
+    }
+
+    @Override
+    public void updateWeapons(){
+        super.updateWeapons();
+
+        //a target selected before the option was toggled must not keep units shooting at units
+        if(targetBlocksOnly){
+            if(target instanceof Unit) target = null;
+            for(WeaponMount mount : unit.mounts){
+                if(mount.target instanceof Unit) mount.target = null;
+            }
+        }
     }
 
     public boolean nearAttackTarget(float x, float y, float range){

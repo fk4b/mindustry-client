@@ -116,6 +116,9 @@ public class Placement{
     private static final IntIntMap parents = new IntIntMap();
     private static final IntSet closed = new IntSet();
 
+    /** Последний вызов pathfindLine не смог построить конвейерный путь (сработал запасной normalizeLine). */
+    static boolean pathfindFailed;
+
     /** Copper / titanium / armored — existing belts that plastanium should not cut. */
     public static boolean isLowTierConveyor(Block b){
         return b == Blocks.conveyor || b == Blocks.titaniumConveyor || b == Blocks.armoredConveyor;
@@ -790,10 +793,14 @@ public class Placement{
     public static Seq<Point2> pathfindLine(boolean conveyors, int startX, int startY, int endX, int endY){
         Pools.freeAll(points);
         points.clear();
+        pathfindFailed = false;
         if(conveyors && Core.settings.getBool("conveyorpathfinding")){
-            if(astar(startX, startY, endX, endY, Core.settings.getBool("vanillaplacementpath", false))){
+            // По умолчанию - клиентский A* с лесенкой; настройка vanillaplacementpath включает поиск как в оригинале.
+            boolean vanilla = Core.settings.getBool("vanillaplacementpath", false);
+            if(vanilla ? astar(startX, startY, endX, endY, true) : astarConveyor(startX, startY, endX, endY)){
                 return points;
             }else{
+                pathfindFailed = true;
                 return normalizeLine(startX, startY, endX, endY);
             }
         }else{
@@ -1461,8 +1468,15 @@ public class Placement{
         return Math.min((int)(d * 2f), 255);
     }
 
+    /** Глубокая вода блокирует обычные блоки: только редактор, плавучие и водные блоки могут стоять на ней. */
+    private static boolean deepWaterBlocked(Block block, Tile tile){
+        return block != null && tile != null && !state.rules.editor && !block.floating && !block.requiresWater && !block.placeableLiquid
+            && tile.floor().isDeep();
+    }
+
     private static boolean validNode(Tile tile, Tile other){
         Block block = control.input.block;
+        if(block != null && deepWaterBlocked(block, other)) return false;
         if(block != null && block.canReplace(other.block())){
             return true;
         }else{
@@ -1558,6 +1572,249 @@ public class Placement{
         }
 
         return found;
+    }
+
+    /** Доплата за шаг: в середине пути прямой шаг дороже поворота, у цели - наоборот. */
+    private static int conveyorStepExtra(boolean stair, boolean straight, boolean hasDir){
+        if(stair){
+            return straight ? 2 : 0;
+        }
+        return hasDir && !straight ? 4 : 0;
+    }
+
+    /** Насколько тайл ушёл от прямой старт->цель; в середине пути тянет лесенку к линии. */
+    private static int conveyorDev(int x, int y, int startX, int startY, int targetX, int targetY){
+        int ax = Math.abs(targetX - startX), ay = Math.abs(targetY - startY);
+        int diag = Math.min(ax, ay);
+        int cx = Math.abs(x - startX), cy = Math.abs(y - startY);
+
+        if(cx <= diag && cy <= diag) return Math.abs(cx - cy);
+        return ax > ay ? Math.abs(y - targetY) : Math.abs(x - targetX);
+    }
+
+    private static int conveyorHeuristic(int x, int y, int endX, int endY){
+        return (Math.abs(x - endX) + Math.abs(y - endY)) * 10;
+    }
+
+    /**
+     * A* для конвейеров по состояниям (тайл, направление входа).
+     * Пока до цели остались обе оси, поворот дешевле прямого, поэтому A* выкладывает лесенку;
+     * когда по одной оси уже выровнялись, прямой шаг бесплатен, а поворот стоит дорого.
+     */
+    private static boolean astarConveyor(int startX, int startY, int endX, int endY){
+        Block block = control.input.block;
+        Tile start = world.tile(startX, startY), end = world.tile(endX, endY);
+        if(start == null || end == null || start == end) return false;
+
+        costs.clear();
+        parents.clear();
+
+        final int stepCost = 10, nodeLimit = 20000;
+        //состояние: Point2.pack(x, y) * 4 + dir (dir 0..3 - откуда пришли).
+        //у старта входящего направления нет, поэтому у него отдельный ключ, не пересекающийся с обычными:
+        //pack*4+4 совпал бы с состоянием тайла ниже, из-за чего верхние диагонали ломались
+        final int startState = Integer.MIN_VALUE;
+        costs.put(startState, 0f);
+        parents.put(startState, -1);
+
+        PriorityQueue<Long> queue = new PriorityQueue<>();
+        queue.add(((long)conveyorHeuristic(startX, startY, endX, endY) << 32) | (startState & 0xffffffffL));
+
+        int found = -1, expanded = 0;
+        while(!queue.isEmpty() && expanded++ < nodeLimit){
+            long top = queue.poll();
+            int st = (int)top, f = (int)(top >>> 32);
+            int x, y, dir;
+            if(st == startState){
+                x = startX;
+                y = startY;
+                dir = -1;
+            }else{
+                int packed = st >> 2;
+                dir = st & 3;
+                x = Point2.x(packed);
+                y = Point2.y(packed);
+            }
+            int base = (int)costs.get(st, Integer.MAX_VALUE);
+            if(f - conveyorHeuristic(x, y, endX, endY) > base) continue;
+            if(x == endX && y == endY){
+                found = st;
+                break;
+            }
+
+            Tile current = world.tile(x, y);
+            if(current == null) continue;
+            boolean stair = x != endX && y != endY;
+
+            for(int nd = 0; nd < 4; nd++){
+                if(dir != -1 && nd == (dir + 2) % 4) continue;
+                int nx = x + Geometry.d4[nd].x, ny = y + Geometry.d4[nd].y;
+                Tile child = world.tile(nx, ny);
+                if(child == null || !validNode(current, child)) continue;
+
+                boolean straight = dir != -1 && nd == dir;
+                int c = base + stepCost + conveyorStepExtra(stair, straight, dir != -1)
+                    + conveyorDev(nx, ny, startX, startY, endX, endY);
+                //непроходимый по правилам тайл не запрещаем совсем - просто сильно дороже
+                if(!Build.validPlace(block, player.team(), nx, ny, -1)) c += 20;
+
+                int ns = Point2.pack(nx, ny) * 4 + nd;
+                if(c < costs.get(ns, Integer.MAX_VALUE)){
+                    costs.put(ns, c);
+                    parents.put(ns, st);
+                    queue.add(((long)(c + conveyorHeuristic(nx, ny, endX, endY)) << 32) | (ns & 0xffffffffL));
+                }
+            }
+        }
+
+        if(found == -1) return false;
+
+        for(int st = found; st != -1; st = parents.get(st, -1)){
+            if(st == startState){
+                points.add(Pools.obtain(Point2.class, Point2::new).set(startX, startY));
+            }else{
+                int packed = st >> 2;
+                points.add(Pools.obtain(Point2.class, Point2::new).set(Point2.x(packed), Point2.y(packed)));
+            }
+        }
+        points.reverse();
+        return true;
+    }
+
+    /**
+     * Гибридный маршрут для конвейера: шаг конвейером по проходимым тайлам,
+     * прыжок мостом через непроходимое, затем снова конвейер, если так дешевле.
+     * Используется, когда обычный A* не смог найти путь.
+     */
+    public static boolean buildConveyorBridgeLine(int startX, int startY, int endX, int endY, Block conveyor, ItemBridge bridge, Seq<BuildPlan> out){
+        out.clear();
+        if(conveyor == null || bridge == null) return false;
+        Tile start = world.tile(startX, startY), end = world.tile(endX, endY);
+        if(start == null || end == null || start == end) return false;
+
+        int range = Math.max(2, bridge.range);
+        costs.clear();
+        parents.clear();
+
+        final int stepCost = 10, bridgeStep = 15, bridgePenalty = 30, nodeLimit = 20000;
+        //состояние: (pack << 3) | (dir + 1); dir == -1 - старт или тайл после моста
+        int startState = Point2.pack(startX, startY) << 3;
+        costs.put(startState, 0f);
+        parents.put(startState, -1);
+
+        PriorityQueue<Long> queue = new PriorityQueue<>();
+        queue.add(((long)conveyorHeuristic(startX, startY, endX, endY) << 32) | (startState & 0xffffffffL));
+
+        int found = -1, expanded = 0;
+        while(!queue.isEmpty() && expanded++ < nodeLimit){
+            long top = queue.poll();
+            int st = (int)top, f = (int)(top >>> 32);
+            int packed = st >> 3, dir = (st & 7) - 1;
+            int x = Point2.x(packed), y = Point2.y(packed);
+            int base = (int)costs.get(st, Integer.MAX_VALUE);
+            if(f - conveyorHeuristic(x, y, endX, endY) > base) continue;
+            if(x == endX && y == endY){
+                found = st;
+                break;
+            }
+
+            Tile current = world.tile(x, y);
+            if(current == null) continue;
+            boolean stair = x != endX && y != endY;
+            //мост можно ставить только на пустой тайл: чужие постройки не переиспользуем
+            boolean canBridge = current.build == null && canHostBridge(bridge, x, y, 0);
+
+            for(int nd = 0; nd < 4; nd++){
+                int dx = Geometry.d4[nd].x, dy = Geometry.d4[nd].y;
+
+                //1) конвейер: только на соседний свободный тайл
+                if(!(dir != -1 && nd == (dir + 2) % 4)){
+                    int cx = x + dx, cy = y + dy;
+                    Tile child = world.tile(cx, cy);
+                    if(child != null && child.build == null && !deepWaterBlocked(conveyor, child) && (conveyor.canReplace(child.block()) || child.block().alwaysReplace)){
+                        boolean straight = dir != -1 && nd == dir;
+                        int c = base + stepCost + conveyorStepExtra(stair, straight, dir != -1)
+                            + conveyorDev(cx, cy, startX, startY, endX, endY);
+                        if(!Build.validPlace(conveyor, player.team(), cx, cy, -1)) c += 20;
+
+                        int ns = (Point2.pack(cx, cy) << 3) | (nd + 1);
+                        if(c < costs.get(ns, Integer.MAX_VALUE)){
+                            costs.put(ns, c);
+                            parents.put(ns, st);
+                            queue.add(((long)(c + conveyorHeuristic(cx, cy, endX, endY)) << 32) | (ns & 0xffffffffL));
+                        }
+                    }
+                }
+
+                //2) мост: прыжок поверх всего, только между двумя свободными тайлами
+                if(!canBridge) continue;
+                for(int len = 2; len <= range; len++){
+                    int nx = x + dx * len, ny = y + dy * len;
+                    Tile landing = world.tile(nx, ny);
+                    if(landing == null || landing.build != null || !canHostBridge(bridge, nx, ny, 0)) continue;
+
+                    //мост в самый конец чуть дороже, чтобы последний тайл по возможности остался конвейером
+                    int c = base + bridgeStep * len + bridgePenalty
+                        + conveyorDev(nx, ny, startX, startY, endX, endY)
+                        + ((nx == endX && ny == endY) ? stepCost : 0);
+
+                    int ns = Point2.pack(nx, ny) << 3; // dir == -1: после моста поворот бесплатен
+                    if(c < costs.get(ns, Integer.MAX_VALUE)){
+                        costs.put(ns, c);
+                        parents.put(ns, st);
+                        queue.add(((long)(c + conveyorHeuristic(nx, ny, endX, endY)) << 32) | (ns & 0xffffffffL));
+                    }
+                }
+            }
+        }
+
+        if(found == -1) return false;
+
+        IntSeq path = new IntSeq();
+        for(int st = found; st != -1; st = parents.get(st, -1)){
+            path.add(st >> 3);
+        }
+        path.reverse();
+
+        for(int i = 0; i < path.size; i++){
+            int p = path.get(i);
+            int x = Point2.x(p), y = Point2.y(p);
+            boolean isBridge = false;
+            Point2 config = null;
+            int rot = 0;
+
+            if(i > 0){
+                int prev = path.get(i - 1);
+                if(Math.abs(Point2.x(prev) - x) + Math.abs(Point2.y(prev) - y) > 1) isBridge = true;
+            }
+            if(i + 1 < path.size){
+                int next = path.get(i + 1);
+                int nx = Point2.x(next), ny = Point2.y(next);
+                if(Math.abs(nx - x) + Math.abs(ny - y) > 1){
+                    isBridge = true;
+                    config = new Point2(nx - x, ny - y);
+                }else{
+                    rot = Tile.relativeTo(x, y, nx, ny);
+                }
+            }else if(i > 0){
+                int prev = path.get(i - 1);
+                rot = Tile.relativeTo(Point2.x(prev), Point2.y(prev), x, y);
+            }
+
+            //стартовый тайл мог быть уже занят: не перезаписываем чужую постройку
+            if(i == 0 && world.build(x, y) != null) continue;
+
+            if(isBridge){
+                BuildPlan plan = new BuildPlan(x, y, 0, bridge, config);
+                plan.animScale = 1f;
+                out.add(plan);
+            }else{
+                BuildPlan plan = new BuildPlan(x, y, rot == -1 ? 0 : rot, conveyor, conveyor.nextConfig());
+                plan.animScale = 1f;
+                out.add(plan);
+            }
+        }
+        return out.size > 0;
     }
 
     /**

@@ -22,6 +22,7 @@ import mindustry.annotations.Annotations.*;
 import mindustry.async.*;
 import mindustry.client.*;
 import mindustry.client.fallen.CustomBuildLogic;
+import mindustry.client.fallen.UnitClearLogic;
 import mindustry.client.antigrief.*;
 import mindustry.client.navigation.*;
 import mindustry.client.utils.*;
@@ -2069,9 +2070,15 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
                 }
             }
 
-            boolean valid = validPlace(plan.x, plan.y, plan.block, plan.rotation, null, true)
+            boolean placeableIgnoringUnits = validPlace(plan.x, plan.y, plan.block, plan.rotation, null, true);
+            boolean valid = placeableIgnoringUnits
                 || (state.rules.editor && plan.block instanceof OreBlock o && o.wallOre) //Always allow placing wall ores in editor mode, because there might be a wall in the plans that makes it valid
                 || blockedOnlyByQueuedBreak(plan, flushBreaking);
+            // The tile itself is free and no plans overlap: only units are in the way.
+            // Order friendly AI units aside right away and queue the plan; builders start once the footprint is clear.
+            if(!freeze && placeableIgnoringUnits && !Build.checkNoUnitOverlap(plan.block, plan.x, plan.y)){
+                UnitClearLogic.clearPlan(plan);
+            }
             if(cleanup && !valid){
                 BuildPlan copy = plan.copy();
                 if(configLogic && copy.block instanceof LogicBlock && copy.config != null) copy.configLocal = net.client();
@@ -2346,6 +2353,7 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
 
     protected void updateLine(int x1, int y1, int x2, int y2){
         linePlans.clear();
+        Placement.pathfindFailed = false;
         Block old = block;
         boolean fooAlt = Core.settings.getBool("fooplacementalt", false);
         boolean bridgeMod = !fooAlt && Core.input.keyDown(Binding.bridgeModifier);
@@ -2390,17 +2398,41 @@ public abstract class InputHandler implements InputProcessor, GestureListener{
             });
         }
 
-        if(block != null && (Core.settings.getBool("blockreplace") != conveyorPlaceNormal || block instanceof ItemBridge || block instanceof StackConveyor)){ // Bridges need this for weaving, I'm too lazy to fix this properly
+        //обычный A* не нашёл путь - пробуем гибрид: конвейер там, где проходит, мост через проблемный участок
+        boolean bridgeFallback = false;
+        if(Placement.pathfindFailed && old instanceof Conveyor conv && conv.bridgeReplacement instanceof ItemBridge ib
+            && ib.unlockedNow() && !isChainedUpgrade(old, x1, y1, x2, y2)){
+            Seq<BuildPlan> fallback = new Seq<>();
+            if(Placement.buildConveyorBridgeLine(x1, y1, x2, y2, conv, ib, fallback)){
+                linePlans.clear();
+                linePlans.addAll(fallback);
+                bridgeFallback = true;
+            }
+        }
+
+        //резка линий: junction ставится и в обычном режиме, не только с авто-заменой.
+        //fallback-маршрут не трогает чужие перекрёстки.
+        if(!bridgeFallback && block != null){
             linePlans.each(plan -> {
                 Block replace = plan.block.getReplacement(plan, linePlans);
                 if(replace.unlockedNow()){
                     plan.block = replace;
                 }
             });
+        }
 
+        if(!bridgeFallback && block != null && (Core.settings.getBool("blockreplace") != conveyorPlaceNormal || block instanceof ItemBridge || block instanceof StackConveyor)){ // Bridges need this for weaving, I'm too lazy to fix this properly
             block.handlePlacementLine(linePlans);
         }
         block = old;
+    }
+
+    /** Обновление существующей цепочки зданий: мостовой fallback тут не нужен. */
+    private boolean isChainedUpgrade(Block block, int x1, int y1, int x2, int y2){
+        var start = world.build(x1, y1);
+        var end = world.build(x2, y2);
+        return block != null && start instanceof ChainedBuilding && end instanceof ChainedBuilding
+            && block.canReplace(end.block) && block.canReplace(start.block);
     }
 
     /** Full staircase of the current block (walls etc.) toward the cursor. */

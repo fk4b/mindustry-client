@@ -6,6 +6,7 @@ import arc.struct.*
 import arc.util.*
 import mindustry.Vars.*
 import mindustry.client.ClientVars.*
+import mindustry.client.navigation.*
 import mindustry.content.*
 import mindustry.entities.bullet.*
 import mindustry.game.*
@@ -15,6 +16,7 @@ import mindustry.type.*
 import mindustry.world.*
 import mindustry.world.blocks.defense.*
 import mindustry.world.blocks.defense.turrets.*
+import mindustry.world.blocks.power.ConsumeGenerator
 import mindustry.world.blocks.power.NuclearReactor.*
 import mindustry.world.blocks.production.*
 import mindustry.world.blocks.production.Drill.*
@@ -33,6 +35,7 @@ class AutoTransfer {
         var fromCores = false
         var fromContainers = false
         var minCoreItems = -1
+            set(value) { field = value.coerceAtLeast(1) }
         var delay = -1F
         var debug = false
         var minTransferTotal = -1
@@ -46,7 +49,26 @@ class AutoTransfer {
             "copper", "lead", "sand", "scrap"
         )
         @JvmField var priorityOrder: Array<String> = fallbackPriority.copyOf()
-        private val fallbackCategories = arrayOf("defense", "factory", "units", "recon", "other")
+        /** Block fill order. The first block type is filled before the next one. */
+        @JvmField var blockPriorityOrder: Array<String> = emptyArray()
+        /** Per-block item priority, stored as "block-name=item1|item2|...". */
+        @JvmField var blockItemOrder: Array<String> = emptyArray()
+        /** Block names that are not filled even when their category is enabled. */
+        @JvmField var disabledBlocks: Array<String> = emptyArray()
+        private val fallbackCategories = arrayOf("defense", "generators", "factory", "units", "recon", "other")
+        /** Fuel that a filter-based generator is filled with first. Everything else it accepts is a fallback. */
+        private val fuelDefaults = mapOf(
+            "combustion-generator" to listOf("coal"),
+            "steam-generator" to listOf("coal"),
+            "rtg-generator" to listOf("thorium", "phase-fabric")
+        )
+        /** Blocks with item filters that must never be autofilled (heaters, cultivators, centrifuges...). */
+        private val excludedAutofillBlocks = setOf(
+            "heat-source", "vent-condenser", "cultivator", "heat-reactor",
+            "slag-heater", "electric-heater", "atmospheric-concentrator",
+            "atmosphere-condenser", "electrolyzer", "coal-centrifuge",
+            "slag-centrifuge", "phase-heater", "sublimate", "heat-redirector"
+        )
         @JvmField var categoryOrder: Array<String> = fallbackCategories.copyOf()
         /** Category ids that must not be filled. Empty means every type is on. */
         @JvmField var disabledCategories: Array<String> = emptyArray()
@@ -59,7 +81,7 @@ class AutoTransfer {
             enabled = Core.settings.getBool("autotransfer", false)
             fromCores = Core.settings.getBool("autotransfer-fromcores", true)
             fromContainers = Core.settings.getBool("autotransfer-fromcontainers", true)
-            minCoreItems = Core.settings.getInt("autotransfer-mincoreitems", 10)
+            minCoreItems = Core.settings.getInt("autotransfer-mincoreitems", 10).coerceAtLeast(1)
             delay = Core.settings.getFloat("autotransfer-transferdelay", 60F)
             minTransferTotal = Core.settings.getInt("autotransfer-mintransfertotal", 10)
             minTransfer = Core.settings.getInt("autotransfer-mintransfer", 2)
@@ -68,6 +90,9 @@ class AutoTransfer {
             drainToContainers = Core.settings.getBool("autotransfer-draintocontainers", false)
             reloadPriority()
             reloadCategories()
+            reloadBlockPriority()
+            reloadBlockItems()
+            reloadBlockEnabled()
             reloadFilters()
             listenDefense()
         }
@@ -114,12 +139,332 @@ class AutoTransfer {
         }
 
         @JvmStatic
-        fun resetPriority() {
+        fun reloadBlockItems() {
+            val raw = Core.settings.getString("autotransfer-block-items", Core.settings.getString("autotransfer-generator-fuels", ""))
+            blockItemOrder = if (raw.isBlank()) emptyArray()
+            else raw.split(',').map { it.trim() }.filter { it.contains('=') }.toTypedArray()
+        }
+
+        @JvmStatic
+        fun reloadBlockEnabled() {
+            val raw = Core.settings.getString("autotransfer-disabled-blocks", "")
+            disabledBlocks = if (raw.isBlank()) emptyArray()
+            else raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toTypedArray()
+        }
+
+        @JvmStatic
+        fun blockEnabled(block: Block): Boolean = block.name !in disabledBlocks
+
+        @JvmStatic
+        fun setBlockEnabled(block: Block, on: Boolean) {
+            val next = disabledBlocks.toMutableList()
+            if (on) next.remove(block.name) else if (block.name !in next) next.add(block.name)
+            disabledBlocks = next.toTypedArray()
+            Core.settings.put("autotransfer-disabled-blocks", disabledBlocks.joinToString(","))
+        }
+
+        @JvmStatic
+        fun resetBlockEnabled() {
+            disabledBlocks = emptyArray()
+            Core.settings.put("autotransfer-disabled-blocks", "")
+        }
+
+        private fun savedItemNames(block: Block): List<String> {
+            val prefix = block.name + "="
+            val entry = blockItemOrder.firstOrNull { it.startsWith(prefix) } ?: return emptyList()
+            return entry.substring(prefix.length).split('|').map { it.trim() }.filter { it.isNotEmpty() }
+        }
+
+        private fun defaultItemOrder(block: Block, accepted: Seq<Item>): Seq<Item> {
+            val out = Seq<Item>()
+            fuelDefaults[block.name]?.forEach { name ->
+                val item = content.item(name)
+                if (item != null && accepted.contains(item) && !out.contains(item)) out.add(item)
+            }
+            accepted.each { if (!out.contains(it)) out.add(it) }
+            return out
+        }
+
+        /** Accepted items in the user's priority order. Missing items keep their default order. */
+        @JvmStatic
+        fun orderedAcceptedItems(block: Block): Seq<Item> {
+            val accepted = acceptedItems(block)
+            val out = Seq<Item>()
+            savedItemNames(block).forEach { name ->
+                val item = content.item(name)
+                if (item != null && accepted.contains(item) && !out.contains(item)) out.add(item)
+            }
+            defaultItemOrder(block, accepted).each { if (!out.contains(it)) out.add(it) }
+            return out
+        }
+
+        /** First item in the priority order, or null for blocks with dynamic recipes. */
+        @JvmStatic
+        fun preferredItem(block: Block): Item? {
+            val ordered = orderedAcceptedItems(block)
+            return if (ordered.size == 0) null else ordered.first()
+        }
+
+        @JvmStatic
+        fun setItemPriority(block: Block, items: Seq<Item>) {
+            val accepted = acceptedItems(block)
+            val names = Seq<String>()
+            items.each { item -> if (accepted.contains(item) && !names.contains(item.name)) names.add(item.name) }
+            val prefix = block.name + "="
+            val next = blockItemOrder.filterNot { it.startsWith(prefix) }.toMutableList()
+            if (names.size > 0) {
+                val sb = StringBuilder()
+                names.each { name -> if (sb.isNotEmpty()) sb.append('|'); sb.append(name) }
+                next.add(prefix + sb.toString())
+            }
+            blockItemOrder = next.toTypedArray()
+            Core.settings.put("autotransfer-block-items", blockItemOrder.joinToString(","))
+        }
+
+        @JvmStatic
+        fun setPreferredItem(block: Block, item: Item?) {
+            if (item == null) {
+                resetBlockItem(block)
+            } else {
+                val items = Seq<Item>()
+                items.add(item)
+                setItemPriority(block, items)
+            }
+        }
+
+        @JvmStatic
+        fun resetBlockItem(block: Block) {
+            val prefix = block.name + "="
+            blockItemOrder = blockItemOrder.filterNot { it.startsWith(prefix) }.toTypedArray()
+            Core.settings.put("autotransfer-block-items", blockItemOrder.joinToString(","))
+        }
+
+        @JvmStatic
+        fun resetBlockItems() {
+            blockItemOrder = emptyArray()
+            Core.settings.put("autotransfer-block-items", "")
+            Core.settings.put("autotransfer-generator-fuels", "")
+        }
+
+        /** Every item a block accepts. For turrets this is its ammo list. */
+        @JvmStatic
+        fun acceptedItems(block: Block): Seq<Item> {
+            val out = Seq<Item>()
+            if (block is ItemTurret) {
+                block.ammoTypes.each { item, _ -> if (!out.contains(item)) out.add(item) }
+                return out
+            }
+            val cons = fuelConsumer(block) ?: return out
+            collectFuelItems(cons, null, out)
+            return out
+        }
+
+        private fun acceptedItems(build: Building): Seq<Item> {
+            val out = Seq<Item>()
+            if (build.block is ItemTurret) return acceptedItems(build.block)
+            val cons = fuelConsumer(build.block) ?: return out
+            collectFuelItems(cons, build, out)
+            return out
+        }
+
+        /** All blocks that can be autofilled, in the user's fill order. */
+        @JvmStatic
+        fun fillableBlocks(): Seq<Block> {
+            val all = fillableBlocksUnsorted()
+            val byName = ObjectMap<String, Block>()
+            all.each { byName.put(it.name, it) }
+            val out = Seq<Block>()
+            blockPriorityOrder.forEach { name -> byName.get(name)?.let { out.add(it) } }
+            all.each { if (!out.contains(it)) out.add(it) }
+            return out
+        }
+
+        /** Fillable blocks of one category, in the current block priority order. */
+        @JvmStatic
+        fun blocksForCategory(category: String): Seq<Block> =
+            fillableBlocks().select { categoryId(it) == category }
+
+        @JvmStatic
+        fun moveBlockInCategory(block: Block, dir: Int) {
+            val category = categoryId(block)
+            val list = blocksForCategory(category)
+            val index = list.indexOf(block)
+            val next = index + dir
+            if (index < 0 || next < 0 || next >= list.size) return
+            list.swap(index, next)
+            val all = fillableBlocks()
+            val out = Seq<String>()
+            categoryOrder.forEach { id ->
+                if (id == category) {
+                    list.each { out.add(it.name) }
+                } else {
+                    all.each { b -> if (categoryId(b) == id) out.add(b.name) }
+                }
+            }
+            all.each { b -> if (!out.contains(b.name)) out.add(b.name) }
+            saveBlockPriority(Array(out.size) { out.get(it) })
+        }
+
+        @JvmStatic
+        fun moveCategory(category: String, dir: Int) {
+            val index = categoryOrder.indexOf(category)
+            val next = index + dir
+            if (index < 0 || next < 0 || next >= categoryOrder.size) return
+            val order = categoryOrder.copyOf()
+            val swap = order[index]
+            order[index] = order[next]
+            order[next] = swap
+            saveCategories(order)
+            rebuildBlockPriorityFromCategories()
+        }
+
+        @JvmStatic
+        fun rebuildBlockPriorityFromCategories() {
+            val all = fillableBlocks()
+            val out = Seq<String>()
+            categoryOrder.forEach { id ->
+                all.each { b -> if (categoryId(b) == id && !out.contains(b.name)) out.add(b.name) }
+            }
+            all.each { b -> if (!out.contains(b.name)) out.add(b.name) }
+            saveBlockPriority(Array(out.size) { out.get(it) })
+        }
+
+        @JvmStatic
+        fun resetCategorySettings(category: String) {
+            val names = Seq<String>()
+            blocksForCategory(category).each { names.add(it.name) }
+            disabledBlocks = disabledBlocks.filterNot { it in names }.toTypedArray()
+            Core.settings.put("autotransfer-disabled-blocks", disabledBlocks.joinToString(","))
+            val prefixes = Seq<String>()
+            names.each { prefixes.add(it + "=") }
+            blockItemOrder = blockItemOrder.filterNot { entry -> prefixes.any { entry.startsWith(it) } }.toTypedArray()
+            Core.settings.put("autotransfer-block-items", blockItemOrder.joinToString(","))
+        }
+
+        @JvmStatic
+        fun blockPrioritySnapshot(): Array<String> = blockPriorityOrder.copyOf()
+
+        @JvmStatic
+        fun saveBlockPriority(order: Array<String>) {
+            blockPriorityOrder = order.copyOf()
+            Core.settings.put("autotransfer-block-priority", order.joinToString(","))
+        }
+
+        @JvmStatic
+        fun resetBlockPriority() {
+            blockPriorityOrder = defaultBlockOrder()
+            Core.settings.put("autotransfer-block-priority", blockPriorityOrder.joinToString(","))
+        }
+
+        /** Lower rank is filled first. */
+        @JvmStatic
+        fun blockRank(block: Block): Int {
+            val index = blockPriorityOrder.indexOf(block.name)
+            return if (index >= 0) index else 10_000 + catRank(block)
+        }
+
+        private fun fillableBlocksUnsorted(): Seq<Block> {
+            val out = Seq<Block>()
+            content.blocks().each { block ->
+                if (block.name in excludedAutofillBlocks || block.name == "nuclear-reactor") return@each
+                if (block is ItemTurret) {
+                    if (block.ammoTypes.size > 0) out.add(block)
+                    return@each
+                }
+                val cons = fuelConsumer(block) ?: return@each
+                if (cons is ConsumeItemExplode) return@each
+                if (cons is ConsumeItemDynamic) {
+                    out.add(block)
+                    return@each
+                }
+                if (acceptedItems(block).isEmpty()) return@each
+                out.add(block)
+            }
+            return out
+        }
+
+        private fun defaultBlockOrder(): Array<String> {
+            val blocks = fillableBlocksUnsorted()
+            blocks.sort { a, b ->
+                val ca = catRank(a)
+                val cb = catRank(b)
+                if (ca != cb) ca - cb else a.localizedName.compareTo(b.localizedName)
+            }
+            return Array(blocks.size) { blocks.get(it).name }
+        }
+
+        @JvmStatic
+        fun reloadBlockPriority() {
+            val raw = Core.settings.getString("autotransfer-block-priority", "")
+            val saved = if (raw.isBlank()) emptyArray()
+            else raw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toTypedArray()
+
+            val all = fillableBlocksUnsorted()
+            val validNames = HashSet<String>()
+            all.each { validNames.add(it.name) }
+
+            val savedBlocks = Seq<Block>()
+            saved.forEach { name ->
+                if (name in validNames) content.block(name)?.let { if (!savedBlocks.contains(it)) savedBlocks.add(it) }
+            }
+            val defaultBlocks = Seq<Block>()
+            defaultBlockOrder().forEach { name ->
+                content.block(name)?.let { if (!defaultBlocks.contains(it)) defaultBlocks.add(it) }
+            }
+
+            val out = Seq<String>()
+            categoryOrder.forEach { id ->
+                savedBlocks.each { b -> if (categoryId(b) == id && !out.contains(b.name)) out.add(b.name) }
+                defaultBlocks.each { b -> if (categoryId(b) == id && !out.contains(b.name)) out.add(b.name) }
+            }
+            savedBlocks.each { b -> if (!out.contains(b.name)) out.add(b.name) }
+            defaultBlocks.each { b -> if (!out.contains(b.name)) out.add(b.name) }
+
+            blockPriorityOrder = Array(out.size) { out.get(it) }
+            Core.settings.put("autotransfer-block-priority", blockPriorityOrder.joinToString(","))
+        }
+
+        private fun fuelConsumer(block: Block): Consume? =
+            block.findConsumer<Consume> { c -> (c is ConsumeItems || c is ConsumeItemFilter || c is ConsumeItemDynamic) && c !is ConsumeItemExplode }
+                ?: block.findConsumer<Consume> { c -> c is ConsumeItems || c is ConsumeItemFilter || c is ConsumeItemDynamic }
+
+        private fun collectFuelItems(cons: Consume, build: Building?, out: Seq<Item>) {
+            if (cons is ConsumeItemExplode) return
+            when (cons) {
+                is ConsumeItems -> {
+                    cons.items.forEach { stack -> if (stack != null && stack.item != null && !out.contains(stack.item)) out.add(stack.item) }
+                }
+                is ConsumeItemFilter -> {
+                    content.items().each { item -> if (cons.filter.get(item) && !out.contains(item)) out.add(item) }
+                }
+                is ConsumeItemDynamic -> {
+                    if (build != null) cons.items.get(build).forEach { stack -> if (stack != null && stack.item != null && !out.contains(stack.item)) out.add(stack.item) }
+                }
+            }
+        }
+
+        @JvmStatic
+        fun resetSettings() {
+            fromCores = true
+            Core.settings.put("autotransfer-fromcores", true)
+            fromContainers = true
+            Core.settings.put("autotransfer-fromcontainers", true)
+            minCoreItems = 10
+            Core.settings.put("autotransfer-mincoreitems", 10)
+            delay = 60F
+            Core.settings.put("autotransfer-transferdelay", 60F)
             savePriority(fallbackPriority.copyOf())
             saveCategories(fallbackCategories.copyOf())
             disabledCategories = emptyArray()
             Core.settings.put("autotransfer-off", "")
+            resetBlockPriority()
+            resetBlockItems()
+            resetBlockEnabled()
         }
+
+        /** Kept for older callers. */
+        @JvmStatic
+        fun resetPriority() = resetSettings()
 
         @JvmStatic
         fun categorySnapshot(): Array<String> = categoryOrder.copyOf()
@@ -203,6 +548,7 @@ class AutoTransfer {
         private fun categoryId(block: Block): String = when (block) {
             is BaseTurret, is MendProjector, is RegenProjector, is ForceProjector,
             is OverdriveProjector, is ShockwaveTower, is RepairTurret, is Wall -> "defense"
+            is ConsumeGenerator -> "generators"
             is Reconstructor -> "recon"
             is UnitBlock, is UnitAssembler -> "units"
             is GenericCrafter, is Separator -> "factory"
@@ -248,39 +594,31 @@ class AutoTransfer {
         }
         if (state.rules.onlyDepositCore) return
         if (player == null || player.dead() || player.unit() == null) return
-        if (!defenseFirst()) {
-            defenseRushUntil = 0f
-            rushPhase = 0
-        } else if (rushPhase != 0) {
-            val amountNow = player.unit().stack.amount
-            val timedOut = Time.time > rushPhaseUntil
-            // item() stays set after the stack hits 0, so an empty unit is amount == 0.
-            val done = when (rushPhase) {
-                1 -> amountNow <= 0 || timedOut
-                2 -> amountNow > rushStackAmount || timedOut
-                else -> amountNow < rushStackAmount || amountNow <= 0 || timedOut
-            }
-            if (!done) return
-            rushPhase = 0
-            rushPhaseItem = null
-        }
+        // MinePath owns the unit while it has to travel to ore outside the core radius.
+        // Any autofill action there steals the stack or pulls the unit back to the core.
+        if (minePathBlocksAutofill()) return
         if (ratelimitRemaining <= 1) return // Leave one config for other stuff
-        val rush = defenseRushUntil > 0f && Time.time <= defenseRushUntil
-        if (!rush) {
-            if (defenseRushUntil > 0f) defenseRushUntil = 0f
-            timer += Time.delta
-            if (timer < delay) return
-        }
+        timer += Time.delta
+        if (timer < delay) return
+        timer = 0f
         counts.fill(0) // reset needed item counters
         ammoCounts.fill(0)
         dpsCounts.fill(0f)
         itemCat.fill(Int.MAX_VALUE)
-        if (!rush && !justTransferred && drain && drain()) {
-            timer = 0f
+        if (!justTransferred && drain && drain()) {
+            justTransferred = false
             return
         }
         justTransferred = false
-        if (transfer(rush)) timer = 0f
+        transfer(false)
+    }
+
+    /** True while MinePath is heading to a vein farther from the core than the transfer radius. */
+    private fun minePathBlocksAutofill(): Boolean {
+        val path = Navigation.currentlyFollowing as? MinePath ?: return false
+        val ore = path.tile ?: return false
+        val core = player.closestCore() ?: return false
+        return !ore.within(core, mineTransferRange - tilesize * 10f)
     }
 
     /** One in-flight ammo action, so a rush does not send another request every frame. */
@@ -293,126 +631,127 @@ class AutoTransfer {
     }
 
     /**
-     * One Extended UI action per pause: deposit the held stack, put a wrong stack back, or take one item.
-     * A remainder below 5 of the item buildings still want is topped up from the source. Hands must be
-     * empty before a different item can be taken, because a unit holds only one stack.
-     * Category order picks the building. The item list picks the resource inside that building.
+     * Port of the QoL-Control (TyTXexebe) autofill loop.
+     * While a stack is held it is put into the best nearby consumer; with empty hands the
+     * best needed item is requested from the core or a container. Turrets are topped up
+     * only below 85% ammo, generators use their fuel defaults (coal / thorium), and the
+     * whole loop pauses while MinePath is travelling to a far vein.
      * Returns true when a packet was sent.
      */
     private fun transfer(rush: Boolean): Boolean {
-        core = if (fromCores) player.closestCore() else null
+        val unit = player.unit() ?: return false
+        if (unit.type.itemCapacity <= 0) return false
 
         val buildTree = player.team().data().buildingTree ?: return false
-        val unit = player.unit() ?: return false
         val heldItem = unit.item()
         val held = unit.stack.amount
 
         buildTree.intersect(player.x - buildingRange, player.y - buildingRange, buildingRange * 2, buildingRange * 2, builds.clear())
 
-        if (fromContainers && (core == null || !player.within(core, buildingRange))) core = containers.selectFrom(builds) { it.block is StorageBlock && (item == null || it.items.has(item)) }.min { it -> it.dst(player) }
-
-        // Away from every core and container the held stack is a miner's haul: leave it alone instead of dumping it into nearby blocks.
-        val source = core
-        if (source == null || !player.within(source, buildingRange)) {
-            if (rush) {
-                defenseRushUntil = 0f
-                timer = 0f
-            }
-            return false
+        var source: Building? = null
+        if (fromCores) {
+            val closest = player.closestCore()
+            if (closest != null && player.within(closest, buildingRange)) source = closest
         }
+        if (source == null && fromContainers) {
+            source = builds.select {
+                it.block is StorageBlock && it.block !is CoreBlock && player.within(it, buildingRange) && it.items.total() > 0
+            }.minByOrNull { it.dst2(unit) }
+        }
+        val nearSource = source != null && player.within(source, buildingRange)
 
-        builds.retainAll {
-            it.block.findConsumer<Consume?> { it is ConsumeItems || it is ConsumeItemFilter || it is ConsumeItemDynamic } != null
+        val targets = builds.select {
+            it.team == player.team()
                 && it !is NuclearReactorBuild
-                && player.within(it, buildingRange)
+                && it.block.name !in excludedAutofillBlocks
+                && player.within(it, buildingRange + it.block.size * 4f)
                 && allows(it.block)
-        }
-        if (rush) {
-            builds.retainAll { it.block is ItemTurret && categoryId(it.block) == "defense" }
-            if (builds.size == 0) {
-                defenseRushUntil = 0f
-                timer = 0f
-                return false
-            }
+                && blockEnabled(it.block)
+                && it.block.findConsumer<Consume?> { c -> c is ConsumeItems || c is ConsumeItemFilter || c is ConsumeItemDynamic } != null
+        }.sort { a, b ->
+            val ra = blockRank(a.block)
+            val rb = blockRank(b.block)
+            if (ra != rb) ra - rb else a.dst2(unit).compareTo(b.dst2(unit))
         }
 
-        var wantItem: Item? = null
-        var wantBuild: Building? = null
-        var wantCat = Int.MAX_VALUE
-        var wantRank = Int.MAX_VALUE
-        var wantDist = Float.MAX_VALUE
-        if (source != null) {
-            builds.each { build ->
-                val need = neededItem(build, source, unit) ?: return@each
-                val cat = catRank(build.block)
-                val itemRank = rank(need)
-                val dist = build.dst(unit)
-                val better = cat < wantCat || (cat == wantCat && (itemRank < wantRank || (itemRank == wantRank && dist < wantDist)))
-                if (!better) return@each
-                wantCat = cat
-                wantRank = itemRank
-                wantDist = dist
-                wantItem = need
-                wantBuild = build
-            }
-        }
-
+        // Held stack: xexebe deposits it even when the unit is far from the core. This is
+        // what lets a miner carry coal to a generator that is outside the core radius.
         if (held > 0 && heldItem != null) {
-            val needBuild = wantBuild
-            val sameWant = needBuild != null && wantItem == heldItem
-            val accepted = if (sameWant) needBuild.acceptStack(heldItem, held, unit) else 0
-            // A full enough stack goes into the building. A unit that cannot hold 5 still delivers what it has.
-            val dest = when {
-                sameWant && (accepted >= 5 || (accepted > 0 && unit.maxAccepted(heldItem) <= 0)) -> needBuild
-                wantItem == null -> leftoverTarget(unit, heldItem, held)
-                else -> null
-            }
-            if (dest != null && ratelimitRemaining > 1) {
-                Call.transferInventory(player, dest)
+            val target = targets.firstOrNull { autofillItems(it).contains(heldItem) && needsAutofill(it, heldItem) }
+            if (target != null && ratelimitRemaining > 1) {
+                Call.transferInventory(player, target)
                 justTransferred = true
-                if (rush) armRush(3, heldItem, held)
                 return true
             }
-            if (wantItem != null && wantItem != heldItem && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
+            // Nobody wants the stack: put it back into the source if one is in reach.
+            if (source != null && nearSource && ratelimitRemaining > 1) {
                 Call.transferInventory(player, source)
-                if (net.server() && (player.unit()?.stack?.amount ?: 0) > 0) Call.dropItem(0f)
                 justTransferred = true
-                if (rush) armRush(1, wantItem, held)
                 return true
-            }
-            // Fewer than 5 of the wanted item cannot be deposited, and that leftover blocked a new pickup.
-            if (sameWant && held < 5 && unit.maxAccepted(heldItem) > 0 && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
-                Call.requestItem(player, source, heldItem, 999)
-                item = null
-                justTransferred = true
-                if (rush) armRush(2, heldItem, held)
-                return true
-            }
-            if (rush && wantItem == null) {
-                defenseRushUntil = 0f
-                timer = 0f
             }
             return false
         }
 
-        if (wantItem != null && source != null && player.within(source, buildingRange) && ratelimitRemaining > 1) {
-            Call.requestItem(player, source, wantItem, 999)
-            item = null
-            justTransferred = true
-            if (rush) armRush(2, wantItem, held)
-            return true
+        val src = source ?: return false
+        if (!player.within(src, buildingRange)) return false
+
+        var bestTarget: Building? = null
+        var bestItem: Item? = null
+
+        targetLoop@ for (target in targets) {
+            val minHave = if (src is CoreBlock.CoreBuild) minCoreItems.coerceAtLeast(1) else 1
+            for (want in autofillItems(target)) {
+                if (!src.items.has(want, minHave)) continue
+                if (!needsAutofill(target, want)) continue
+                bestTarget = target
+                bestItem = want
+                break@targetLoop
+            }
         }
-        if (rush) {
-            defenseRushUntil = 0f
-            timer = 0f
+
+        val target = bestTarget
+        val want = bestItem
+        if (target != null && want != null && ratelimitRemaining > 1) {
+            val amount = min(unit.type.itemCapacity, src.items.get(want))
+            if (amount > 0) {
+                Call.requestItem(player, src, want, amount)
+                justTransferred = true
+                return true
+            }
         }
         return false
+    }
+
+    /** Items a building can be filled with, in the order they should be tried. */
+    private fun autofillItems(build: Building): Seq<Item> {
+        val block = build.block
+        val out = Seq<Item>()
+
+        if (block is ItemTurret) {
+            orderedAcceptedItems(block).each { if (!out.contains(it)) out.add(it) }
+            return out
+        }
+
+        val accepted = acceptedItems(build)
+        orderedAcceptedItems(block).each { if (accepted.contains(it) && !out.contains(it)) out.add(it) }
+        accepted.each { if (!out.contains(it)) out.add(it) }
+        return out
+    }
+
+    private fun needsAutofill(build: Building, item: Item): Boolean {
+        if (!build.acceptItem(build, item)) return false
+        if (build is ItemTurret.ItemTurretBuild) {
+            val turret = build.block as ItemTurret
+            return build.totalAmmo < turret.maxAmmo * 0.85f
+        }
+        val cap = build.block.itemCapacity
+        return cap > 0 && build.items.get(item) < cap * 0.85f
     }
 
     /** Extended UI: a turret is filled only while its ammo is empty. Other blocks use the current recipe. Item rank picks which resource. */
     private fun neededItem(build: Building, source: Building, unit: mindustry.gen.Unit): Item? {
         val block = build.block
-        val minHave = if (source is CoreBlock.CoreBuild) minCoreItems else 1
+        val minHave = if (source is CoreBlock.CoreBuild) minCoreItems.coerceAtLeast(1) else 1
         var best: Item? = null
         var bestRank = Int.MAX_VALUE
         fun consider(candidate: Item?) {

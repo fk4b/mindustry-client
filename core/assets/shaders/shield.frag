@@ -9,6 +9,7 @@ uniform vec2 u_invsize;
 uniform float u_time;
 uniform float u_dp;
 uniform vec2 u_offset;
+uniform float u_outline;
 
 varying vec2 v_texCoords;
 
@@ -23,7 +24,7 @@ void main(){
 
     vec4 maxed = max(max(max(texture2D(u_texture, T + vec2(0, step) * v), texture2D(u_texture, T + vec2(0, -step) * v)), texture2D(u_texture, T + vec2(step, 0) * v)), texture2D(u_texture, T + vec2(-step, 0) * v));
 
-    if(texture2D(u_texture, T).a < 0.9 && maxed.a > 0.9){
+    if(u_outline > 0.5 && texture2D(u_texture, T).a < 0.9 && maxed.a > 0.9){
 
         gl_FragColor = vec4(maxed.rgb, maxed.a * 100.0);
     }else{

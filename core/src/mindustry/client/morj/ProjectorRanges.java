@@ -100,9 +100,11 @@ public final class ProjectorRanges{
         Draw.color(build.team.color);
         Draw.alpha(live ? 0.1f : 0.04f);
         Fill.poly(build.x, build.y, block.sides, range, block.shieldRotation);
-        Lines.stroke(live ? 2f : 1f);
-        Draw.alpha(live ? 0.9f : 0.35f);
-        Lines.poly(build.x, build.y, block.sides, range, block.shieldRotation);
+        if(!renderer.hideShieldOutline){
+            Lines.stroke(live ? 2f : 1f);
+            Draw.alpha(live ? 0.9f : 0.35f);
+            Lines.poly(build.x, build.y, block.sides, range, block.shieldRotation);
+        }
         Draw.reset();
     }
 

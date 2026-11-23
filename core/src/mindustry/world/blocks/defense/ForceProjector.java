@@ -330,8 +330,10 @@ public class ForceProjector extends Block{
                         Lines.stroke(1.5f);
                         Draw.alpha(0.09f + Mathf.clamp(0.08f * hit));
                         Fill.poly(x, y, sides, radius, shieldRotation);
-                        Draw.alpha(1f);
-                        Lines.poly(x, y, sides, radius, shieldRotation);
+                        if(!renderer.hideShieldOutline){
+                            Draw.alpha(1f);
+                            Lines.poly(x, y, sides, radius, shieldRotation);
+                        }
                         Draw.reset();
                     }
                 }

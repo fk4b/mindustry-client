@@ -60,8 +60,10 @@ public class ShieldWall extends Wall{
                     Lines.stroke(1.5f);
                     Draw.alpha(0.09f + Mathf.clamp(0.08f * hit));
                     Fill.square(x, y, radius);
-                    Draw.alpha(1f);
-                    Lines.poly(x, y, 4, radius, 45f);
+                    if(!renderer.hideShieldOutline){
+                        Draw.alpha(1f);
+                        Lines.poly(x, y, 4, radius, 45f);
+                    }
                     Draw.reset();
                 }
 

@@ -143,8 +143,10 @@ public class ForceFieldAbility extends Ability{
                 Lines.stroke(1.5f);
                 Draw.alpha(0.09f * UnitType.currentAlpha);
                 Fill.poly(unit.x, unit.y, sides, radius, rotation);
-                Draw.alpha(UnitType.currentAlpha);
-                Lines.poly(unit.x, unit.y, sides, radius, rotation);
+                if(!renderer.hideShieldOutline){
+                    Draw.alpha(UnitType.currentAlpha);
+                    Lines.poly(unit.x, unit.y, sides, radius, rotation);
+                }
             }
         }
     }

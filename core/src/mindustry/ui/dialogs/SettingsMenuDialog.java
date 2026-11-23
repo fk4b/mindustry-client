@@ -488,12 +488,14 @@ public class SettingsMenuDialog extends BaseDialog{
         client.checkPref("placementfragmentsearch", true);
         client.checkPref("junctionflowratedirection", false, s -> Junction.flowRateByDirection = s);
         client.checkPref("drawwrecks", true);
+        client.checkPref("hideshieldoutline", false);
         client.checkPref("drawallitems", true, i -> UnitType.drawAllItems = i);
         client.checkPref("drawpath", true);
         client.checkPref("selectionsizeoncursor", true);
         client.checkPref("drawselectionvanilla", false);
         client.checkPref("drawcursors", false);
         client.checkPref("hidecursor", false); // pin reported cursor to unit while not shooting
+        client.choicePref("hidecursormode", CursorHide.MODE_SELF, 4); // where the hidden (reported) cursor is placed
         client.checkPref("drawdisplayborder", false);
         client.checkPref("tracelogicunits", false);
         client.checkPref("enemyunitranges", false);

@@ -146,11 +146,13 @@ class MinePath @JvmOverloads constructor(
             }
             safe
         } else if (oreFilter != null) {
-            val safe = MinersFDAI.findSafeOreFor(player.unit(), bestItem)
-            if (safe == null || !oreFilter!!.get(safe)) {
+            // oreFilter is used by poly/AFK mining even when safe mining is off.
+            // findSafeOreFor() returns null in that mode, so use the normal indexer here.
+            val candidate = indexer.findClosestMineableOre(player.unit(), bestItem)
+            if (candidate == null || !oreFilter!!.get(candidate)) {
                 items.remove(bestItem)
                 null
-            } else safe
+            } else candidate
         } else {
             indexer.findClosestMineableOre(player.unit(), bestItem)
         }
@@ -165,8 +167,9 @@ class MinePath @JvmOverloads constructor(
 
         if (isInventoryFull) {
             if (canContinueMiningWithFullInventory) {
-                if (player.unit().validMine(tile)) {
-                    player.unit().mineTile = tile
+                val mineTarget = tile
+                if (mineTarget != null && player.unit().validMine(mineTarget)) {
+                    player.unit().mineTile = mineTarget
                 }
                 player.boosting = player.unit().type.canBoost && !player.within(tile, player.unit().type.mineRange)
                 goTo(tile, player.unit().type.mineRange - tilesize * 2)
@@ -202,8 +205,9 @@ class MinePath @JvmOverloads constructor(
             return
         }
 
-        if (player.unit().validMine(tile)) {
-            player.unit().mineTile = tile
+        val mineTarget = tile
+        if (mineTarget != null && player.unit().validMine(mineTarget)) {
+            player.unit().mineTile = mineTarget
         }
         player.boosting = player.unit().type.canBoost && !player.within(tile, player.unit().type.mineRange)
         goTo(tile, player.unit().type.mineRange - tilesize * 2)
