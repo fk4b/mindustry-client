@@ -55,18 +55,18 @@ class ClajManagerDialog : BaseDialog("@client.claj.manage") {
 
         init {
             table(Tex.underline) { cont: Table ->
-                cont.add(link).name("link").growX().left().fontScale(.7f).ellipsis(true)
+                cont.label { link }.growX().left().fontScale(.7f).ellipsis(true)
             }.growX()
             table { btns: Table ->
                 btns.defaults().size(48f).padLeft(8f)
-                btns.button(Icon.copy, Styles.clearNonei) { Core.app.clipboardText = link }
+                btns.button(Icon.copy, Styles.clearNonei) { Core.app.clipboardText = link }.disabled { link.isEmpty() }
                 btns.button(Icon.cancel, Styles.clearNonei) { close() }
             }
             client = createRoom(serverIP, serverPort, this, null)
         }
 
         fun close() {
-            client.close()
+            client.stop()
             remove()
         }
     }

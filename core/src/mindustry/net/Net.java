@@ -32,6 +32,7 @@ public class Net{
     private boolean server;
     private boolean active;
     private boolean clientLoaded;
+    private @Nullable ByteBuffer clientConnectPreamble;
     private @Nullable StreamBuilder currentStream;
 
     private final Seq<Packet> packetQueue = new Seq<>();
@@ -166,6 +167,11 @@ public class Net{
      * Connect to an address.
      */
     public void connect(String ip, int port, Runnable success){
+        connect(ip, port, null, success);
+    }
+
+    /** Connects through a relay that expects a TCP preamble before the game handshake. */
+    public void connect(String ip, int port, @Nullable ByteBuffer preamble, Runnable success){
         streams.clear();
         currentStream = null;
 
@@ -173,6 +179,7 @@ public class Net{
             if(!active){
                 Events.fire(new ClientServerConnectEvent(ip, port));
                 provider.connectClient(ip, port, success);
+                clientConnectPreamble = preamble;
                 active = true;
                 server = false;
             }else{
@@ -213,6 +220,7 @@ public class Net{
     }
 
     public void disconnect(){
+        clientConnectPreamble = null;
         if(active && !server){
             Log.info("Disconnecting.");
             Events.fire(new EventType.MenuReturnEvent());
@@ -287,6 +295,12 @@ public class Net{
         }
 
         object.handled();
+
+        if(object instanceof Connect && client() && clientConnectPreamble != null){
+            var preamble = clientConnectPreamble;
+            clientConnectPreamble = null;
+            send(preamble, true);
+        }
 
         if(object instanceof StreamBegin b){
             streams.put(b.id, currentStream = new StreamBuilder(b, ((Streamable)Net.newPacket(b.type)).incremental()));

@@ -2,22 +2,22 @@ package mindustry.client.claj
 
 import arc.*
 import arc.net.*
-import arc.scene.ui.*
-import arc.struct.*
 import arc.util.*
 import mindustry.*
 import mindustry.client.claj.ClajManagerDialog.*
 import mindustry.game.EventType.*
 import mindustry.gen.*
 import mindustry.io.*
+import mindustry.net.ArcNetProvider
 import mindustry.net.ArcNetProvider.*
 import mindustry.net.Net.*
 import java.io.*
 import java.nio.*
+import java.util.concurrent.*
 
 /** Implements the protocol defined in https://github.com/xzxADIxzx/Scheme-Size/blob/main/src/java/scheme/ClajIntegration.java */
 object ClajSupport {
-    val clients: Seq<Client> = Seq(false, 0)
+    private val clients = CopyOnWriteArrayList<Client>()
     private lateinit var dispatchListener: NetListener
     private var roomInt = 1
 
@@ -33,58 +33,79 @@ object ClajSupport {
     @JvmStatic
     fun createRoom(ip: String, port: Int, room: Room?, code: String? = null): Client {
         val client = Client(8192, 8192, ClajSerializer())
-        Threads.daemon("Claj Room ${roomInt++}", client)
-
-        client.addListener(dispatchListener)
+        val roomId = roomInt++
         client.addListener(object : NetListener {
-            var clientInt = 1
+            private var clientInt = 1
+            private var key: String? = null
             override fun connected(connection: Connection?) {
                 if (code == null) client.sendTCP("new")
                 else client.sendTCP("generate $code")
             }
 
             override fun disconnected(connection: Connection?, reason: DcReason?) {
-                room?.close() ?: client.close()
+                clients.remove(client)
+                client.stop()
+                if (room != null) Core.app.post { room.remove() }
             }
 
             override fun received(connection: Connection?, obj: Any?) {
-                room ?: return
-                if (obj is String) { // Cursed custom json packets
-                    if (obj.startsWith("CLaJ")) {
-                        room.link = "$obj#$ip:$port"
-                        room.find<Label>("link").setText(room.link)
-                    } else if (obj == "new") {
-                        try {
-                            createRedirector(ip, port, room.link.substringBefore('#'), roomInt, clientInt++)
-                        } catch (e: Exception) {
-                            Log.err("Exception caught while creating redirector", e)
-                        }
+                if (obj !is String) return
+                if (obj.startsWith("CLaJ")) {
+                    key = obj
+                    if (room != null) Core.app.post { room.link = "$obj#$ip:$port" }
+                } else if (obj == "new") {
+                    val roomKey = key ?: return
+                    try {
+                        createRedirector(ip, port, roomKey, roomId, clientInt++, client)
+                    } catch (e: IOException) {
+                        Log.err("Could not connect the CLaJ guest", e)
                     }
-                    else Call.sendMessage(obj)
+                } else if (room != null) {
+                    Core.app.post { if (client.isConnected) Call.sendMessage(obj) }
                 }
             }
         })
 
-        client.connect(5000, ip, port, port)
-        clients.add(client)
-
+        connect(client, "Claj Room $roomId", ip, port)
         return client
     }
 
     /** Creates a new redirector connection for the room */
-    private fun createRedirector(ip: String, port: Int, key: String, roomInt: Int, clientInt: Int) {
-        val client = Client(8192, 8192, ClajSerializer())
-        Threads.daemon("Claj Room $roomInt Client $clientInt", client)
+    private fun createRedirector(ip: String, port: Int, key: String, roomId: Int, clientId: Int, roomClient: Client) {
+        val client = Client(ArcNetProvider.clientReadBufferSize + 16_000, 16384, ClajSerializer())
 
         client.addListener(dispatchListener)
         client.addListener(object : NetListener {
             override fun connected(connection: Connection?) {
-                client.sendTCP("host$key")
+                if (roomClient.isConnected) client.sendTCP("host$key")
+                else client.stop()
+            }
+
+            override fun disconnected(connection: Connection?, reason: DcReason?) {
+                clients.remove(client)
+                client.stop()
             }
         })
 
-        client.connect(5000, ip, port, port)
+        connect(client, "Claj Room $roomId Client $clientId", ip, port)
+    }
+
+    private fun connect(client: Client, threadName: String, ip: String, port: Int) {
         clients.add(client)
+        Threads.daemon(threadName) {
+            try {
+                client.run()
+            } finally {
+                client.dispose()
+            }
+        }
+        try {
+            client.connect(5000, ip, port, port)
+        } catch (e: IOException) {
+            clients.remove(client)
+            client.stop()
+            throw e
+        }
     }
 
     @JvmStatic
@@ -94,23 +115,21 @@ object ClajSupport {
 
         Vars.netClient.beginConnecting()
         Log.debug("Joining room")
-        Vars.net.connect(ip, port) {
-            Log.debug("Room joined")
-            if (!Vars.net.client()) return@connect
-            success.run()
+        val buffer = ByteBuffer.allocate(8192)
+        ClajSerializer.writeCommand(buffer, "join$key")
+        buffer.flip()
 
-            val buffer = ByteBuffer.allocate(8192)
-            buffer.put(ClajSerializer.linkID)
-            TypeIO.writeString(buffer, "join$key")
-
-            buffer.limit(buffer.position()).position(0)
-            Vars.net.send(buffer, true)
+        Vars.net.connect(ip, port, buffer) {
+            Core.app.post {
+                if (Vars.net.client()) success.run()
+            }
         }
     }
 
     fun clear() {
-        clients.each { it.close() }
-        clients.clear().shrink()
+        val closing = clients.toList()
+        clients.removeAll(closing.toSet())
+        closing.forEach { it.stop() }
     }
 
     @Throws(IOException::class)
@@ -125,9 +144,9 @@ object ClajSupport {
         if (colon == -1) throw IOException("@client.claj.colonnotfound")
 
         val port = Strings.parseInt(trimmed.substringAfter(':'))
-        if (port == Int.MIN_VALUE) throw IOException("@client.claj.portnotfound")
+        if (port !in 1..65535) throw IOException("@client.claj.portnotfound")
 
-        return Link(trimmed.substring(0, hash), link.substring(hash + 1, colon), port)
+        return Link(trimmed.substring(0, hash), trimmed.substring(hash + 1, colon), port)
     }
 
     data class Link(@JvmField val key: String, @JvmField val ip: String, @JvmField val port: Int)
@@ -136,10 +155,8 @@ object ClajSupport {
 
 class ClajSerializer : PacketSerializer() {
     override fun write(buffer: ByteBuffer, obj: Any) {
-        if (obj is String) {
-            buffer.put(linkID)
-            TypeIO.writeString(buffer, obj)
-        } else super.write(buffer, obj)
+        if (obj is String) writeCommand(buffer, obj)
+        else super.write(buffer, obj)
     }
 
     override fun read(buffer: ByteBuffer): Any {
@@ -150,5 +167,10 @@ class ClajSerializer : PacketSerializer() {
 
     companion object {
         const val linkID: Byte = -3
+
+        fun writeCommand(buffer: ByteBuffer, command: String) {
+            buffer.put(linkID)
+            TypeIO.writeString(buffer, command)
+        }
     }
 }

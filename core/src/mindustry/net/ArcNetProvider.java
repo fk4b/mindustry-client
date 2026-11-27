@@ -335,14 +335,20 @@ public class ArcNetProvider implements NetProvider{
 
     @Override
     public void sendAllServer(Object object, Iterable<NetConnection> connections, boolean reliable){
+        sendServer(object, connections, null, reliable);
+    }
+
+    private void sendServer(Object object, Iterable<? extends NetConnection> connections, @Nullable NetConnection except, boolean reliable){
         //build up list of underlying arcnet connections for faster bulk transfer
         var cons = writeConnections.get();
         cons.clear();
         for(var con : connections){
-            if(con instanceof ArcConnection ac){
+            if(con != except && con instanceof ArcConnection ac){
                 cons.add(ac.connection);
             }
         }
+
+        if(cons.isEmpty()) return;
 
         if(reliable){
             server.sendToAllTCP(object, cons);
@@ -355,25 +361,13 @@ public class ArcNetProvider implements NetProvider{
 
     @Override
     public void sendAllServer(Object object, boolean reliable){
-        if(reliable){
-            server.sendToAllTCP(object);
-        }else{
-            server.sendToAllUDP(object);
-        }
+        // CLaJ guests belong to the provider without being accepted by the Arc server socket.
+        sendServer(object, connections, null, reliable);
     }
 
     @Override
     public void sendExceptServer(NetConnection except, Object object, boolean reliable){
-        if(!(except instanceof ArcConnection con)){
-            NetProvider.super.sendExceptServer(except, object, reliable);
-            return;
-        }
-
-        if(reliable){
-            server.sendToAllExceptTCP(con.connection.getID(), object);
-        }else{
-            server.sendToAllExceptUDP(con.connection.getID(), object);
-        }
+        sendServer(object, connections, except, reliable);
     }
 
     @Override
